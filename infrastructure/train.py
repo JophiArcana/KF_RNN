@@ -1,388 +1,629 @@
-
+from argparse import Namespace
+import collections
 import copy
 import itertools
 import json
 import os
+from types import MappingProxyType
 from typing import *
-from argparse import Namespace
+import time
 
-from KF_RNN.model.linear_system import LinearSystem
-from KF_RNN.model.rnn_kf import RnnKF
-from KF_RNN.infrastructure import utils
-
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as Fn
-import torch.utils as ptu
 import torch.optim as optim
-from torchdata.datapipes.map import Zipper, SequenceWrapper
+import torch.utils as ptu
+import torch.utils.data
+import ignite.handlers.param_scheduler
 import tensordict
-from tensordict import TensorDict
+import tensordict.utils
+from tensordict import TensorDict, TensorDictBase
+
+from infrastructure import utils
+from model.linear_system import LinearSystem
+from model.analytical_kf import AnalyticalKF
+from model.kf import KF
 
 
 # Optimizer configuration
 def get_optimizer(params, hp):
     optim_type = hp.optim_type
     if optim_type == "GD" or optim_type == "SGD":
-        optimizer = optim.SGD(params, lr=hp.lr, momentum=0.0, weight_decay=hp.l2_reg)
+        optimizer = optim.SGD(params, lr=hp.max_lr, momentum=0.0, weight_decay=hp.l2_reg)
     elif optim_type == "SGDMomentum":
-        optimizer = optim.SGD(params, lr=hp.lr, momentum=hp.momentum, weight_decay=hp.l2_reg)
+        optimizer = optim.SGD(params, lr=hp.max_lr, momentum=hp.momentum, weight_decay=hp.l2_reg)
     elif optim_type == "Adam":
-        optimizer = optim.AdamW(params, lr=hp.lr, betas=(hp.momentum, 0.999), weight_decay=hp.l2_reg)
+        optimizer = optim.AdamW(params, lr=hp.max_lr, betas=(hp.momentum, 0.98), weight_decay=hp.l2_reg)
     else:
         raise ValueError(optim_type)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, hp.lr_decay)
+    scheduler = ignite.handlers.param_scheduler.create_lr_scheduler_with_warmup(
+        optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, hp.T_0, T_mult=hp.T_mult, eta_min=hp.min_lr),
+        hp.min_lr,
+        hp.warmup_duration
+    )
     return optimizer, scheduler
 
 
 # Testing
 def test(
-    hp: Namespace,
-    dataset: Tuple[torch.DoubleTensor],
-    flattened_ensembled_learned_kfs: Tuple[Dict[str, nn.Parameter]],
-    dev_type: str
-) -> torch.DoubleTensor:                                                                                    # [NE]
-    mhp, thp, ehp = hp.model, hp.train, hp.experiment
+        dataset: TensorDict[str, torch.Tensor],
+        indices: TensorDict,  # [NEB x ...]
+        base_module: KF,
+        flattened_ensembled_learned_kfs: Dict[str, nn.Parameter],
+        dev_type: str,
+        buffer: int = 0
+) -> TensorDict[str, torch.Tensor]:  # [NE]
 
-    base_RnnKF = RnnKF(mhp.S_D, mhp.I_D, mhp.O_D).to(dev_type)
-    base_RnnKF.eval()
-    def run_kf(kf_dicts, state, inputs, observations):
-        return torch.func.functional_call(base_RnnKF, kf_dicts, (state, inputs, observations))
+    n_models = dataset['input'].shape[0]
+    indices = indices.reshape(n_models, -1)
+    sequence_indices, start_indices, stop_indices = map(torch.tensor, (
+        indices['sequence'],
+        indices['start'],
+        indices['stop']
+    ))  # [NE x B]
 
-    dataset_size, sequence_length = dataset[0].shape[2:4]
+    """ Smart indexing
+        subsequence_length: L_SS
+        model_index: [NE x 1 x 1], Selects individual model
+        sequence_index: [NE x B x 1], Selects which trace within the dataset
+        subsequence_index: [NE x B x L_SS], Selects subsequence within the trace
+    """
+    subsequence_length = torch.max(stop_indices - start_indices)
 
-    n_models = ehp.n_systems * ehp.ensemble_size
-    with torch.no_grad():
-        X_initial = torch.randn(n_models, dataset_size, mhp.S_D, device=dev_type)                           # [NE x S x S_D]
-        X_input, y = dataset                                                                                # [N x E x S x L x I_D], [N x E x S x L x O_D]
-        X_input = X_input.view(n_models, dataset_size, sequence_length, mhp.I_D)                            # [NE x S x L x I_D]
-        y = y.view(n_models, dataset_size, sequence_length, mhp.O_D)                                        # [NE x S x L x O_D]
+    subsequence_offset = torch.arange(subsequence_length.item(), device=dev_type)
+    model_idx = torch.arange(n_models)[:, None, None]
+    sequence_idx = sequence_indices[:, :, None]
+    subsequence_idx = start_indices[:, :, None] + subsequence_offset
 
-        observation = torch.func.vmap(run_kf)(
-            flattened_ensembled_learned_kfs,
-            X_initial, X_input, y
-        )['observation_estimation']                                                                         # [NE x S x L x O_D]
-        losses = torch.sum(torch.mean(Fn.mse_loss(observation, y, reduction='none'), dim=(1, 2)), dim=-1)   # [NE], L2 averaged over B x L_SS, sum over O_D
+    """
+        state: [NE x B x S_D]
+        input: [NE x B x L_SS x I_D]
+        observation: [NE x B x L_SS x O_D]
+    """
+    dataset_ss = dataset[model_idx, sequence_idx, subsequence_idx]
+    observation_ss = utils.run_stacked_modules(
+        base_module=base_module,
+        stacked_modules=flattened_ensembled_learned_kfs,
+        args=dict(dataset_ss),
+        kwargs=dict()
+    )['observation_estimation']
 
-    return losses
+    mask = (buffer <= subsequence_offset) * (subsequence_idx < stop_indices[:, :, None])
+
+    def evaluate(input, target):
+        losses = mask * torch.norm(input - target, dim=-1) ** 2
+        return torch.sum(losses, dim=-1) / torch.sum(mask, dim=-1)  # [NE x B], L2 averaged over L_SS, sum over O_D
+
+    result = {'prediction_true': evaluate(observation_ss, dataset_ss['observation'])}
+    if 'target' in dataset_ss.keys():
+        result.update({
+            'prediction_target': evaluate(observation_ss, dataset_ss['target']),
+            'naive_target': evaluate(0, dataset_ss['target'])
+        })
+    return TensorDict(result, batch_size=sequence_indices.shape, device=dev_type)
 
 
 # Training
 def train(
-    hp: Namespace,
-    dataset: Dict[str, Tuple[torch.DoubleTensor]],
-    dataloader: Dict[str, ptu.data.DataLoader],
-    flattened_ensembled_learned_kfs: Tuple[Dict[str, nn.Parameter]],
-    optimizer: optim.Optimizer,
-    dev_type: str,
-    loss_threshold: float=float('inf')  # 1.e18
-) -> Dict[str, torch.DoubleTensor]:
+        model: type,
+        hp: Namespace,
+        dataset: Dict[str, TensorDict[str, torch.Tensor]],
+        dataloader: Dict[str, ptu.data.DataLoader],
+        flattened_ensembled_learned_kfs: Dict[str, nn.Parameter],
+        optimizer: optim.Optimizer,
+        dev_type: str,
+) -> TensorDict:
     mhp, thp, ehp = hp.model, hp.train, hp.experiment
-
-    base_RnnKF = RnnKF(mhp.S_D, mhp.I_D, mhp.O_D).to(dev_type)
-    base_RnnKF.train()
-    def run_kf(kf_dicts, state, inputs, observations):
-        return torch.func.functional_call(base_RnnKF, kf_dicts, (state, inputs, observations))
-
     n_models = ehp.n_systems * ehp.ensemble_size
-    train_losses_list, overfit_losses_list, valid_losses_list = [], [], []
-    for batch, (sequence_indices, start_indices) in enumerate(dataloader['training']):                                          # [NEB], [NEB]
-        sequence_indices = sequence_indices.view(n_models, thp.batch_size)                                                      # [NE x B]
-        start_indices = start_indices.view(n_models, thp.batch_size)                                                            # [NE x B]
+    base_module = model(mhp).to(dev_type)
 
-        X_input, y = dataset['training']                                                                                        # [N x E x S x L x I_D], [N x E x S x L x O_D]
-        X_input = X_input.view(n_models, thp.train_dataset_size, thp.train_sequence_length, mhp.I_D)                            # [NE x S x L x I_D]
-        y = y.view(n_models, thp.train_dataset_size, thp.train_sequence_length, mhp.O_D)                                        # [NE x S x L x O_D]
-
-        # Smart indexing
-        model_index = torch.arange(n_models)[:, None, None]                                                                     # Selects individual model
-        sequence_index = sequence_indices[:, :, None]                                                                           # Selects which trace in the dataset
-        subsequence_index = start_indices[:, :, None] + torch.arange(thp.subsequence_length, device=dev_type)                   # Selects subsequence of trace
-
-        X_initial_ss = torch.randn(n_models, thp.batch_size, mhp.S_D, device=dev_type)                                          # [NE x B x S_D]
-        X_input_ss = X_input[model_index, sequence_index, subsequence_index]                                                    # [NE x B x L_SS x I_D]
-        y_ss = y[model_index, sequence_index, subsequence_index]                                                                # [NE x B x L_SS x O_D]
-
+    result = []
+    for batch, indices in enumerate(dataloader['training']):
         # Pass to obtain the observations to be lossed on
-        observation_ss = torch.func.vmap(run_kf)(
-            flattened_ensembled_learned_kfs,
-            X_initial_ss, X_input_ss, y_ss
-        )['observation_estimation']                                                                                             # [NE x B x L_SS x O_D]
-        losses = torch.sum(torch.mean(Fn.mse_loss(observation_ss, y_ss, reduction='none'), dim=(1, 2)), dim=-1)                 # [NE], L2 averaged over B x L_SS, sum over O_D
-        
-        divergences = torch.isnan(losses) + torch.isinf(losses) + (losses > loss_threshold)
-        losses[divergences] = 0
-
-        optimizer.zero_grad()
-        torch.sum(losses).backward()
-        optimizer.step()
+        with torch.set_grad_enabled(True):
+            losses = torch.Tensor(test(
+                dataset['training'],
+                indices,
+                base_module,
+                flattened_ensembled_learned_kfs,
+                dev_type
+            )['prediction_true']).mean(-1)
+        mask = torch.isnan(losses) + torch.isinf(losses)
 
         if batch % ehp.log_frequency == 0:
-            train_losses_list.append(losses)
-            overfit_losses_list.append(overfit_losses := test(hp, dataset['training'], flattened_ensembled_learned_kfs, dev_type))
-            valid_losses_list.append(valid_losses := test(hp, dataset['validation'], flattened_ensembled_learned_kfs, dev_type))
+            with torch.set_grad_enabled(thp.epochs is None):
+                overfit_losses = torch.Tensor(test(
+                    dataset['training'],
+                    tensordict.utils.expand_right(
+                        list(dataloader['overfit'])[0][None], (n_models, thp.train_dataset_size)
+                    ).flatten(),
+                    base_module,
+                    flattened_ensembled_learned_kfs,
+                    dev_type,
+                    buffer=getattr(thp, 'sequence_buffer', 0)
+                )['prediction_true']).mean(-1)
+
+            with torch.set_grad_enabled(False):
+                valid_result = test(
+                    dataset['validation'],
+                    tensordict.utils.expand_right(
+                        list(dataloader['validation'])[0][None], (n_models, thp.valid_dataset_size)
+                    ).flatten(),
+                    base_module,
+                    flattened_ensembled_learned_kfs,
+                    dev_type,
+                    buffer=getattr(thp, 'sequence_buffer', 0)
+                )
+
+            r = TensorDict({
+                'training': losses,
+                'overfit': overfit_losses,
+                'validation': torch.Tensor(valid_result['prediction_true']).mean(-1),
+                'validation_target': torch.Tensor(valid_result['prediction_target']).mean(-1),
+                'validation_target_norm': torch.Tensor(valid_result['naive_target']).mean(-1)
+            }, batch_size=(n_models,))
+
+            if thp.epochs is None:
+                optimizer.zero_grad()
+                torch.sum(overfit_losses[~mask]).backward()
+                r['gradient_norm'] = torch.sum(torch.stack([
+                    torch.norm(v.grad, dim=[1, 2]) ** 2
+                    for v in flattened_ensembled_learned_kfs.values()]), dim=0).detach()
+            if thp.ir_length is not None:
+                with torch.set_grad_enabled(False):
+                    impulse_result = test(
+                        dataset['impulse_response'],
+                        tensordict.utils.expand_right(
+                            list(dataloader['impulse_response'])[0][None], (n_models, mhp.O_D)
+                        ).flatten(),
+                        base_module,
+                        flattened_ensembled_learned_kfs,
+                        dev_type
+                    )
+                r['impulse_target'] = torch.Tensor(impulse_result['prediction_target']).mean(-1)
+                r['impulse_target_norm'] = torch.Tensor(impulse_result['naive_target']).mean(-1)
+
+            result.append(r)
+
             if batch % ehp.print_frequency == 0:
-                print(f"\tTrain loss: {losses.mean().item():>8f}, Overfit loss: {overfit_losses.mean().item():>8f}, Valid loss: {valid_losses.mean().item():>8f}, Divergences: {divergences.sum().item()}  [{batch * thp.batch_size:>5d}/{(thp.iterations_per_epoch * thp.batch_size):>5d}]")
+                mean_losses = [
+                    utils.remove_nans_and_infs(loss).median().item()
+                    for loss in (losses, overfit_losses, valid_result['prediction_true'])]
+                print(
+                    f'\tTrain loss: {mean_losses[0]:>8f}, Overfit loss: {mean_losses[1]:>8f}, Valid loss: {mean_losses[2]:>8f}  [{batch * thp.batch_size:>5d}/{(thp.iterations_per_epoch * thp.batch_size):>5d}]')
+
+        optimizer.zero_grad()
+        torch.sum(losses[~mask]).backward()
+        optimizer.step()
+
+    return torch.stack(result, dim=1)
+
+
+def generate_dataset(
+        systems: List[LinearSystem],
+        batch_size: int,
+        seq_length: int,
+        dev_type: str
+) -> TensorDict[str, torch.Tensor]:
+    state = torch.randn(len(systems), batch_size, systems[0].S_D, device=dev_type)
+    inputs = torch.randn(len(systems), batch_size, seq_length, systems[0].I_D, device=dev_type)
+    observations = utils.run_stacked_modules(
+        base_module=systems[0],
+        stacked_modules=torch.func.stack_module_state(systems)[0],
+        args=(state, inputs),
+        kwargs=dict()
+    )['observation']
 
     return TensorDict({
-        'training_loss': torch.stack(train_losses_list, dim=1),
-        'overfit_loss': torch.stack(overfit_losses_list, dim=1),
-        'validation_loss': torch.stack(valid_losses_list, dim=1)
-    }, batch_size=(n_models, len(train_losses_list)))
+        'input': inputs,
+        'observation': observations
+    }, batch_size=(len(systems), batch_size, seq_length), device=dev_type)
+
+
+def generate_dataloader(seq_lengths: torch.Tensor, dev_type: str) -> ptu.data.DataLoader:
+    N = len(seq_lengths)
+    return ptu.data.DataLoader(
+        TensorDict({
+            'sequence': torch.arange(N),
+            'start': torch.zeros(N, dtype=torch.int),
+            'stop': seq_lengths
+        }, batch_size=(N,), device=dev_type),
+        batch_size=N,
+        collate_fn=lambda x: x
+    )
+
+
+def add_targets(
+        kfs: List[AnalyticalKF],
+        dataset: TensorDict[str, torch.Tensor] | TensorDictBase[str, torch.Tensor]
+) -> TensorDict[str, torch.Tensor]:
+    with torch.set_grad_enabled(False):
+        dataset['target'] = utils.run_stacked_modules(
+            base_module=kfs[0],
+            stacked_modules=torch.func.stack_module_state(kfs)[0],
+            args=dict(dataset),
+            kwargs={'steady_state': True}
+        )['observation_estimation']
+    return dataset
+
+
+def validate(
+        dataset: TensorDict[str, torch.Tensor],
+        base_kf: KF,
+        learned_kfs: TensorDictBase[str, torch.Tensor],
+        sequence_buffer: int,
+        dev_type: str
+) -> TensorDict[str, torch.Tensor]:
+    dataset_size, sequence_length = dataset.shape[1:]
+    dataloader = generate_dataloader(torch.full((dataset_size,), sequence_length), dev_type)
+
+    learned_kfs = learned_kfs.to(dev_type)
+
+    n_systems, ensemble_size = learned_kfs.shape
+    n_models = n_systems * ensemble_size
+
+    with torch.set_grad_enabled(False):
+        return test(
+            dataset[:, None].expand(n_systems, ensemble_size, dataset_size, sequence_length).flatten(0, 1),
+            tensordict.utils.expand_right(
+                list(dataloader)[0][None], (n_models, dataset_size)
+            ).flatten(),
+            base_kf,
+            dict(learned_kfs.flatten(0, 1)),
+            dev_type,
+            buffer=sequence_buffer
+        ).reshape(n_systems, ensemble_size, -1).cpu()
+
+
+def subtraction_normalized_validation_loss(
+        systems: List[LinearSystem],
+        base_kf: KF,
+        learned_kf_arr: np.ndarray[TensorDict],
+        dev_type: str
+) -> torch.Tensor:
+    systems = [sys.to(dev_type) for sys in systems]
+    ValidArgs = Namespace(
+        valid_dataset_size=500,
+        valid_sequence_length=800,
+        sequence_buffer=50
+    )
+    valid_dataset = generate_dataset(
+        systems=systems,
+        batch_size=ValidArgs.valid_dataset_size,
+        seq_length=ValidArgs.valid_sequence_length,
+        dev_type=dev_type
+    )
+
+    # Compute the empirical irreducible loss: [n_systems x 1 x valid_dataset_size]
+    analytical_kfs = list(map(AnalyticalKF, systems))
+    eil = validate(
+        dataset=valid_dataset,
+        base_kf=analytical_kfs[0],
+        learned_kfs=TensorDict(torch.func.stack_module_state(analytical_kfs)[0], batch_size=(len(systems),))[:, None],
+        sequence_buffer=ValidArgs.sequence_buffer,
+        dev_type=dev_type
+    )['prediction_true']
+
+    vl = torch.stack([validate(
+        dataset=valid_dataset,
+        base_kf=base_kf,
+        learned_kfs=learned_kf,
+        sequence_buffer=ValidArgs.sequence_buffer,
+        dev_type=dev_type
+    ) for learned_kf in learned_kf_arr.flatten()]).unflatten(0, learned_kf_arr.shape)['prediction_true']
+
+    return vl - eil
 
 
 # Full training scheme
 def run_training(
-    hp: Namespace,
-    ensembled_systems: Tuple[Dict[str, torch.DoubleTensor]],                # [N x ...]
-    flattened_ensembled_learned_kfs: Tuple[Dict[str, torch.DoubleTensor]],  # [NE x ...]
-    dev_type: str
-) -> Tuple[torch.DoubleTensor]:
-    mhp, thp, ehp = hp.model, hp.train, hp.experiment
+        model: type,
+        hp: Namespace,
+        systems: List[LinearSystem],  # [N x ...]
+        flattened_ensembled_learned_kfs: Dict[str, torch.nn.Parameter],  # [NE x ...]
+        irreducible_loss: torch.Tensor,  # [N x E]
+        dev_type: str
+) -> TensorDict:
+    shp, mhp, thp, ehp = hp.system, hp.model, hp.train, hp.experiment
+
+    n_models = ehp.n_systems * ehp.ensemble_size
 
     thp.train_sequence_length = (thp.total_train_sequence_length + thp.train_dataset_size - 1) // thp.train_dataset_size
     thp.valid_sequence_length = (thp.total_valid_sequence_length + thp.valid_dataset_size - 1) // thp.valid_dataset_size
 
+    train_rem = thp.train_dataset_size * thp.train_sequence_length - thp.total_train_sequence_length
+    train_mask = torch.full((thp.train_dataset_size, thp.train_sequence_length), True, device=dev_type)
+    if train_rem > 0:
+        train_mask[-train_rem:, -1] = False
+    train_sequence_lengths = torch.sum(train_mask, dim=1)
+
     if thp.optim_type == 'GD':
-        thp.subsequence_length = thp.train_sequence_length  # f'For full GD, subsequence length {thp.subsequence_length} must be equal to train sequence length {thp.train_sequence_length}'
-        thp.batch_size = thp.train_dataset_size             # f'For full GD, batch size {thp.batch_size} must equal train dataset size {thp.train_dataset_size}'
+        thp.subsequence_length = thp.train_sequence_length
+        thp.batch_size = thp.train_dataset_size
     else:
         thp.subsequence_length = min(thp.subsequence_length, thp.train_sequence_length)
 
     # Ensembled dataset setup
-    total_dataset_size = thp.train_dataset_size + thp.valid_dataset_size
-    initial_state = torch.randn(ehp.n_systems, ehp.ensemble_size * total_dataset_size, mhp.S_D, device=dev_type)                                # [N x EB x S_D]
-
-    base_LS = LinearSystem.sample_stable_system(mhp)
-    def propagate_system(system_dicts, state, inputs):
-        return torch.func.functional_call(base_LS, system_dicts, (state, inputs))
-    vmap_propagate_system = torch.func.vmap(propagate_system, randomness='different')
-
-    # Ensembled training data
-    train_initial_state = initial_state[:, :ehp.ensemble_size * thp.train_dataset_size]                                                         # [N x ES_T x S_D]
-    train_inputs = torch.randn(ehp.n_systems, ehp.ensemble_size * thp.train_dataset_size, thp.train_sequence_length, mhp.I_D, device=dev_type)  # [N x ES_T x L_T x I_D]
-    train_observations = vmap_propagate_system(ensembled_systems, train_initial_state, train_inputs)['observation']                             # [N x ES_T x L_T x O_D]
-
-    # Ensembled validation data
-    valid_initial_state = initial_state[:, ehp.ensemble_size * thp.train_dataset_size:]                                                         # [N x ES_V x S_D]
-    valid_inputs = torch.randn(ehp.n_systems, ehp.ensemble_size * thp.valid_dataset_size, thp.valid_sequence_length, mhp.I_D, device=dev_type)  # [N x ES_V x L_V x I_D]
-    valid_observations = vmap_propagate_system(ensembled_systems, valid_initial_state, valid_inputs)['observation']                             # [N x ES_V x L_V x O_D]
-
-    # Datasets
-    train_dataset = (
-        train_inputs.view(ehp.n_systems, ehp.ensemble_size, thp.train_dataset_size, thp.train_sequence_length, mhp.I_D),                # [N x E x S_T x L_T x I_D]
-        train_observations.view(ehp.n_systems, ehp.ensemble_size, thp.train_dataset_size, thp.train_sequence_length, mhp.O_D)           # [N x E x S_T x L_T x O_D]
-    )
-    valid_dataset = (
-        valid_inputs.view(ehp.n_systems, ehp.ensemble_size, thp.valid_dataset_size, thp.valid_sequence_length, mhp.I_D),                # [N x E x S_V x L_V x I_D]
-        valid_observations.view(ehp.n_systems, ehp.ensemble_size, thp.valid_dataset_size, thp.valid_sequence_length, mhp.O_D)           # [N x E x S_V x L_V x O_D]
-    )
+    """ Datasets
+        train_dataset = {
+            'input': [NE x S_T x L_T x I_D],
+            'observation': [NE x S_T x L_T x O_D]
+        }
+        valid_dataset = {
+            'input': [NE x S_V x L_V x I_D],
+            'observation': [NE x S_V x L_V x O_D]
+        }
+    """
+    kfs = list(map(AnalyticalKF, systems))
+    train_dataset = generate_dataset(
+        systems=systems,
+        batch_size=ehp.ensemble_size * thp.train_dataset_size,
+        seq_length=thp.train_sequence_length,
+        dev_type=dev_type
+    ).reshape(n_models, thp.train_dataset_size, thp.train_sequence_length)
+    valid_dataset = add_targets(kfs, generate_dataset(
+        systems=systems,
+        batch_size=ehp.ensemble_size * thp.valid_dataset_size,
+        seq_length=thp.valid_sequence_length,
+        dev_type=dev_type
+    )).reshape(n_models, thp.valid_dataset_size, thp.valid_sequence_length)
 
     # Dataloaders indexing into datasets to save computation
-    start_min = thp.replay_buffer if thp.subsequence_initial_mode == 'replay_buffer' else 0
-    start_max = thp.train_sequence_length - thp.subsequence_length + 1
-
     total_batch_size = ehp.n_systems * ehp.ensemble_size * thp.batch_size
-    
+
     if thp.optim_type == 'GD':
-        train_index_dataset = Zipper(
-            SequenceWrapper(torch.arange(thp.train_dataset_size, device=dev_type).repeat(ehp.n_systems * ehp.ensemble_size * thp.iterations_per_epoch)),
-            SequenceWrapper(torch.zeros(total_batch_size * thp.iterations_per_epoch, dtype=int, device=dev_type))
-        )
+        train_index_dataset = TensorDict({
+            'sequence': torch.arange(thp.train_dataset_size).repeat(thp.iterations_per_epoch * n_models),
+            'start': torch.zeros(total_batch_size, dtype=torch.int).repeat(thp.iterations_per_epoch),
+            'stop': train_sequence_lengths.repeat(thp.iterations_per_epoch * n_models)
+        }, batch_size=(thp.iterations_per_epoch * total_batch_size,), device=dev_type)
         train_index_sampler = None
     else:
-        train_index_dataset = Zipper(
-            SequenceWrapper(torch.arange(thp.train_dataset_size, device=dev_type).repeat_interleave(start_max - start_min, dim=0)),
-            SequenceWrapper(torch.arange(start_min, start_max, device=dev_type).repeat(thp.train_dataset_size))
-        )
+        sequence_indices, start_indices = torch.where(train_mask[:, thp.subsequence_length - 1:])
+        train_index_dataset = TensorDict({
+            'sequence': sequence_indices,
+            'start': start_indices,
+            'stop': start_indices + thp.subsequence_length
+        }, batch_size=(len(sequence_indices),), device=dev_type)
         train_index_sampler = ptu.data.RandomSampler(
             train_index_dataset,
             replacement=True,
             num_samples=thp.iterations_per_epoch * total_batch_size
         )
 
-    overfit_index_dataloader = ptu.data.DataLoader(Zipper(
-        SequenceWrapper(torch.arange(thp.train_dataset_size, device=dev_type)),
-        SequenceWrapper(torch.zeros(thp.train_dataset_size, device=dev_type))
-    ), batch_size=thp.train_dataset_size)
+    def identity(x): return x
+    overfit_index_dataloader = generate_dataloader(train_sequence_lengths, dev_type)
+    valid_index_dataloader = generate_dataloader(torch.full((thp.valid_dataset_size,), thp.valid_sequence_length), dev_type)
 
-    valid_index_dataloader = ptu.data.DataLoader(Zipper(
-        SequenceWrapper(torch.arange(thp.valid_dataset_size, device=dev_type)),
-        SequenceWrapper(torch.zeros(thp.valid_dataset_size, device=dev_type))
-    ), batch_size=thp.valid_dataset_size)
+    """ Ensembled impulse response
+        ir_inputs: [N x EO_D x L_I x I_D]
+        ir_observations: [N x EO_D x L_I x O_D]
+    """
+    if thp.ir_length is not None:
+        ir_dataset = add_targets(kfs, TensorDict({
+            'input': torch.zeros(shp.O_D, thp.ir_length, shp.I_D),
+            'observation': torch.cat([
+                torch.eye(shp.O_D)[:, None, :],
+                torch.zeros(shp.O_D, thp.ir_length - 1, shp.O_D)
+            ], dim=1),
+        }, batch_size=(shp.O_D, thp.ir_length), device=dev_type).expand(ehp.n_systems, shp.O_D, thp.ir_length))
+        ir_dataset = ir_dataset[:, None].expand(ehp.n_systems, ehp.ensemble_size, shp.O_D, thp.ir_length).flatten(0, 1)
+        ir_index_dataloader = generate_dataloader(torch.full((shp.O_D,), thp.ir_length), dev_type)
+    else:
+        ir_dataset, ir_index_dataloader = None, None
 
     # Create optimizer
-    optimizer, scheduler = get_optimizer(tuple(flattened_ensembled_learned_kfs[0].values()), thp)
+    optimizer, scheduler = get_optimizer(tuple(flattened_ensembled_learned_kfs.values()), thp)
 
     results = []
-    for t in range(thp.epochs):
+    done = False
+    t = 0
+    done_matrix = torch.full((ehp.n_systems, ehp.ensemble_size), False, device=dev_type)
+    while not done:
         print(f'Epoch {t + 1} ' + '-' * 100)
-            
+
         train_index_dataloader = ptu.data.DataLoader(
             train_index_dataset,
             sampler=train_index_sampler,
-            batch_size=total_batch_size
+            batch_size=total_batch_size,
+            collate_fn=identity
         )
 
-        results.append(train(hp, {
+        results.append(train(model, hp, {
             'training': train_dataset,
-            'validation': valid_dataset
+            'validation': valid_dataset,
+            'impulse_response': ir_dataset
         }, {
             'training': train_index_dataloader,
             'overfit': overfit_index_dataloader,
-            'validation': valid_index_dataloader
+            'validation': valid_index_dataloader,
+            'impulse_response': ir_index_dataloader
         }, flattened_ensembled_learned_kfs, optimizer, dev_type).reshape(ehp.n_systems, ehp.ensemble_size, -1))
 
-        scheduler.step()
+        scheduler(None)
+        print(f'LR: {optimizer.param_groups[0]["lr"]}')
+
+        ol = torch.Tensor(results[-1]['overfit'][:, :, -1])
+        divergences = torch.isnan(ol) + torch.isinf(ol)
+        t += 1
+        if thp.epochs is None:
+            il = irreducible_loss
+            gn = torch.Tensor(results[-1]['gradient_norm'][:, :, -1])
+            convergence_metric = gn / (il[:, None] ** 2)
+            convergences = convergence_metric < 0.01
+            torch.set_printoptions(precision=4, sci_mode=False, linewidth=120)
+            print(f'Convergence metric:\n{convergence_metric} < 0.01')
+
+            done_matrix += convergences + divergences
+            done = torch.all(done_matrix)
+        else:
+            done = t == thp.epochs
+        for n in range(ehp.n_systems):
+            print('\t' + ''.join(['\u25A0' if divergences[n, e] else '\u25A1' for e in range(ehp.ensemble_size)]))
 
     return torch.cat(results, dim=-1)
 
 
 # Experimentation
-def load_experiment(output_fname: str, dev_type: str='cuda') -> TensorDict[str, Union[torch.DoubleTensor, TensorDict]]:
+def load_experiment(output_fname: str, dev_type: str = 'cuda') -> TensorDict[str, Union[torch.Tensor, TensorDict]]:
     with open(output_fname, 'rb') as fp:
-        # return pickle.load(fp)
         return torch.load(fp, map_location=torch.device(dev_type))
 
 
 def run_experiment(
-    hp: Namespace,
-    dev_type: str,
-    systems: Sequence[LinearSystem]=None,
-    system_kwargs: Dict[str, torch.DoubleTensor]=None,
-    output_mode: str='load',
-    output_kwargs: Dict[str, Any]=dict(),
-) -> TensorDict[str, Union[torch.DoubleTensor, TensorDict]]:
-
-    mhp, thp, ehp = hp.model, hp.train, hp.experiment
+        model: type,
+        hp: Namespace,
+        systems: List[LinearSystem],
+        dev_type: str
+) -> Dict[str, TensorDict]:
+    shp, mhp, thp, ehp = hp.system, hp.model, hp.train, hp.experiment
     print('=' * 200)
-    print(getattr(ehp, 'exp_name', 'Ensembled experiment'))
+    print(ehp.exp_name)
     print('=' * 200)
     print("Hyperparameters:", json.dumps(utils.toJSON(hp), indent=4))
-
-    # If we are performing more experiments on the same system, load system configurations from existing experiments
-    output_dir = f'output/{ehp.output_dir}/{ehp.exp_name}'
-    output_fname = f'{output_dir}/{output_kwargs.get("fname", "result")}.pt'
-    if output_mode == 'load':
-        if os.path.exists(output_fname):
-            print()
-            return load_experiment(output_fname)
-        else:
-            output_mode = 'concatenate'
-    if output_mode == 'concatenate' and output_kwargs['dim'] == 2 and os.path.exists(output_fname):
-        with open(output_fname, 'rb') as fp:
-            # current_result = pickle.load(fp)
-            current_result = torch.load(fp, map_location=torch.device(dev_type))
-        systems = [
-            LinearSystem.sample_stable_system(mhp).to(dev_type)
-        for _ in range(ehp.n_systems)]
-        for n, sys in enumerate(systems):
-            sys.load_state_dict(current_result['system'][n, 0])
-    else:
-        if systems is None:
-            systems = [None for _ in range(ehp.n_systems)]
-        systems = [
-            LinearSystem.sample_stable_system(mhp, base_system=sys, **system_kwargs).to(dev_type)
-        for sys in systems]
     print('=' * 200)
 
-    # Ensemble linear systems to generate data
-    ensembled_systems = torch.func.stack_module_state(systems)
-
     # Ensemble learned Kalman Filters to be trained
+    n_models = ehp.n_systems * ehp.ensemble_size
     flattened_learned_kfs = [
-        RnnKF(mhp.S_D, mhp.I_D, mhp.O_D).to(dev_type)
-    for _ in range(ehp.n_systems * ehp.ensemble_size)]
-    flattened_ensembled_learned_kfs = torch.func.stack_module_state(flattened_learned_kfs)
-    [p.to(dev_type).requires_grad_() for p in flattened_ensembled_learned_kfs[0].values()]
+        model(mhp).to(dev_type)
+        for _ in range(n_models)]
+    flattened_ensembled_learned_kfs = torch.func.stack_module_state(flattened_learned_kfs)[0]
 
-    irreducible_loss = torch.DoubleTensor([torch.trace(sys.S_observation_inf) for sys in systems])
+    if getattr(thp, 'initialization', None) is not None:
+        initialization = thp.initialization.expand(ehp.n_systems, ehp.ensemble_size).flatten()
+        for k in flattened_ensembled_learned_kfs:
+            if k in initialization.keys():
+                flattened_ensembled_learned_kfs[k] = initialization[k].clone().to(dev_type).requires_grad_()
+
+    irreducible_loss = torch.stack([torch.trace(sys.S_observation_inf) for sys in systems])
     print(f'Mean theoretical irreducible loss: {torch.mean(irreducible_loss).item()}')
 
     # Setup result and run training
-    result = {
-        'system': tensordict.utils.expand_right(torch.stack([
-            TensorDict(sys.state_dict(), batch_size=())
-        for sys in systems]), (ehp.n_systems, ehp.ensemble_size)),
-        'learned_kf': torch.stack([
-            TensorDict(learned_kf.state_dict(), batch_size=())
-        for learned_kf in flattened_learned_kfs]).reshape(ehp.n_systems, ehp.ensemble_size),
-        'irreducible_loss': tensordict.utils.expand_right(irreducible_loss, (ehp.n_systems, ehp.ensemble_size))
+    return {
+        'output': run_training(
+            model,
+            hp,
+            systems,
+            flattened_ensembled_learned_kfs,
+            irreducible_loss,
+            dev_type
+        ).detach().cpu(),
+        'learned_kf': TensorDict(
+            flattened_ensembled_learned_kfs, batch_size=(n_models,), device='cpu'
+        ).reshape(ehp.n_systems, ehp.ensemble_size).detach()
     }
-    result.update(run_training(hp, ensembled_systems, flattened_ensembled_learned_kfs, dev_type))
-    result = TensorDict(result, batch_size=(ehp.n_systems, ehp.ensemble_size))
-
-    # Setup output directory
-    if output_mode == 'none':
-        pass
-    elif output_mode == 'reset' or output_mode == 'concatenate':
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-            with open(f'{output_dir}/hparams.json', 'w') as fp:
-                json.dump(utils.toJSON(hp), fp, indent=4)
-        if output_mode == 'concatenate' and os.path.exists(output_fname):
-            with open(output_fname, 'rb') as fp:
-                # current_result = pickle.load(fp)
-                current_result = torch.load(fp, map_location=torch.device(dev_type))
-            try:
-                result = torch.cat([current_result, result], dim=output_kwargs['dim'])
-            except Exception:
-                pass
-        with open(output_fname, 'wb') as fp:
-            # pickle.dump(result, fp)
-            torch.save(result, fp)
-    print()
-
-    return result
 
 
 def run_experiments(
-    hp: Namespace,
-    iterp: List[str],
-    dev_type: str,
-    systems: Sequence[LinearSystem]=None,
-    system_kwargs: Dict[str, torch.DoubleTensor]=None,
-    output_kwargs: Dict[str, Any]=dict(),
-) -> TensorDict[str, Union[torch.DoubleTensor, TensorDict]]:
-    
-    mhp, thp, ehp = hp.model, hp.train, hp.experiment
+        model: type,
+        hp: Namespace,
+        iterp: OrderedDict[str, Dict[str, Sequence[Any]]],
+        dev_type: str,
+        output_kwargs: Dict[str, Any],
+        systems: List[LinearSystem] = None,
+        system_kwargs: Dict[str, torch.Tensor] = MappingProxyType({}),
+) -> TensorDict[str, torch.Tensor | TensorDict]:
+
+    shp, mhp, thp, ehp = hp.system, hp.model, hp.train, hp.experiment
+
+    # Setup file names
+    ehp.exp_name = exp_name = f'{utils.class_name(model)}_{ehp.exp_name}'
+    output_dir = f'output/{output_kwargs["dir"]}/{exp_name}'
+    output_fname = f'{output_dir}/{output_kwargs["fname"]}.pt'
+    output_fname_backup = f'{output_dir}/{output_kwargs["fname"]}_backup.pt'
+
+    # Setup hyperparameter tuning shape
+    zipped_params, param_shape = collections.OrderedDict(), []
+    for param_group, params in iterp.items():
+        zpn, zpv = tuple(params.keys()), tuple(params.values())
+        zipped_params[param_group] = zip([zpn] * len(zpv[0]), zip(*zpv))
+
+        param_shape.append(len(zpv[0]))
+        for n, v in params.items():
+            idx = n.rfind('.')
+            setattr(utils.rgetattr(hp, n[:idx]), n[idx + 1:], v)
+
+    # Setup result dict
+    if os.path.exists(output_fname):
+        try:
+            with open(output_fname, 'rb') as fp:
+                result = torch.load(fp, map_location=torch.device('cpu'))
+        except RuntimeError:
+            with open(output_fname_backup, 'rb') as fp:
+                result = torch.load(fp, map_location=torch.device('cpu'))
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+        result = {
+            'time': torch.zeros(param_shape, dtype=torch.float),
+            'output': np.empty(param_shape, dtype=TensorDict),
+            'learned_kf': np.empty(param_shape, dtype=TensorDict)
+        }
+
+    sys_fname = f'output/{output_kwargs["dir"]}/systems.pt'
+    if os.path.exists(sys_fname):
+        print('Systems found')
+        with open(sys_fname, 'rb') as fp:
+            systems = torch.load(fp, map_location=torch.device(dev_type))
+    elif systems is None:
+        print('No systems found, generating new systems')
+        systems = [
+            LinearSystem.sample_stable_system(hp.system, **system_kwargs).to(dev_type)
+            for _ in range(hp.experiment.n_systems)]
+    if not os.path.exists(sys_fname):
+        with open(sys_fname, 'wb') as fp:
+            torch.save(systems, fp)
+
+    # Run experiments for hyperparameter tuning
     print('=' * 200)
-    print(getattr(ehp, 'exp_name', 'Ensembled experiment'))
+    print(hp.experiment.exp_name)
     print('=' * 200)
     print("Hyperparameters:", json.dumps(utils.toJSON(hp), indent=4))
 
-    output_dir = f'output/{ehp.output_dir}/{ehp.exp_name}'
-    output_fname = f'{output_dir}/{output_kwargs.get("fname", "result")}.pt'
-    
-    if os.path.exists(output_fname):
-        with open(output_fname, 'rb') as fp:
-            result = torch.load(fp, map_location=torch.device(dev_type))
-    else:
-        result = TensorDict(dict(), batch_size=(ehp.n_systems, ehp.ensemble_size))
-        os.makedirs(output_dir, exist_ok=True)
-        with open(output_fname, 'wb') as fp:
-            torch.save(result, fp)
+    counter = 0
+    for enumerated_args in itertools.product(*map(enumerate, zipped_params.values())):
+        # Setup experiment hyperparameters
+        indices, args = zip(*enumerated_args)
+        experiment_hp = copy.deepcopy(hp)
+        for arg_names, arg_values in args:
+            for n, v in zip(arg_names, arg_values):
+                idx = n.rfind('.')
+                setattr(utils.rgetattr(experiment_hp, n[:idx]), n[idx + 1:], v)
 
-    for args in itertools.product(*(thp.__dict__[p] for p in iterp)):
-        str_args = tuple(map(str, args))
-        if str_args not in result.keys(include_nested=True):
-            exp_hp = copy.copy(hp)
-            exp_hp.train = copy.copy(hp.train)
-            exp_hp.train.__dict__.update({k: v for k, v in zip(iterp, args)})
+        done = result['done'] if 'done' in result else (result['time'] > 0)
+        if not done[indices]:
+            print('=' * 200)
+            print(f'Experiment {done.sum().item()}/{done.numel()}')
 
-            result[str_args] = run_experiment(
-                exp_hp,
-                dev_type,
-                systems=systems,
-                system_kwargs=system_kwargs,
-                output_mode='none',
-                output_kwargs=output_kwargs
+            start_t = time.perf_counter()
+            experiment_result = run_experiment(
+                model,
+                experiment_hp,
+                systems,
+                dev_type
             )
+            end_t = time.perf_counter()
+            result['output'][indices] = experiment_result['output']
+            result['learned_kf'][indices] = experiment_result['learned_kf']
+            result['time'][indices] = end_t - start_t
 
+            print('\n' + '#' * 200)
+            if counter % ehp.backup_frequency == 0:
+                with open(output_fname_backup, 'wb') as fp:
+                    torch.save(result, fp)
+                print(f'{os.path.getsize(output_fname_backup)} bytes written to {output_fname_backup}')
             with open(output_fname, 'wb') as fp:
                 torch.save(result, fp)
-    
+                print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
+            print('#' * 200 + '\n')
+
+            counter += 1
+
     with open(f'{output_dir}/hparams.json', 'w') as fp:
         json.dump(utils.toJSON(hp), fp, indent=4)
-    
+
     return result
+
+
+
+
