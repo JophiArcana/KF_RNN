@@ -61,7 +61,7 @@ class RnnKF(KF):
         }
     """
     def forward(self, trace: Dict[str, torch.Tensor], mode: str = None) -> Dict[str, torch.Tensor]:
-        state, inputs, observations = KF.extract(trace, self.S_D)
+        state, inputs, observations = self.extract(trace, self.S_D)
         L = inputs.shape[1]
 
         if mode is None:

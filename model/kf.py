@@ -1,15 +1,16 @@
-from argparse import Namespace
 import torch
 import torch.nn as nn
 from typing import *
 
 
 class KF(nn.Module):
-    @classmethod
-    def extract(cls, trace: Dict[str, torch.Tensor], S_D: int) -> Sequence[torch.Tensor]:
+    def extract(self, trace: Dict[str, torch.Tensor], S_D: int) -> Sequence[torch.Tensor]:
         inputs, observations = trace['input'], trace['observation']
         B, L = observations.shape[:2]
-        state = (torch.randn if torch.is_grad_enabled() else torch.zeros)((B, S_D), device=inputs.device)
+        if self.training:
+            state = torch.randn((B, S_D), device=inputs.device)
+        else:
+            state = torch.zeros((B, S_D), device=inputs.device)
         return state, inputs, observations
 
     """ forward

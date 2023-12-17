@@ -25,7 +25,7 @@ class AnalyticalKF(KF):
         }
     """
     def forward(self, trace: Dict[str, torch.Tensor], steady_state: bool = False) -> Dict[str, torch.Tensor]:
-        state, inputs, observations = KF.extract(trace, self.system.S_D)
+        state, inputs, observations = self.extract(trace, self.system.S_D)
         B = state.shape[0]
         dev = self.system.F.device
 
