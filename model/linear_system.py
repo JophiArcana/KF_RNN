@@ -6,7 +6,7 @@ from argparse import Namespace
 from typing import *
 
 from infrastructure import utils
-from infrastructure.settings import dev_type
+from infrastructure.settings import device
 
 
 class LinearSystem(nn.Module):
@@ -22,27 +22,45 @@ class LinearSystem(nn.Module):
         params.update(kwargs)
         return LinearSystem(params, shp.input_enabled)
 
+    def _clear_state(self):
+        self._state = None
+
+    def _initialize_state(self, batch_size: int):
+        # self._state = nn.Parameter(torch.randn((batch_size, self.S_D), device=dev_type) / (self.S_D ** 0.5), requires_grad=False)
+        self._state = nn.Parameter(torch.randn((batch_size, self.S_D), device=device), requires_grad=False)
+
     @classmethod
     def generate_dataset(cls,
                          systems: List[nn.Module],
                          batch_size: int,
                          seq_length: int
     ) -> TensorDict[str, torch.Tensor]:
-        state = torch.randn(len(systems), batch_size, systems[0].S_D, device=dev_type)
-        inputs = torch.randn(len(systems), batch_size, seq_length, systems[0].I_D, device=dev_type)
+        for sys in systems:
+            sys._clear_state()
+        return LinearSystem.continue_dataset(systems, batch_size, seq_length)
 
+    @classmethod
+    def continue_dataset(cls,
+                         systems: List[nn.Module],
+                         batch_size: int,
+                         seq_length: int
+    ) -> TensorDict[str, torch.Tensor]:
+        for sys in systems:
+            if sys._state is None:
+                sys._initialize_state(batch_size)
+        inputs = torch.randn(len(systems), batch_size, seq_length, systems[0].I_D, device=device)
         with torch.set_grad_enabled(False):
             observations = utils.run_stacked_modules(
                 base_module=systems[0],
                 stacked_modules=torch.func.stack_module_state(systems)[0],
-                args=(state, inputs),
+                args=inputs,
                 kwargs=dict()
             )['observation']
 
         return TensorDict({
             'input': inputs,
             'observation': observations
-        }, batch_size=(len(systems), batch_size, seq_length), device=dev_type)
+        }, batch_size=(len(systems), batch_size, seq_length), device=device)
 
     def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
         super().__init__()
@@ -63,25 +81,29 @@ class LinearSystem(nn.Module):
         self.sqrt_S_W = nn.Parameter(sqrt_S_W, requires_grad=False)                 # S_D x S_D
         self.sqrt_S_V = nn.Parameter(sqrt_S_V, requires_grad=False)                 # O_D x O_D
 
-        self.S_W: nn.Parameter = nn.Parameter(self.sqrt_S_W @ self.sqrt_S_W.T, requires_grad=False)
-        self.S_V: nn.Parameter = nn.Parameter(self.sqrt_S_V @ self.sqrt_S_V.T, requires_grad=False)
+        self.S_W = nn.Parameter(self.sqrt_S_W @ self.sqrt_S_W.T, requires_grad=False)
+        self.S_V = nn.Parameter(self.sqrt_S_V @ self.sqrt_S_V.T, requires_grad=False)
 
         S_state_inf_intermediate = torch.Tensor(sc.linalg.solve_discrete_are(self.F.T, self.H.T, self.S_W, self.S_V))
         self.S_observation_inf = nn.Parameter(self.H @ S_state_inf_intermediate @ self.H.T + self.S_V, requires_grad=False)
         self.K = nn.Parameter(S_state_inf_intermediate @ self.H.T @ torch.inverse(self.S_observation_inf), requires_grad=False)
+        self._M = nn.Parameter(torch.eye(self.S_D) - self.K @ self.H, requires_grad=False)
+
+        self._state = None
 
     def forward(self,
-                state: torch.Tensor,            # [B x S_D]
-                inputs: torch.Tensor            # [B x T x I_D]
-    ) -> Dict[str, torch.Tensor]:               # [B x T x S_D], [B x T x O_D]
+                inputs: torch.Tensor    # [B x T x I_D]
+    ) -> Dict[str, torch.Tensor]:       # [B x T x S_D], [B x T x O_D]
         B, T, _ = inputs.shape
-        W = (torch.randn(B * T, self.S_D, device=dev_type) @ self.sqrt_S_W.T).view(B, T, self.S_D)
-        V = (torch.randn(B * T, self.O_D, device=dev_type) @ self.sqrt_S_V.T).view(B, T, self.O_D)
+        W = torch.randn(B, T, self.S_D, device=device) @ self.sqrt_S_W.T
+        V = torch.randn(B, T, self.O_D, device=device) @ self.sqrt_S_V.T
 
         states, observations = [], []
         for i in range(inputs.shape[1]):
-            states.append(state := state @ self.F.T + inputs[:, i] @ self.B.T + W[:, i])
-            observations.append(state @ self.H.T + V[:, i])
+            self._state = nn.Parameter(self._state @ self.F.T + inputs[:, i] @ self.B.T + W[:, i], requires_grad=False)
+
+            states.append(self._state)
+            observations.append(self._state @ self.H.T + V[:, i])
 
         return {
             'state': torch.stack(states, dim=1),

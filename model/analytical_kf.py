@@ -5,7 +5,7 @@ from tensordict import TensorDict, TensorDictBase
 
 from model.sequential_kf import SequentialKF
 from model.linear_system import LinearSystem
-from infrastructure.settings import dev_type
+from infrastructure.settings import device
 
 
 class AnalyticalKF(SequentialKF):
@@ -49,7 +49,7 @@ class AnalyticalKF(SequentialKF):
             B = state.shape[0]
 
             state_estimation = state
-            state_covariance = torch.zeros((state.shape[1], state.shape[1]), device=dev_type)
+            state_covariance = torch.zeros((state.shape[1], state.shape[1]), device=device)
 
             state_estimations, observation_estimations = [], []
             state_covariances, observation_covariances = [], []
@@ -68,7 +68,7 @@ class AnalyticalKF(SequentialKF):
 
                 K = state_covariance @ self.H.T @ torch.linalg.inv(observation_covariance)
                 state_covariances.append(
-                    state_covariance := (torch.eye(state.shape[1], device=dev_type) - K @ self.H) @ state_covariance
+                    state_covariance := (torch.eye(state.shape[1], device=device) - K @ self.H) @ state_covariance
                 )
 
                 # Update

@@ -23,8 +23,8 @@ BaseTrainArgs = Namespace(
     batch_size=128,
 
     # Optimizer
-    optim_type="Adam",  # {"GD", "SGD", "SGDMomentum", "Adam"}
-    scheduler="cosine",
+    optim_type="Adam",          # {"GD", "SGD", "SGDMomentum", "Adam"}
+    scheduler="exponential",    # {"exponential", "cosine"}
     momentum=0.9,
     min_lr=1.e-6,
     max_lr=2.e-2,
@@ -33,9 +33,10 @@ BaseTrainArgs = Namespace(
     num_restarts=8,
     warmup_duration=100,
     weight_decay=0.1,
-    lr_decay=0.995,
+    lr_decay=0.993,
 
     # Iteration
+    epochs=2000,
     iterations_per_epoch=20
 )
 BaseExperimentArgs = Namespace(
@@ -48,7 +49,7 @@ def load_system_and_args(folder: str):
     A = torch.tensor(np.loadtxt(f'{folder}/A.out', delimiter=','))
     B = torch.tensor(np.loadtxt(f'{folder}/B.out', delimiter=','))[:, None]
     C = torch.tensor(np.loadtxt(f'{folder}/C.out', delimiter=','))[None]
-    input_enabled = bool(torch.all(torch.isclose(B, torch.zeros_like(B))))
+    input_enabled = not bool(torch.all(torch.isclose(B, torch.zeros_like(B))))
 
     S_D = A.shape[0]
     O_D = C.shape[0]

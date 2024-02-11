@@ -1,5 +1,8 @@
+import torch
 
-dev_type: str = 'cuda'
+
+device: str = 'cuda'
+dtype: torch.dtype = torch.float64
 
 
 

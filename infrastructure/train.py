@@ -1,4 +1,5 @@
 import collections
+import copy
 from argparse import Namespace
 from inspect import signature
 from typing import *
@@ -10,7 +11,7 @@ import torch.optim as optim
 import torch.utils.data
 from tensordict import TensorDict
 
-from infrastructure.settings import dev_type
+from infrastructure.settings import device
 from model.kf import KF
 
 
@@ -47,7 +48,7 @@ def get_optimizer(params, hp):
 
 # Training
 TrainFunc = Callable[[
-    Namespace,
+    Dict[str, Any],
     Dict[str, Any],
     Dict[str, nn.Parameter],
     optim.Optimizer
@@ -55,18 +56,16 @@ TrainFunc = Callable[[
 
 
 def train(
-        hp: Namespace,
+        shared: Dict[str, Any],
         exclusive: Dict[str, Any],
         flattened_ensembled_learned_kfs: Dict[str, nn.Parameter],
         optimizer: optim.Optimizer
 ) -> Tuple[torch.Tensor, bool]:
-    mhp, thp, ehp = hp.model, hp.train, hp.experiment
-    n_models = ehp.n_systems * ehp.ensemble_size
 
     result = []
     for batch, indices in enumerate(exclusive['training_dataloader']()):
         # DONE: Use indices to index into datasets and retrieve subsequences
-        indices = indices.reshape(n_models, -1)
+        indices = indices.reshape(shared['n_models'], -1)
         sequence_indices, start_indices, stop_indices = map(torch.Tensor, (
             indices['sequence'],
             indices['start'],
@@ -80,9 +79,9 @@ def train(
             subsequence_index: [NE x B x L_SS], Selects subsequence within the trace
         """
         subsequence_length = torch.max(stop_indices - start_indices)
-        subsequence_offset = torch.arange(subsequence_length.item(), device=dev_type)
+        subsequence_offset = torch.arange(subsequence_length.item(), device=device)
 
-        model_idx = torch.arange(n_models)[:, None, None]
+        model_idx = torch.arange(shared['n_models'])[:, None, None]
         sequence_idx = sequence_indices[:, :, None]
         subsequence_idx = start_indices[:, :, None] + subsequence_offset
 
@@ -117,8 +116,7 @@ def run_training(
         flattened_ensembled_learned_kfs: Dict[str, torch.nn.Parameter],  # [NE x ...]
         print_frequency: int = 10
 ) -> TensorDict:
-    shp, mhp, thp, ehp = hp.system, hp.model, hp.train, hp.experiment
-    n_models = ehp.n_systems * ehp.ensemble_size
+    shp, mhp, _thp, ehp = hp.system, hp.model, hp.train, hp.experiment
 
     # DONE: Check whether to use default or overridden training function provided by model
     training_funcs = getattr(mhp.model, 'train_override', lambda func: (func,))(train)
@@ -129,14 +127,15 @@ def run_training(
         print('-' * 200)
 
         # Create optimizer
+        thp = copy.deepcopy(_thp)
         optimizer, scheduler = get_optimizer(tuple(flattened_ensembled_learned_kfs.values()), thp)
 
         done, t = False, 0
-        done_matrix = torch.full((ehp.n_systems, ehp.ensemble_size), False, device=dev_type)
+        done_matrix = torch.full(shared['model_shape'], False, device=device)
 
         # DONE: Compute masking
         def truncation_mask(n: int) -> torch.Tensor:
-            return torch.Tensor(torch.arange(n, device=dev_type) >= thp.sequence_buffer)
+            return torch.Tensor(torch.arange(n, device=device) >= thp.sequence_buffer)
 
         overfit_mask = truncation_mask(thp.train_sequence_length) * exclusive['training_mask']
         valid_mask = truncation_mask(thp.valid_sequence_length)
@@ -157,6 +156,7 @@ def run_training(
                 'overfit',
                 'validation',
                 'validation_target',
+                'analytical_validation',
                 'impulse_target',
                 'gradient_norm'
             } - getattr(ehp, 'ignore_metrics', set()))
@@ -168,36 +168,48 @@ def run_training(
                 torch.sum(get_or_run('overfit', exclusive['training_dataset'], True)).backward()
                 return torch.sum(torch.stack([
                     torch.norm(v.grad, dim=[1, 2]) ** 2
-                    for v in flattened_ensembled_learned_kfs.values()]), dim=0)
+                    for v in flattened_ensembled_learned_kfs.values() if v.grad is not None]), dim=0)
+
+            def analytical_validation_():
+                # DONE: Add analytical validation error
+                with torch.set_grad_enabled(False):
+                    stacked_learned_kfs = TensorDict(flattened_ensembled_learned_kfs, batch_size=(shared['n_models'],))
+                    stacked_systems = TensorDict(torch.func.stack_module_state(shared['system'])[0], batch_size=(ehp.n_systems,))[:, None]
+                    return mhp.model.analytical_error(stacked_learned_kfs, stacked_systems).flatten()
 
             metric_dict: Dict[str, Callable[[], torch.Tensor]] = {
                 'overfit': get_evaluate_func('overfit', 'observation', exclusive['training_dataset'], mask=overfit_mask, grad_enabled=(thp.epochs is None) or ('gradient_norm' in metrics)),
                 'validation': get_evaluate_func('validation', 'observation', shared['validation_dataset'], mask=valid_mask),
                 'validation_target': get_evaluate_func('validation', 'target', shared['validation_dataset'], mask=valid_mask),
+                'analytical_validation': analytical_validation_,
                 'impulse_target': get_evaluate_func('impulse', 'target', shared['impulse_dataset']),
                 'gradient_norm': gradient_norm_
             }
 
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
-            r = TensorDict({m: metric_dict[m]().detach() for m in metrics}, batch_size=(n_models,))
+            r = TensorDict({m: metric_dict[m]().detach() for m in metrics}, batch_size=(shared['n_models'],))
 
             # DONE: Train on train dataset, passing in only train dataset and dataloader, and save the learning rate
-            scheduler(None)
-            train_result, done_override = training_func(hp, exclusive, flattened_ensembled_learned_kfs, optimizer)
+            if optimizer.param_groups[0]['lr'] >= thp.min_lr:
+                scheduler(None)
+            train_result, done_override = training_func(shared, exclusive, flattened_ensembled_learned_kfs, optimizer)
             r['training'] = train_result.detach()[:, 0]
-            r['learning_rate'] = torch.full((n_models,), (lr := optimizer.param_groups[0]['lr']))
+            r['learning_rate'] = torch.full((shared['n_models'],), (lr := optimizer.param_groups[0]['lr']))
 
-            results.append(r := r.reshape(ehp.n_systems, ehp.ensemble_size))
+            results.append(r := r.reshape(shared['model_shape']))
 
             # DONE: Print losses
             if (training_func is train and t % print_frequency == 0) or (training_func is not train):
                 mean_losses = collections.OrderedDict([
                     (loss_type, torch.Tensor(r[loss_type]).median(-1).values.mean())
-                    for loss_type in ('training', 'overfit', 'validation') if loss_type in {'training'} | metrics
+                    for loss_type in (
+                        'training',
+                        'overfit',
+                        'validation',
+                        'analytical_validation'
+                    ) if loss_type in {'training'} | metrics
                 ])
                 print(f'\tEpoch {t} --- {", ".join([f"{k}: {v:>8f}" for k, v in mean_losses.items()])}, LR: {lr}')
-                # for n in range(ehp.n_systems):
-                #     print('\t' + ''.join(['\u25A0' if divergences[n, e] else '\u25A1' for e in range(ehp.ensemble_size)]))
             t += 1
 
             # DONE: Check for divergence
@@ -205,7 +217,7 @@ def run_training(
                 ol = torch.Tensor(r['overfit'])
                 divergences = torch.isnan(ol) + torch.isinf(ol)
             else:
-                divergences = torch.full((ehp.n_systems, ehp.ensemble_size), False, device=dev_type)
+                divergences = torch.full(shared['model_shape'], False, device=device)
             if torch.any(divergences):
                 raise RuntimeError('Model diverged')
 
@@ -218,7 +230,7 @@ def run_training(
                 torch.set_printoptions(precision=4, sci_mode=False, linewidth=120)
                 print(f'Convergence metric:\n{convergence_metric} < {threshold}')
 
-                done_matrix += convergences + divergences
+                done_matrix += convergences
                 done = torch.all(done_matrix)
             else:
                 done = t == thp.epochs

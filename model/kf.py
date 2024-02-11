@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict, TensorDictBase
 
-from infrastructure.settings import dev_type
+from infrastructure.settings import device
 from infrastructure import utils
 
 
@@ -24,6 +24,27 @@ class KF(nn.Module):
             result_ = torch.mean(losses, dim=-1)
         return result_.mean(-1) if batch_mean else result_
 
+    @classmethod
+    def _train_with_initialization_and_error(cls,
+                                             shared: Dict[str, Any],
+                                             exclusive: Dict[str, Any],
+                                             flattened_ensembled_learned_kfs: Dict[str, nn.Parameter],
+                                             initialization_func: Callable[[
+                                                 Dict[str, Any],
+                                                 Dict[str, Any]
+                                             ], Tuple[Dict[str, torch.Tensor], torch.Tensor]]
+    ) -> Tuple[torch.Tensor, bool]:
+        done_override = (base_model := exclusive['base_model'])._initialization_error is not None
+        if not done_override:
+            initialization, error = initialization_func(shared, exclusive)
+            for k, v in flattened_ensembled_learned_kfs.items():
+                v.data = initialization[k].expand_as(v).clone()
+            base_model._initialization_error = error
+            error = KF.evaluate_run(0, exclusive['training_dataset']['observation'], mask=exclusive['training_mask'])
+        else:
+            error = base_model._initialization_error
+        return error[:, None], done_override
+
     def __init__(self):
         super().__init__()
         self.input_enabled = None
@@ -32,9 +53,9 @@ class KF(nn.Module):
         inputs, observations = trace['input'], trace['observation']
         B, L = observations.shape[:2]
         if self.training:
-            state = torch.randn((B, S_D), device=dev_type)
+            state = torch.randn((B, S_D), device=device)
         else:
-            state = torch.zeros((B, S_D), device=dev_type)
+            state = torch.zeros((B, S_D), device=device)
         return state, inputs, observations
 
     def run(self,
@@ -64,6 +85,20 @@ class KF(nn.Module):
     """
     def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
         raise NotImplementedError()
+
+    @classmethod
+    def analytical_error(cls,
+                         kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
+                         systems: TensorDict[str, torch.Tensor] # [B... x ...]
+    ) -> torch.Tensor:                                          # [B...]
+        raise NotImplementedError(f"Analytical error does not exist for model {cls}")
+
+    @classmethod
+    def to_sequential_batch(cls, kfs: TensorDict[str, torch.Tensor], input_enabled: bool) -> TensorDict[str, torch.Tensor]:
+        raise NotImplementedError(f"Model {cls} not convertible to sequential model")
+
+    def to_sequential(self) -> nn.Module:
+        raise NotImplementedError(f"Model {type(self)} not convertible with sequential model")
 
 
 

@@ -10,6 +10,14 @@ from typing import *
 """
 System and model functions
 """
+# def sample_stable_state_matrix(d: int) -> torch.Tensor:
+#     M = torch.DoubleTensor([[2.]])
+#     scale = 1
+#     while torch.max(torch.abs(torch.linalg.eig(M)[0])) > 1:
+#         M = scale * torch.randn(d, d)
+#         scale *= 0.99
+#     return M
+
 def sample_stable_state_matrix(d: int, lo=0.4, hi=0.8) -> torch.Tensor:
     M = torch.randn(d, d)
     eig_, V = torch.linalg.eig(M)
@@ -22,19 +30,21 @@ def sample_stable_state_matrix(d: int, lo=0.4, hi=0.8) -> torch.Tensor:
 
 def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
     N = M.shape[0]
-    k = int(math.ceil(math.log2(n)))
-
-    bits = [M]
-    for _ in range(k - 1):
-        bits.append(bits[-1] @ bits[-1])
-
     I = torch.eye(N, device=M.device)
-    result = I
-    for bit in bits:
-        augmented_bit = torch.cat([I, bit], dim=1)
-        blocked_result = result @ augmented_bit
-        result = torch.cat([blocked_result[:, :N], blocked_result[:, N:]], dim=0)
-    return result.reshape(1 << k, N, N)[:n]
+    if n == 1:
+        return I[None]
+    else:
+        k = int(math.ceil(math.log2(n)))
+        bits = [M]
+        for _ in range(k - 1):
+            bits.append(bits[-1] @ bits[-1])
+
+        result = I
+        for bit in bits:
+            augmented_bit = torch.cat([I, bit], dim=1)
+            blocked_result = result @ augmented_bit
+            result = torch.cat([blocked_result[:, :N], blocked_result[:, N:]], dim=0)
+        return result.reshape(1 << k, N, N)[:n]
 
 def run_stacked_modules(
         base_module: nn.Module,
@@ -57,18 +67,18 @@ def color(z: float, scale: float = 120.) -> np.ndarray:
 def toJSON(n: Namespace):
     d = dict(vars(n))
     for k, v in d.items():
-        if type(v) == Namespace:
+        if type(v) is Namespace:
             d[k] = toJSON(v)
         else:
             try:
                 json.dumps(v)
                 d[k] = v
-            except TypeError as excp:
+            except TypeError:
                 d[k] = repr(v)
     return d
 
-def remove_nans_and_infs(x: torch.Tensor) -> torch.Tensor:
-    return x[~(x.isnan() + x.isinf())]
+def batch_trace(x: torch.Tensor) -> torch.Tensor:
+    return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
 
 def nested_type(o: object) -> object:
     if type(o) in [list, tuple]:
