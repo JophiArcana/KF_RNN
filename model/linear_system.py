@@ -1,7 +1,6 @@
 from argparse import Namespace
 from typing import *
 
-from infrastructure.settings import DTYPE, DEVICE
 import numpy as np
 import torch
 import torch.nn as nn

@@ -713,12 +713,6 @@ if __name__ == '__main__':
     # print(Namespace(**{k: v.shape for k, v in vars(M).items()}))
 
     """ Sandbox 15 """
-    # recarr = np.recarray((), dtype=[("x", int), ("y", object)])
-    # recarr[()] = (1212, torch.randn((5, 5)))
-    # print(recarr.y)
-    # print(recarr[()].y)
-    # raise Exception()
-
     base_exp_name = "SingleTrace"
     output_dir = "system2_CNN"
     output_fname = "result"
@@ -743,7 +737,7 @@ if __name__ == '__main__':
         args, configurations, {
             "dir": output_dir,
             "fname": output_fname
-        }, system2, save_experiment=False
+        }, system2, save_experiment=True
     )
 
     plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
