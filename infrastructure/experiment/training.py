@@ -1,12 +1,13 @@
 import copy
 import json
+import os
+import time
 from argparse import Namespace
 from inspect import signature
 from typing import *
 
 import ignite.handlers.param_scheduler
 import numpy as np
-import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data
@@ -14,6 +15,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.experiment.metrics import Metrics
+from infrastructure.settings import *
 from model.kf import KF
 
 
@@ -119,6 +121,8 @@ def _train_default(
 
     result = []
     for batch, indices in enumerate(exclusive.supply_train_index_dataloader()):
+        start_t = time.perf_counter()
+
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss, mask_ss = _extract_dataset_and_mask_from_indices(indices, exclusive)
         mask_ss *= (torch.arange(THP.subsequence_length) >= getattr(THP, "sequence_buffer", 0))
@@ -133,6 +137,10 @@ def _train_default(
         torch.sum(losses).backward()
 
         cache.optimizer.step()
+
+        end_t = time.perf_counter()
+        # print(f"Time for forward and backward pass: {end_t - start_t}s")
+
     cache.t += 1
 
     return torch.stack(result, dim=0), terminate_condition()
@@ -142,10 +150,42 @@ def _run_training(
         HP: Namespace,
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
-        print_frequency: int = 10
+        checkpoint_paths: List[str],
+        checkpoint_frequency: int = 5,
+        print_frequency: int = 1
 ) -> TensorDict:
 
     SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
+
+    # TODO: Check if checkpoint exists and if so, load the stored information
+    checkpoint = None
+    if checkpoint_paths is not None:
+        for checkpoint_path in filter(os.path.exists, checkpoint_paths):
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+                break
+            except RuntimeError:
+                pass
+
+    if checkpoint is not None:
+        training_func_idx, cache, exclusive.reference_module, results = map(checkpoint.__getitem__, (
+            "training_func_idx",
+            "cache",
+            "reference_module",
+            "results"
+        ))
+        # TODO: If an optimizer is used for training, then ensembled_learned_kfs needs to reference the parameters optimized by the optimizer
+        if hasattr(cache, "optimizer"):
+            checkpoint_params = cache.optimizer.param_groups[0]["params"]
+        # TODO: Otherwise, copying the values stored by the checkpointed ensembled_learned_kfs is sufficient
+        else:
+            checkpoint_params = checkpoint["ensembled_learned_kfs"].values()
+        for checkpoint_v, (k, v) in zip(checkpoint_params, ensembled_learned_kfs.items()):
+            ensembled_learned_kfs[k] = checkpoint_v
+    else:
+        training_func_idx = 0
+        cache = Namespace(t=0)
+        results = []
 
     # DONE: Use list of training functions specified by the model
     def DEFAULT_TRAINING_FUNC(
@@ -154,18 +194,35 @@ def _run_training(
             cache_: Namespace
     ):
         return _train_default(THP, exclusive_, ensembled_learned_kfs_, cache_)
-    training_funcs: List[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)
+    training_funcs: List[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
 
-    results = []
-    for training_func in training_funcs:
+    # TODO: Run training functions starting from checkpoint if it exists
+    counter = 1
+    for idx, training_func in enumerate(training_funcs, start=training_func_idx):
         print(f'Training function {training_func.__name__}{signature(training_func)}')
         print("-" * 160)
 
         # Create optimizer
         THP = copy.deepcopy(_THP)
-        done, cache = False, Namespace(t=0)
+        done = False
+        if idx != training_func_idx:
+            cache = Namespace(t=0)
 
         while not done:
+            start_t = time.perf_counter()
+
+            # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
+            checkpoint = {
+                "training_func_idx": idx,
+                "cache": cache,
+                "reference_module": exclusive.reference_module,
+                "ensembled_learned_kfs": ensembled_learned_kfs,
+                "results": results
+            }
+            if checkpoint_paths is not None and counter % checkpoint_frequency == 0:
+                for checkpoint_path in checkpoint_paths:
+                    torch.save(checkpoint, checkpoint_path)
+
             # DONE: Set up caching for metrics
             metric_cache = {}
             metrics: set = getattr(EHP, "metrics", {
@@ -219,13 +276,23 @@ def _run_training(
             if torch.any(divergences):
                 raise RuntimeError("Model diverged")
 
+            counter += 1
             torch.cuda.empty_cache()
+
+            end_t = time.perf_counter()
+            # print(f"Time to run one epoch: {end_t - start_t}s")
+
+    # TODO: Delete the checkpoint so that it does not interfere with the next experiment
+    if checkpoint_paths is not None:
+        for checkpoint_path in filter(os.path.exists, checkpoint_paths):
+            os.remove(checkpoint_path)
 
     return torch.stack(results, dim=2)
 
 def _run_unit_training_experiment(
         HP: Namespace,
-        info: Namespace
+        info: Namespace,
+        checkpoint_paths: List[str]
 ) -> Dict[str, TensorDict]:
 
     SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
@@ -301,7 +368,7 @@ def _run_unit_training_experiment(
         print(f"\t{ds_type}: {utils.multi_map(lambda il: il.obj.mean(), ds_info.irreducible_loss, dtype=float)}")
 
     return {
-        "output": _run_training(HP, exclusive, ensembled_learned_kfs).detach(),
+        "output": _run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach(),
         "learned_kfs": (reference_module, ensembled_learned_kfs),
     }
 

@@ -8,6 +8,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
+from model.linear_system import LinearSystemGroup
 
 
 class KF(nn.Module):
@@ -23,18 +24,36 @@ class KF(nn.Module):
             reference_module: nn.Module,
             ensembled_kfs: TensorDict[str, torch.Tensor],
             dataset: TensorDict[str, torch.Tensor],
-            kwargs: Dict[str, Any] = MappingProxyType(dict())
+            kwargs: Dict[str, Any] = MappingProxyType(dict()),
+            split_size: int = 1 << 20
     ) -> torch.Tensor:
         n = ensembled_kfs.ndim
         d = dataset.ndim - n
 
         # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        if d > 2:
-            flattened_dataset = dataset.flatten(n, n + d - 2)
-            flattened_result = utils.run_module_arr(reference_module, ensembled_kfs, flattened_dataset, kwargs)["observation_estimation"]
-            return flattened_result.unflatten(n, (dataset.shape[n], dataset.shape[n + d - 2]))
-        else:
+        if d == 1:
             return utils.run_module_arr(reference_module, ensembled_kfs, dataset, kwargs)["observation_estimation"]
+
+        _dataset = dataset.flatten(n, n + d - 2) if d > 2 else dataset
+        _dataset_size = sum(v.numel() for _, v in _dataset.items())
+
+        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size + split_size - 1) // split_size + 1)).to(torch.int)
+        splits = torch.tensor(sorted(set(splits.tolist())))
+
+        _result_list = []
+        for lo, hi in zip(splits[:-1], splits[1:]):
+            _result_list.append(utils.run_module_arr(
+                reference_module,
+                ensembled_kfs,
+                _dataset.flatten(0, n - 1)[:, lo:hi].unflatten(0, ensembled_kfs.shape),
+                kwargs
+            )["observation_estimation"])
+        _result = torch.cat(_result_list, dim=n)
+
+        if d > 2:
+            return _result.unflatten(n, dataset.shape[n:n + d - 1])
+        else:
+            return _result
 
     @classmethod
     def evaluate_run(cls,
@@ -59,7 +78,7 @@ class KF(nn.Module):
     ) -> TensorDict[str, torch.Tensor]:
         reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
         for k, v in ensembled_learned_kfs.items():
-            t = getattr(reference_module, k)
+            t = utils.rgetattr(reference_module, k)
             if isinstance(t, nn.Parameter):
                 reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
             else:
@@ -124,7 +143,7 @@ class KF(nn.Module):
     @classmethod
     def analytical_error(cls,
                          kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
-                         systems: TensorDict[str, torch.Tensor] # [B... x ...]
+                         lsg: LinearSystemGroup                 # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 

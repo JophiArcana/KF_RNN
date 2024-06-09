@@ -7,6 +7,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from model.kf import KF
+from model.linear_system import LinearSystemGroup
 
 
 class SequentialKF(KF):
@@ -24,18 +25,16 @@ class SequentialKF(KF):
                          systems: TensorDict[str, torch.Tensor] # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         # Variable definition
-        def extract_var(d: TensorDict[str, torch.Tensor], k: str) -> torch.Tensor:
-            return torch.complex(d[k], torch.zeros_like(d[k]))
-        Fh = extract_var(kfs, 'F')                                                              # [B... x S_Dh x S_Dh]
-        Bh = extract_var(kfs, 'B')                                                              # [B... x S_Dh x I_D]
-        Hh = extract_var(kfs, 'H')                                                              # [B... x O_D x S_Dh]
-        Kh = extract_var(kfs, 'K')                                                              # [B... x S_Dh x O_D]
+        Fh = utils.complex(kfs["F"])                                                            # [B... x S_Dh x S_Dh]
+        Bh = utils.complex(kfs["B"])                                                            # [B... x S_Dh x I_D]
+        Hh = utils.complex(kfs["H"])                                                            # [B... x O_D x S_Dh]
+        Kh = utils.complex(kfs["K"])                                                            # [B... x S_Dh x O_D]
 
-        F = extract_var(systems, 'F')                                                           # [B... x S_D x S_D]
-        B = extract_var(systems, 'B')                                                           # [B... x S_D x I_D]
-        H = extract_var(systems, 'H')                                                           # [B... x O_D x S_D]
-        sqrt_S_W = extract_var(systems, 'sqrt_S_W')                                             # [B... x S_D x S_D]
-        sqrt_S_V = extract_var(systems, 'sqrt_S_V')                                             # [B... x O_D x O_D]
+        F = utils.complex(systems["F"])                                                         # [B... x S_D x S_D]
+        B = utils.complex(systems["B"])                                                         # [B... x S_D x I_D]
+        H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
+        sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
 
         S_D, I_D, O_D = F.shape[-1], B.shape[-1], H.shape[-2]
         S_Dh = Fh.shape[-1]
@@ -43,7 +42,7 @@ class SequentialKF(KF):
         M, Mh = F, Fh @ (torch.eye(S_Dh) - Kh @ Hh)                                             # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
         L, V = torch.linalg.eig(M)                                                              # [B... x S_D], [B... x S_D x S_D]
         Lh, Vh = torch.linalg.eig(Mh)                                                           # [B... x S_Dh], [B... x S_Dh x S_Dh]
-        Vinv, Vhinv = torch.linalg.inv(V), torch.linalg.inv(Vh)                                 # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
+        Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                       # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
         
         Hs, Hhs = H @ V, Hh @ Vh                                                                # [B... x O_D x S_D], [B... x O_D x S_Dh]
         Bs, Bhs = Vinv @ B, Vhinv @ Bh                                                          # [B... x S_D x I_D], [B... x S_Dh x I_D]
@@ -129,29 +128,29 @@ class SequentialKF(KF):
         L = observations.shape[1]
 
         if mode is None:
-            mode = ['sequential', 'form', 'form_sqrt'][np.searchsorted([16, 64], L)]
+            mode = ["sequential", "form", "form_sqrt"][np.searchsorted([16, 64], L)]
 
         state_estimations, observation_estimations = [], []
-        if mode == 'sequential':
+        if mode == "sequential":
             state_estimation = state
 
             for l in range(L):
                 result = self._forward(state_estimation, inputs[:, l], observations[:, l])
 
-                state_estimation, observation_estimation = result['state_estimation'], result['observation_estimation']
+                state_estimation, observation_estimation = result["state_estimation"], result["observation_estimation"]
 
                 state_estimations.append(state_estimation)
                 observation_estimations.append(observation_estimation)
 
             return {
-                'state_estimation': torch.stack(state_estimations, dim=1),
-                'observation_estimation': torch.stack(observation_estimations, dim=1)
+                "state_estimation": torch.stack(state_estimations, dim=1),
+                "observation_estimation": torch.stack(observation_estimations, dim=1)
             }
         else:
             result_generic = self._forward_generic(trace, mode)
 
-            state_weights, state_biases_list = result_generic['state_form']                     # [sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]
-            observation_weights, observation_biases_list = result_generic['observation_form']   # [sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D]
+            state_weights, state_biases_list = result_generic["state_form"]                     # [sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]
+            observation_weights, observation_biases_list = result_generic["observation_form"]   # [sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D]
 
             for state_biases, observation_biases in zip(state_biases_list, observation_biases_list):
                 state_estimations.append(SequentialKF._evaluate_form(state, (state_weights[:state_biases.shape[1]], state_biases)))
@@ -160,8 +159,8 @@ class SequentialKF(KF):
                 state = state_estimations[-1][:, -1]
 
             return {
-                'state_estimation': torch.cat(state_estimations, dim=1),
-                'observation_estimation': torch.cat(observation_estimations, dim=1)
+                "state_estimation": torch.cat(state_estimations, dim=1),
+                "observation_estimation": torch.cat(observation_estimations, dim=1)
             }
 
     def _forward(self,
@@ -175,25 +174,25 @@ class SequentialKF(KF):
         state_estimation = state_estimation + (observation - observation_estimation) @ self.K.T
 
         return {
-            'state_estimation': state_estimation,
-            'observation_estimation': observation_estimation
+            "state_estimation": state_estimation,
+            "observation_estimation": observation_estimation
         }
 
     """ forward
         :parameter {
-            'input': [B x L x I_D],
-            'observation': [B x L x O_D]
+            "input": [B x L x I_D],
+            "observation": [B x L x O_D]
         }
         :returns {
-            'state_form': ([sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]),
-            'observation_form': ([sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D])
+            "state_form": ([sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]),
+            "observation_form": ([sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D])
         }
     """
     def _forward_generic(self,
                          trace: Dict[str, torch.Tensor],
                          mode: str
     ) -> Dict[str, Tuple[torch.Tensor, Sequence[torch.Tensor]]]:
-        inputs, observations = trace['input'], trace['observation']
+        inputs, observations = trace["input"], trace["observation"]
 
         # Precomputation
         B, T = inputs.shape[:2]
@@ -203,13 +202,13 @@ class SequentialKF(KF):
         E = torch.eye(self.S_D) - self.K @ self.H
         M = E @ self.F
 
-        subT = T if mode == 'form' else hsqrtT                                                                                          # Length of vectorized subsequence
+        subT = T if mode == "form" else hsqrtT                                                                                          # Length of vectorized subsequence
         # Compute the weights efficiently by eigenvalue decomposition of (I - KH)F and repeated powers
 
         # L, V = torch.linalg.eig(M)
         """
         eig_powers = torch.diag_embed(torch.pow(L[:, None], torch.arange(subT + 1, device=device)).T)                                   # [(subT + 1) x S_D x S_D]
-        state_weights = (V @ eig_powers @ torch.linalg.inv(V)).to(torch.double)                                                         # [(subT + 1) x S_D x S_D]
+        state_weights = (V @ eig_powers @ torch.inverse(V)).to(torch.double)                                                            # [(subT + 1) x S_D x S_D]
         state_weights = torch.stack([torch.matrix_power(M, n) for n in range(subT + 1)])
         """
         state_weights = utils.pow_series(M, subT + 1)
@@ -222,7 +221,7 @@ class SequentialKF(KF):
         blocked_lower_triangular_matrix = buffered_state_weights[lower_triangular_indices]                                              # [subT x subT x S_D x S_D]
         lower_triangular_matrix = blocked_lower_triangular_matrix.permute(0, 2, 1, 3).reshape(subT * self.S_D, subT * self.S_D)
 
-        if mode == 'form':
+        if mode == "form":
             state_biases = torch.cat([
                 torch.zeros((B, 1, self.S_D)),
                 ((inputs @ (E @ self.B).mT + observations @ self.K.T).view(B, -1) @ lower_triangular_matrix.T).view(B, T, self.S_D)
@@ -250,8 +249,8 @@ class SequentialKF(KF):
                 observation_biases[-1] = observation_biases[-1][:, :-p]                                                                 # sqrtT x [B x ≈sqrtT x O_D]
 
         return {
-            'state_form': (state_weights[1:], state_biases),
-            'observation_form': (observation_weights[:-1], observation_biases)
+            "state_form": (state_weights[1:], state_biases),
+            "observation_form": (observation_weights[:-1], observation_biases)
         }
 
 

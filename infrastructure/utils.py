@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import json
 import math
 import os
@@ -26,15 +27,15 @@ System and model functions
 #         scale *= 0.99
 #     return M
 
-def sample_stable_state_matrix(d: int, lo=0.4, hi=0.9) -> torch.Tensor:
-    M = torch.randn(d, d)
-    eig_, V = torch.linalg.eig(M)
-    eig_abs_ = eig_.abs()
-    eig_indices = torch.argmax(torch.Tensor(eig_abs_[None] == eig_abs_[:, None]).to(torch.int), dim=0)
+def sample_stable_state_matrix(d: int, batch_size: Tuple[int, ...] = (), lo=0.4, hi=0.9) -> torch.Tensor:
+    M = torch.randn((*batch_size, d, d))                        # [B... x D x D]
+    eig_, V = torch.linalg.eig(M)                               # [B... x D], [B... x D x D]
+    eig_abs_ = eig_.abs()                                       # [B... x D]
+    eig_indices = torch.argmax(torch.Tensor(eig_abs_.unsqueeze(-2) == eig_abs_.unsqueeze(-1)).to(torch.int), dim=-2)    # [B... x D]
 
-    eig_abs = torch.empty(d).uniform_(lo, hi)[eig_indices]
-    eig = eig_ * (eig_abs / eig_abs_)
-    return (V @ torch.diag(eig) @ torch.linalg.inv(V)).real
+    eig_abs = torch.take_along_dim(torch.empty((*batch_size, d)).uniform_(lo, hi), eig_indices, dim=-1)                 # [B... x D]
+    eig = eig_ * (eig_abs / eig_abs_)                           # [B... x D]
+    return (V @ torch.diag_embed(eig) @ torch.inverse(V)).real  # [B... x D x D]
 
 def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
     N = M.shape[0]
@@ -197,15 +198,11 @@ def rsetattr(obj: object, attr: str, value: Any) -> None:
     _rsetattr(obj, attr.split("."), value)
 
 def rhasattr(obj: object, attr: str) -> bool:
-    def _rhasattr(obj: object, attrs: List[str]) -> bool:
-        if len(attrs) == 1:
-            return hasattr(obj, attrs[0])
-        else:
-            try:
-                return _rhasattr(getattr(obj, attrs[0]), attrs[1:])
-            except AttributeError:
-                return False
-    return _rhasattr(obj, attr.split("."))
+    try:
+        rgetattr(obj, attr)
+        return True
+    except AttributeError:
+        return False
 
 def rgetattr_default(o: object, format_str: str, try_str: str, default_str: str) -> Any:
     try:
@@ -238,7 +235,7 @@ def color(z: float, scale: float = 120.) -> np.ndarray:
     return (1 + np.asarray([np.sin(k), np.sin(k + 2 * np.pi / 3), np.sin(k + 4 * np.pi / 3)], dtype=float)) / 2
 
 def toJSON(n: Namespace):
-    d = dict(vars(n))
+    d = OrderedDict(vars(n))
     for k, v in d.items():
         if type(v) is Namespace:
             d[k] = toJSON(v)
@@ -250,8 +247,14 @@ def toJSON(n: Namespace):
                 d[k] = str(v)
     return d
 
+def str_namespace(n: Namespace) -> str:
+    return json.dumps(toJSON(n), indent=4)
+
 def print_namespace(n: Namespace) -> None:
-    print(json.dumps(toJSON(n), indent=4))
+    print(str_namespace(n))
+
+def hash_namespace(n: Namespace) -> str:
+    return hashlib.sha256(str_namespace(n).encode("utf-8")).hexdigest()[:8]
 
 def batch_trace(x: torch.Tensor) -> torch.Tensor:
     return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
@@ -260,6 +263,9 @@ def array_of(o: object) -> np.ndarray:
     M = np.array(None, dtype=object)
     M[()] = o
     return M
+
+def complex(t: torch.Tensor) -> torch.Tensor:
+    return torch.complex(t, torch.zeros_like(t))
 
 def nested_type(o: object) -> object:
     if type(o) in [list, tuple]:

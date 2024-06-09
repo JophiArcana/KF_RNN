@@ -16,7 +16,6 @@ DATASET_SUPPORT_PARAMS = [
 ]
 INFO_DTYPE = np.dtype([
     ("systems", np.ndarray),
-    ("stacked_systems", PTR),
     ("dataset", PTR),
     ("irreducible_loss", PTR),
 ])
@@ -25,7 +24,6 @@ RESULT_DTYPE = np.dtype([
     ("output", TensorDict),
     ("learned_kfs", tuple),
     ("systems", object),
-    ("stacked_systems", PTR),
     ("metrics", PTR),
 ])
 

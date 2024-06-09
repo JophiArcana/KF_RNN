@@ -17,25 +17,22 @@ class ConvolutionalKF(KF):
                          systems: TensorDict[str, torch.Tensor] # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         # Variable definition
-        def extract_var(d: TensorDict[str, torch.Tensor], k: str) -> torch.Tensor:
-            return torch.complex(d[k], torch.zeros_like(d[k]))
-
-        P = extract_var(kfs, 'input_IR')                                                        # [B... x I_D x R x O_D]
+        P = utils.complex(kfs["input_IR"])                                                      # [B... x I_D x R x O_D]
         P = P.permute(*range(P.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x I_D]
 
-        Q = extract_var(kfs, 'observation_IR')                                                  # [B... x O_D x R x O_D]
+        Q = utils.complex(kfs["observation_IR"])                                                # [B... x O_D x R x O_D]
         Q = Q.permute(*range(P.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x O_D]
 
-        F = extract_var(systems, 'F')                                                           # [B... x S_D x S_D]
-        B = extract_var(systems, 'B')                                                           # [B... x S_D x I_D]
-        H = extract_var(systems, 'H')                                                           # [B... x O_D x S_D]
-        sqrt_S_W = extract_var(systems, 'sqrt_S_W')                                             # [B... x S_D x S_D]
-        sqrt_S_V = extract_var(systems, 'sqrt_S_V')                                             # [B... x O_D x O_D]
+        F = utils.complex(systems["F"])                                                         # [B... x S_D x S_D]
+        B = utils.complex(systems["B"])                                                         # [B... x S_D x I_D]
+        H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
+        sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
 
         R = P.shape[-3]
 
         L, V = torch.linalg.eig(F)                                                              # [B... x S_D], [B... x S_D x S_D]
-        Vinv = torch.linalg.inv(V)                                                              # [B... x S_D x S_D]
+        Vinv = torch.inverse(V)                                                                 # [B... x S_D x S_D]
 
         Hs = H @ V                                                                              # [B... x O_D x S_D]
         Bs = Vinv @ B                                                                           # [B... x S_D x I_D]
@@ -155,3 +152,7 @@ class ConvolutionalKF(KF):
         )[:, :L]
 
         return {'observation_estimation': result}
+
+
+
+

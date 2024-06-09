@@ -23,7 +23,7 @@ class RnnKF(SequentialKF):
         if self.input_enabled:
             self.B = nn.Parameter(initialization.get("B", torch.zeros(self.S_D, self.I_D)))
         else:
-            self.register_buffer("B", torch.zeros(self.S_D, self.I_D))
+            self.register_buffer("B", torch.zeros((self.S_D, self.I_D)))
         self.H = nn.Parameter(initialization.get('H', torch.zeros(self.O_D, self.S_D)))
         self.K = nn.Parameter(initialization.get('K', torch.zeros(self.S_D, self.O_D)))
 
@@ -39,7 +39,7 @@ class RnnKFAnalytical(RnnKF):
         return KF._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs,
             lambda exclusive_: (
-                exclusive_.train_info.stacked_systems.obj,
+                exclusive_.train_info.systems.td(),
                 KF.evaluate_run(
                     exclusive_.train_info.dataset.obj["target"],
                     exclusive_.train_info.dataset.obj["observation"],

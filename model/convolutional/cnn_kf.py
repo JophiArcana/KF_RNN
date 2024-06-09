@@ -102,7 +102,7 @@ class CnnKFLeastSquares(CnnKF):
 
             torch.cuda.empty_cache()
 
-        XTX_lI_inv = torch.linalg.inv(XTX + self.ridge * torch.eye(r_))                         # [R? x R?]
+        XTX_lI_inv = torch.inverse(XTX + self.ridge * torch.eye(r_))                            # [R? x R?]
         flattened_w = XTX_lI_inv @ XTy
         w = flattened_w.unflatten(0, (self.ir_length, -1)).transpose(0, 1)                      # [? x R x O_D]
 
@@ -133,7 +133,7 @@ class CnnKFAnalytical(CnnKF):
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return KF._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: utils.double_vmap(exclusive_.reference_module._analytical_initialization)(
-                dict(*exclusive_.train_info.stacked_systems)
+                dict(exclusive_.train_info.systems.td())
             ), cache
         )
 
@@ -175,7 +175,7 @@ class CnnKFAnalyticalLeastSquares(CnnKF):
                 optimizer.zero_grad()
             zero_grad_kf_dict()
 
-            L = ConvolutionalKF.analytical_error(ensembled_learned_kfs, *exclusive_.train_info.stacked_systems)                # [N x E]
+            L = ConvolutionalKF.analytical_error(ensembled_learned_kfs, exclusive_.train_info.systems.td())         # [N x E]
             L.sum().backward(create_graph=True, retain_graph=True)
             _flattened_kf_grad_dict = torch.cat([v.grad.flatten(2, -1) for v in _kf_dict.values()], dim=-1)         # [N x E x F]
             zero_grad_kf_dict()

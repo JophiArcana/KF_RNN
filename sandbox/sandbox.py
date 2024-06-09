@@ -1,38 +1,41 @@
-from argparse import Namespace
 import copy
-from dimarray import DimArray
 import inspect
-from filterpy.kalman import KalmanFilter
 import functools
 import json
+import os
+import sys
+import time
+from argparse import Namespace
 from matplotlib import pyplot as plt
 from matplotlib.collections import LineCollection
+
 import numpy as np
-import os
 import scipy as sc
-import sys
 import sklearn.manifold
 import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
 import torch.optim as optim
 import tensordict
+from dimarray import DimArray
 from tensordict import TensorDict
 
 # from huggingface_hub import hf_hub_download
 from transformers import GPT2Config, GPT2Model
 
-from model.sequential import *
-from model.convolutional import *
-from model.linear_system import LinearSystem
 from infrastructure import utils, loader
 from infrastructure.experiment import *
 from infrastructure.settings import DTYPE, DEVICE
+from infrastructure.discrete_are import Riccati, solve_discrete_are
+from model.linear_system import LinearSystemGroup
+from model.linear_system_distribution import *
+from model.kf import KF
+from model.sequential import *
+from model.convolutional import *
+from model.transformer import *
 
 if __name__ == '__main__':
-    torch.set_default_dtype(DTYPE)
-    torch.set_default_device(DEVICE)
-    torch.set_printoptions(precision=8)
+    torch.set_printoptions(precision=12, sci_mode=False, linewidth=120)
 
     """ Sandbox 1 """
     # systemArgs = Namespace(
@@ -620,9 +623,11 @@ if __name__ == '__main__':
     # # print((analytical_error > torch.diag(il)).squeeze())
 
     """ Sandbox 12 """
-    # n_dims_in = n_dims_out = 5
-    # n_embd = 16 # 256
-    # n_positions = 64
+    # I_D, O_D, input_enabled = 1, 5, False
+    # model_shape = (1, 2)
+    #
+    # n_embd = 8 # 256
+    # n_positions = 7
     # configuration = GPT2Config(
     #     n_positions=n_positions,  # set to sthg large advised
     #     n_embd=n_embd,
@@ -633,25 +638,33 @@ if __name__ == '__main__':
     #     attn_pdrop=0.0,
     #     use_cache=False,
     # )
+    # n_sys, B, L = 3, 5, 12
     #
-    # _read_in = nn.Linear(n_dims_in, n_embd)
-    # _backbone = GPT2Model(configuration)
-    # _read_out = nn.Linear(n_embd, n_dims_out)
+    # MHP = Namespace(gpt2=configuration, I_D=I_D, O_D=O_D, input_enabled=input_enabled)
+    # # model = GPT2InContextKF(MHP)
+    # # dataset = TensorDict({
+    # #     "input": torch.randn((B, L, I_D)),
+    # #     "observation": nn.Parameter(torch.randn((B, L, O_D)))
+    # # }, batch_size=(B, L))
+    # # model(dataset)
     #
-    # models = [GPT2Model(configuration) for _ in range(3)]
-    # models_dict = torch.func.stack_module_state(models)[0]
+    # models = utils.multi_map(
+    #     lambda _: GPT2InContextKF(MHP),
+    #     np.empty(model_shape), dtype=object
+    # )
     #
-    # x = torch.randn((3, 10, n_positions, n_embd))
+    # dataset = TensorDict({
+    #     "input": torch.randn((*model_shape, n_sys, B, L, I_D)),
+    #     "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
+    # }, batch_size=(*model_shape, n_sys, B, L))
     #
-    # def run(kf_dict, ag):
-    #     return nn.utils.stateless.functional_call(_backbone, kf_dict, (), {'inputs_embeds': ag})
-    # print(torch.func.vmap(run, randomness='different')(models_dict, x).last_hidden_state.shape)
-
-    # print(x.shape, _backbone(inputs_embeds=x).last_hidden_state.shape)
-    # print({
-    #     k: v.shape
-    #     for k, v in torch.func.stack_module_state(models)[0].items()
-    # })
+    # out = KF.run(*utils.stack_module_arr(models), dataset)
+    # print(torch.autograd.grad(
+    #     out[:, :, :, :, 1].norm(),
+    #     dataset["observation"]
+    # )[0][0, 0, 0, 0])
+    #
+    # raise Exception()
 
     """ Sandbox 13 """
     # base_exp_name = 'Basic'
@@ -713,40 +726,95 @@ if __name__ == '__main__':
     # print(Namespace(**{k: v.shape for k, v in vars(M).items()}))
 
     """ Sandbox 15 """
-    base_exp_name = "SingleTrace"
-    output_dir = "system2_CNN"
-    output_fname = "result"
+    # base_exp_name = "SingleTrace"
+    # output_dir = "system2_CNN"
+    # output_fname = "result"
+    #
+    # system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
+    # args.model.ir_length = 16
+    # args.train.epochs = 500
+    # args.train.subsequence_length = 32
+    # args.experiment.exp_name = base_exp_name
+    # args.experiment.metrics = {"validation_analytical"}
+    #
+    # configurations = [
+    #     ("model", {
+    #         "model.model": [CnnKF, CnnKFLeastSquares]
+    #     }),
+    #     ("total_trace_length", {
+    #         "dataset.train.total_sequence_length": [100, 200, 500, 1000, 2000, 5000, 10000]
+    #     })
+    # ]
+    #
+    # result = run_experiments(
+    #     args, configurations, {
+    #         "dir": output_dir,
+    #         "fname": output_fname
+    #     }, system2, save_experiment=True
+    # )
+    #
+    # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
 
-    system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
-    args.model.ir_length = 16
-    args.train.epochs = 500
-    args.train.subsequence_length = 32
-    args.experiment.exp_name = base_exp_name
-    args.experiment.metrics = {"validation_analytical"}
+    """ Sandbox 16 """
 
-    configurations = [
-        ("model", {
-            "model.model": [CnnKF, CnnKFLeastSquares]
-        }),
-        ("total_trace_length", {
-            "dataset.train.total_sequence_length": [100, 200, 500, 1000, 2000, 5000, 10000]
-        })
-    ]
-
-    result = run_experiments(
-        args, configurations, {
-            "dir": output_dir,
-            "fname": output_fname
-        }, system2, save_experiment=True
+    SHP = Namespace(
+        S_D=10,
+        I_D=1,
+        O_D=5,
+        SNR=5.0,
+        input_enabled=False
     )
+    # systems = torch.load("output/in_context/CDCReconstruction/training/systems.pt", map_location=DEVICE)
+    # lsgs = {
+    #     k: utils.multi_map(
+    #         lambda systems_arr: LinearSystemGroup(dict(utils.stack_module_arr(systems_arr)[1]), False),
+    #         v, dtype=LinearSystemGroup
+    #     )
+    #     for k, v in systems.items()
+    # }
+    # torch.save(lsgs, "output/in_context/CDCReconstruction/training/systems.pt")
 
-    plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
+
+    lsg = LinearSystemGroup.sample_stable_systems(SHP, (3,))
+    LinearSystemGroup(lsg.state_dict(), SHP.input_enabled)
+
+    print(lsg.td()["F"] is lsg.F)
+
+    # akfg = AnalyticalKFGroup(lsg)
+    #
+    # ds = lsg.generate_dataset(5,1000)
+    # ds = akfg.add_targets(ds)
+    #
+    # print(utils.batch_trace(lsg.S_observation_inf))
+    # print(((ds["observation"] - ds["target"]) ** 2).sum(dim=-1).flatten(len(lsg.group_shape), -1).mean(-1))
+    # print(torch.autograd.grad(utils.batch_trace(lsg.S_observation_inf).norm(), lsg.F))
+    raise Exception()
 
 
+    # start_t = time.perf_counter()
+    # sys = utils.multi_map(
+    #     lambda _: LinearSystem.sample_stable_system(SHP),
+    #     np.empty((40000,)), dtype=object
+    # )
+    # end_t = time.perf_counter()
+    # print(f"Time to sample individual systems: {end_t - start_t}s")
+    #
+    # start_t = time.perf_counter()
+    # LinearSystemGroup.sample_stable_systems(SHP, (40000,))
+    # end_t = time.perf_counter()
+    # print(f"Time to sample system group: {end_t - start_t}s")
 
+    # r2 = utils.stack_tensor_arr(utils.multi_map(
+    #     lambda sys_: Riccati.apply(sys_.F.mT, sys_.H.mT, sys_.S_W, sys_.S_V),
+    #     sys, dtype=torch.Tensor
+    # ))
 
+    # def test_dare(P):
+    #     return P - (A.mT @ P @ A) + (A.mT @ P @ B) @ torch.inverse(R + B.mT @ P @ B) @ (B.mT @ P @ A) - Q
 
+    # print([grad.norm() for grad in torch.autograd.grad(r1.norm(), [v for k, v in sys_td.items() if isinstance(v, nn.Parameter)])])
 
-
-
-
+    # _, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
+    # dist = LinearSystemDistribution(get_mop_sample_func("gaussian", "gaussian", 0.1, 0.1))
+    # sys = dist.sample(args.system, ())[()]
+    # print(torch.linalg.eigvals(sys.F))

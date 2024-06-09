@@ -11,6 +11,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 from infrastructure.utils import PTR
 from model.kf import KF
+from model.linear_system import LinearSystemGroup
 
 MetricVars = Tuple[Namespace, Namespace, TensorDict[str, torch.Tensor]]
 
@@ -27,7 +28,7 @@ class Metric(object):
     ) -> np.ndarray[torch.Tensor]:
         if dependency not in cache:
             HP, exclusive, ensembled_learned_kfs = vars
-            with torch.set_grad_enabled(True):
+            with torch.set_grad_enabled(False):
                 run = utils.multi_map(
                     lambda dataset: KF.run(exclusive.reference_module, ensembled_learned_kfs, *dataset),
                     utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=torch.Tensor
@@ -84,14 +85,14 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
 def _get_analytical_error_with_dataset_type(ds_type: str) -> Metric:
     def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
         HP, exclusive, ensembled_learned_kfs = vars
-        def AE(stacked_systems_arr_: PTR) -> torch.Tensor:
+        def AE(lsg: LinearSystemGroup) -> torch.Tensor:
             return _unsqueeze_if(exclusive.reference_module.analytical_error(
                 ensembled_learned_kfs[:, :, None],
-                stacked_systems_arr_.obj[:, None, :]
+                lsg.td()[:, None, :]
             ), with_batch_dim)
 
         with torch.set_grad_enabled(False):
-            return utils.multi_map(AE, utils.rgetattr(exclusive, f"info.{ds_type}.stacked_systems"), dtype=torch.Tensor)
+            return utils.multi_map(AE, utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
     return Metric(eval_func)
 
 def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:

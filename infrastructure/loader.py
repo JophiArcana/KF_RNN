@@ -1,12 +1,14 @@
-from argparse import Namespace
 import copy
-from dimarray import DimArray
+from argparse import Namespace
+
 import numpy as np
 import torch
+from dimarray import DimArray
+from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.settings import DEVICE
-from model.linear_system import LinearSystem
+from model.linear_system import LinearSystemGroup
 
 
 """
@@ -64,16 +66,16 @@ BaseExperimentArgs = Namespace(
 )
 
 def load_system_and_args(folder: str):
-    A = torch.Tensor(np.loadtxt(f'{folder}/A.out', delimiter=',')).to(DEVICE)
-    B = torch.Tensor(np.loadtxt(f'{folder}/B.out', delimiter=','))[:, None].to(DEVICE)
-    C = torch.Tensor(np.loadtxt(f'{folder}/C.out', delimiter=','))[None].to(DEVICE)
+    A = torch.Tensor(np.loadtxt(f"{folder}/A.out", delimiter=",")).to(DEVICE)
+    B = torch.Tensor(np.loadtxt(f"{folder}/B.out", delimiter=","))[:, None].to(DEVICE)
+    C = torch.Tensor(np.loadtxt(f"{folder}/C.out", delimiter=","))[None].to(DEVICE)
     input_enabled = not bool(torch.all(torch.isclose(B, torch.zeros_like(B))))
 
     S_D = A.shape[0]
     O_D = C.shape[0]
     I_D = B.shape[1]
 
-    noise_block = torch.Tensor(np.loadtxt(f'{folder}/noise_block.out', delimiter=',')).to(DEVICE)
+    noise_block = torch.Tensor(np.loadtxt(f"{folder}/noise_block.out", delimiter=",")).to(DEVICE)
     W = noise_block[0:S_D, 0:S_D]
     V = noise_block[S_D:S_D + O_D, S_D:S_D + O_D]
 
@@ -103,14 +105,16 @@ def load_system_and_args(folder: str):
     args.dataset.train.system.n_systems = 1
     args.experiment.n_experiments = 1
 
-    system = LinearSystem({'F': A, 'B': B, 'H': C, 'sqrt_S_W': sqrt_W, 'sqrt_S_V': sqrt_V}, input_enabled)
-    system_arr = np.full((args.experiment.n_experiments, args.dataset.train.system.n_systems), system, dtype=LinearSystem)
+    system_group = LinearSystemGroup(
+        dict(TensorDict({
+            "F": A, "B": B, "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
+        }, batch_size=()).expand(args.dataset.train.system.n_systems, args.experiment.n_experiments)),
+        input_enabled
+    )
+    return {"train": DimArray(utils.array_of(system_group), dims=[])}, args
 
-    return {"train": DimArray(utils.array_of(system_arr), dims=[])}, args
-
-def generate_systems_and_args(shp: Namespace, n_systems: int, **system_kwargs):
-    systems = [LinearSystem.sample_stable_system(shp, **system_kwargs) for _ in range(n_systems)]
-    args = copy.deepcopy(Namespace(
+def generate_args(shp: Namespace) -> Namespace:
+    return copy.deepcopy(Namespace(
         system=shp,
         model=Namespace(
             I_D=shp.I_D,
@@ -121,8 +125,6 @@ def generate_systems_and_args(shp: Namespace, n_systems: int, **system_kwargs):
         dataset=BaseDatasetArgs,
         experiment=BaseExperimentArgs
     ))
-    args.experiment.n_systems = n_systems
-    return systems, args
 
 
 

@@ -19,14 +19,14 @@ from infrastructure.experiment.metrics import Metrics
 from infrastructure.experiment.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
 from infrastructure.settings import DEVICE
-from model.linear_system import LinearSystem
+from model.linear_system import LinearSystemGroup
 
 
 def run_experiments(
         HP: Namespace,
         iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
         output_kwargs: Dict[str, Any],
-        systems: Dict[str, np.ndarray[LinearSystem]] = None,
+        systems: Dict[str, DimArray] = None,
         save_experiment: bool = True
 ) -> DimArray:
     HP = copy.deepcopy(HP)
@@ -76,7 +76,7 @@ def run_training_experiments(
         HP: Namespace,
         iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
         output_kwargs: Dict[str, Any],
-        systems: Dict[str, np.ndarray[LinearSystem]] = None,
+        systems: Dict[str, DimArray] = None,
         save_experiment: bool = True
 ) -> Tuple[DimArray, Namespace]:
     HP = copy.deepcopy(HP)
@@ -92,8 +92,12 @@ def run_training_experiments(
 
         output_fname = f"{train_output_dir}/{output_kwargs['fname']}.pt"
         output_fname_backup = f"{train_output_dir}/{output_kwargs['fname']}_backup.pt"
+        checkpoint_paths = [
+            f"{train_output_dir}/checkpoint.pt",
+            f"{train_output_dir}/checkpoint_backup.pt"
+        ]
     else:
-        output_dir = train_output_dir = output_fname = output_fname_backup = None
+        output_dir = train_output_dir = output_fname = output_fname_backup = checkpoint_paths = None
 
     cache = Namespace()
     def update_cache(s: str, v: Any) -> None:
@@ -135,9 +139,16 @@ def run_training_experiments(
     saved_attrs = ("systems", "dataset")
     fname_dict = {attr: f"{train_output_dir}/{attr}.pt" for attr in saved_attrs}
 
+    save_dict = {}
+    if save_experiment:
+        for attr, fname in fname_dict.items():
+            if os.path.exists(fname):
+                save_dict[attr] = torch.load(fname, map_location=DEVICE)
+                print(f"Loaded {fname} from disk.")
+
     INFO_DICT: Dict[str, OrderedDict[str, DimArray]] = {}
     for ds_type in TRAINING_DATASET_TYPES:
-        INFO_DICT[ds_type] = _construct_info_dict(numpy_HP, INFO_DICT, ds_type, fname_dict, systems=systems)
+        INFO_DICT[ds_type] = _construct_info_dict(numpy_HP, INFO_DICT, ds_type, save_dict, systems=systems)
 
     if save_experiment:
         for attr, fname in fname_dict.items():
@@ -191,7 +202,7 @@ def run_training_experiments(
             })
 
             start_t = time.perf_counter()
-            experiment_result = _run_unit_training_experiment(EXPERIMENT_HP, INFO)
+            experiment_result = _run_unit_training_experiment(EXPERIMENT_HP, INFO, checkpoint_paths)
             end_t = time.perf_counter()
 
             for k, v in experiment_result.items():
@@ -199,7 +210,6 @@ def run_training_experiments(
 
             experiment_record.time = end_t - start_t
             experiment_record.systems = INFO.train.systems[()]
-            experiment_record.stacked_systems = INFO.train.stacked_systems[()]
 
             print("\n" + "#" * 160)
             if save_experiment:
@@ -246,7 +256,7 @@ def run_testing_experiments(
         HP: Namespace,
         iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
         output_kwargs: Dict[str, Any],
-        systems: Dict[str, np.ndarray[LinearSystem]] = None,
+        systems: Dict[str, DimArray] = None,
         result: DimArray = None,
         cache: Namespace = None,
         save_experiment: bool = True
@@ -298,9 +308,16 @@ def run_testing_experiments(
     saved_attrs = ("systems", "dataset")
     fname_dict = {attr: f"{test_output_dir}/{attr}.pt" for attr in saved_attrs}
 
+    save_dict = {}
+    if save_experiment:
+        for attr, fname in fname_dict.items():
+            if os.path.exists(fname):
+                save_dict[attr] = torch.load(fname, map_location=DEVICE)
+                print(f"Loaded {fname} from disk.")
+
     INFO_DICT = OrderedDict([(
         TESTING_DATASET_TYPE,
-        _construct_info_dict(numpy_HP, cache.info_dict, TESTING_DATASET_TYPE, fname_dict, systems=systems)
+        _construct_info_dict(numpy_HP, cache.info_dict, TESTING_DATASET_TYPE, save_dict, systems=systems)
     )])
     for ds_info in INFO_DICT.values():
         shapes = utils.stack_tensor_arr(utils.multi_map(
@@ -359,6 +376,7 @@ def run_testing_experiments(
                 ).detach()
                 metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
+            metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
 
             experiment_record.metrics = PTR(metric_result)
 
