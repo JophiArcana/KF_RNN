@@ -818,3 +818,8 @@ if __name__ == '__main__':
     # dist = LinearSystemDistribution(get_mop_sample_func("gaussian", "gaussian", 0.1, 0.1))
     # sys = dist.sample(args.system, ())[()]
     # print(torch.linalg.eigvals(sys.F))
+
+
+
+
+

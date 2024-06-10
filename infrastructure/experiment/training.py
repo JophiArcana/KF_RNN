@@ -14,6 +14,7 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.utils import PTR
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.settings import *
 from model.kf import KF
@@ -308,12 +309,15 @@ def _run_unit_training_experiment(
     )
     reference_module, ensembled_learned_kfs = utils.stack_module_arr(learned_kfs)
 
-    # DONE: Create train dataset
-    """ train_dataset = {
-            'input': [n_experiments x ensemble_size x n_systems x dataset_size x sequence_length x I_D],
-            'observation': [n_experiments x ensemble_size x n_systems x dataset_size x sequence_length x O_D]
-        }
-    """
+    # TODO: Slice the datasets
+    for ds_type, ds_info in vars(info).items():
+        ds_info.dataset = utils.multi_map(
+            lambda dataset: PTR(dataset.obj[
+                                :, :, :,
+                                :utils.rgetattr(DHP, f"{ds_type}.dataset_size"),
+                                :utils.rgetattr(DHP, f"{ds_type}.sequence_length")
+            ]), ds_info.dataset, dtype=PTR
+        )
 
     # DONE: Create train dataloader
     train_rem = DHP.train.dataset_size * DHP.train.sequence_length - DHP.train.total_sequence_length

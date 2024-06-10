@@ -80,3 +80,7 @@ if __name__ == "__main__":
     # print(M.output.shape)
     #
     # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
+
+
+
+

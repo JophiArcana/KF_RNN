@@ -28,7 +28,7 @@ def get_mop_sample_func(
             F = torch.zeros((*shape, SHP.S_D, SHP.S_D)).uniform_(-1., 1.)
         else:
             raise AssertionError(f"F_mode must be one of (gaussian, uniform) but got {F_mode}.")
-        F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).unsqueeze(-1).unsqueeze(-2))
+        F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values.unsqueeze(-1).unsqueeze(-2))
 
         B = torch.randn((*shape, SHP.S_D, SHP.I_D)) / (3 ** 0.5)
 

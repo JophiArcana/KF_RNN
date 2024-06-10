@@ -85,8 +85,8 @@ def _construct_info_dict(
 ) -> OrderedDict[str, DimArray]:
     SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
 
-    def _rgetattr_default(n: Namespace, format_str: str) -> Any:
-        return utils.rgetattr_default(n, format_str, ds_type, TRAINING_DATASET_TYPES[0])
+    def _rgetattr_default(format_str: str) -> Any:
+        return utils.rgetattr_default(DHP, format_str, ds_type, TRAINING_DATASET_TYPES[0])
 
     result = OrderedDict()
     # Dataset setup
@@ -112,7 +112,7 @@ def _construct_info_dict(
                 SHP_arrs = OrderedDict(vars(SHP))
                 broadcasted_arrs = utils.broadcast_dim_arrays(
                     distributions_arr,
-                    _rgetattr_default(DHP, "{0}.system.n_systems"),
+                    _rgetattr_default("{0}.system.n_systems"),
                     *SHP_arrs.values()
                 )
                 distributions_arr, n_systems_arr = next(broadcasted_arrs), next(broadcasted_arrs)
@@ -154,33 +154,38 @@ def _construct_info_dict(
     else:
         if hasattr(DHP, ds_type):
             print(f"Generating new dataset for dataset type {ds_type}")
-            systems_arr, analytical_kfs_arr, dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
+            systems_arr, analytical_kfs_arr = utils.broadcast_dim_arrays(
                 systems_arr,
-                analytical_kfs_arr,
-                _rgetattr_default(DHP, "{0}.dataset_size"),
-                _rgetattr_default(DHP, "{0}.total_sequence_length")
+                analytical_kfs_arr
+            )
+            dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
+                _rgetattr_default("{0}.dataset_size"),
+                _rgetattr_default("{0}.total_sequence_length")
             )
             sequence_length_arr = (total_sequence_length_arr + dataset_size_arr - 1) // dataset_size_arr
-            batch_size_arr = (EHP.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * dataset_size_arr
+
+            max_dataset_size = dataset_size_arr.max()
+            max_sequence_length = sequence_length_arr.max()
+            max_batch_size = (EHP.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_dataset_size
 
             dataset_arr = utils.dim_array_like(systems_arr, dtype=TensorDict)
             for idx, system_group in utils.multi_enumerate(systems_arr):
                 dataset_subarr = analytical_kfs_arr.values[idx].add_targets(
                     system_group.generate_dataset(
-                        batch_size=batch_size_arr[idx],
-                        seq_length=sequence_length_arr[idx]
+                        batch_size=max_batch_size,
+                        seq_length=max_sequence_length
                     )
                 )
                 # DONE: For valid and test, don't generate over the ensemble
                 if ds_type == TRAINING_DATASET_TYPES[0]:
-                    dataset_subarr = dataset_subarr.unflatten(2, (EHP.ensemble_size, dataset_size_arr[idx])).permute(0, 2, 1, 3, 4)
+                    dataset_subarr = dataset_subarr.unflatten(2, (EHP.ensemble_size, max_dataset_size)).permute(0, 2, 1, 3, 4)
                 else:
                     dataset_subarr = dataset_subarr.unsqueeze(1).expand(
                         EHP.n_experiments,
                         EHP.ensemble_size,
                         system_group.group_shape[1],
-                        dataset_size_arr[idx],
-                        sequence_length_arr[idx]
+                        max_dataset_size,
+                        max_sequence_length
                     )
                 dataset_arr[idx] = PTR(dataset_subarr)
         else:
@@ -216,9 +221,14 @@ def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
 def _populate_default_values(HP: Namespace) -> None:
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
-    for ds_config in vars(HP.dataset).values():
+    def _rgetattr_default(format_str: str, ds_type: str) -> Any:
+        return utils.rgetattr_default(HP.dataset, format_str, ds_type, TRAINING_DATASET_TYPES[0])
+
+    for ds_type, ds_config in vars(HP.dataset).items():
         if isinstance(ds_config, Namespace):
-            ds_config.sequence_length = (ds_config.total_sequence_length + ds_config.dataset_size - 1) // ds_config.dataset_size
+            dataset_size = _rgetattr_default("{0}.dataset_size", ds_type)
+            total_sequence_length = _rgetattr_default("{0}.total_sequence_length", ds_type)
+            ds_config.sequence_length = (total_sequence_length + dataset_size - 1) // dataset_size
 
             if not hasattr(ds_config, "sequence_buffer"):
                 ds_config.sequence_buffer = 0
