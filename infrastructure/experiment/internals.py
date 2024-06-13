@@ -92,47 +92,47 @@ def _construct_info_dict(
     # Dataset setup
     # DONE: Check for saved systems, if not then construct distribution and save systems
     if "systems" in save_dict:
-        print(f"Systems found for dataset type {ds_type}")
-        systems_arr = save_dict["systems"][ds_type]
-    else:
-        if systems is None or ds_type not in systems:
-            if utils.rhasattr(DHP, f"{ds_type}.system"):
-                # DONE: If no saved systems, then construct distributions based on the provided sample functions
-                try:
-                    sample_func_arr, = utils.broadcast_dim_arrays(
-                        utils.rgetattr(DHP, f"{ds_type}.system.distribution.sample_func"),
-                    )
-                    distributions_arr = utils.multi_map(LinearSystemDistribution, sample_func_arr, dtype=LinearSystemDistribution)
-                except AttributeError:
-                    print(f"Defaulting to train distributions for dataset type {ds_type}")
-                    distributions_arr = info_dict[TRAINING_DATASET_TYPES[0]]["distributions"]
-                result["distributions"] = distributions_arr
+        if utils.rhasattr(DHP, f"{ds_type}.system.distribution"):
+            print(f"Restoring distributions found for dataset type {ds_type}")
+            result["distributions"] = DimArray(utils.rgetattr(DHP, f"{ds_type}.system.distribution"))
 
-                # DONE: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
-                SHP_arrs = OrderedDict(vars(SHP))
-                broadcasted_arrs = utils.broadcast_dim_arrays(
-                    distributions_arr,
-                    _rgetattr_default("{0}.system.n_systems"),
-                    *SHP_arrs.values()
-                )
-                distributions_arr, n_systems_arr = next(broadcasted_arrs), next(broadcasted_arrs)
-                SHP_arrs = OrderedDict(zip(SHP_arrs.keys(), broadcasted_arrs))
+        systems = save_dict["systems"]
 
-                print(f"Sampling new systems for dataset type {ds_type}")
-                systems_arr = utils.dim_array_like(distributions_arr, dtype=LinearSystemGroup)
-                for idx, dist in utils.multi_enumerate(distributions_arr):
+    if systems is None or ds_type not in systems:
+        if utils.rhasattr(DHP, f"{ds_type}.system"):
+            # DONE: If no saved systems, then construct distributions based on the provided sample functions
+            try:
+                distributions_arr = DimArray(utils.rgetattr(DHP, f"{ds_type}.system.distribution"))
+            except AttributeError:
+                print(f"Defaulting to train distributions for dataset type {ds_type}")
+                distributions_arr = info_dict[TRAINING_DATASET_TYPES[0]]["distributions"]
+            result["distributions"] = distributions_arr
 
-                    SHP_copy = copy.deepcopy(SHP)
-                    for k, v in SHP_arrs.items():
-                        setattr(SHP_copy, k, utils.take_from_dim_array(v, dict(zip(distributions_arr.dims, idx))))
+            # DONE: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
+            SHP_arrs = OrderedDict(vars(SHP))
+            broadcasted_arrs = utils.broadcast_dim_arrays(
+                distributions_arr,
+                _rgetattr_default("{0}.system.n_systems"),
+                *SHP_arrs.values()
+            )
+            distributions_arr, n_systems_arr = next(broadcasted_arrs), next(broadcasted_arrs)
+            SHP_arrs = OrderedDict(zip(SHP_arrs.keys(), broadcasted_arrs))
 
-                    systems_arr[idx] = dist.sample(SHP_copy, (EHP.n_experiments, n_systems_arr[idx]))
-            else:
-                print(f"Defaulting to train systems for dataset type {ds_type}")
-                systems_arr = info_dict[TRAINING_DATASET_TYPES[0]]["systems"]
+            print(f"Sampling new systems for dataset type {ds_type}")
+            systems_arr = utils.dim_array_like(distributions_arr, dtype=LinearSystemGroup)
+            for idx, dist in utils.multi_enumerate(distributions_arr):
+
+                SHP_copy = copy.deepcopy(SHP)
+                for k, v in SHP_arrs.items():
+                    setattr(SHP_copy, k, utils.take_from_dim_array(v, dict(zip(distributions_arr.dims, idx))))
+
+                systems_arr[idx] = dist.sample(SHP_copy, (EHP.n_experiments, n_systems_arr[idx]))
         else:
-            print(f"Systems found for dataset type {ds_type}")
-            systems_arr = systems[ds_type]
+            print(f"Defaulting to train systems for dataset type {ds_type}")
+            systems_arr = info_dict[TRAINING_DATASET_TYPES[0]]["systems"]
+    else:
+        print(f"Systems found for dataset type {ds_type}")
+        systems_arr = systems[ds_type]
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
     systems_arr = utils.multi_map(

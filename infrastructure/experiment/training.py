@@ -80,7 +80,7 @@ def _extract_dataset_and_mask_from_indices(
         subsequence_index: [N x E x B x L_SS], Selects the timestep within the trace
     """
     subsequence_length = torch.max(stop_indices - start_indices).item()
-    subsequence_offset = torch.arange(subsequence_length)
+    subsequence_offset = torch.arange(subsequence_length, dtype=torch.int)
 
     n_experiment_idx = torch.arange(indices.shape[0])[:, None, None, None]
     ensemble_size_idx = torch.arange(indices.shape[1])[None, :, None, None]
@@ -136,11 +136,13 @@ def _train_default(
 
         cache.optimizer.zero_grad()
         torch.sum(losses).backward()
-
+        for p in cache.optimizer.param_groups[0]["params"]:
+            p.grad.nan_to_num_()
         cache.optimizer.step()
 
         end_t = time.perf_counter()
         # print(f"Time for forward and backward pass: {end_t - start_t}s")
+        torch.cuda.empty_cache()
 
     cache.t += 1
 
@@ -152,7 +154,7 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 5,
+        checkpoint_frequency: int = 20,
         print_frequency: int = 1
 ) -> TensorDict:
 
@@ -309,15 +311,14 @@ def _run_unit_training_experiment(
     )
     reference_module, ensembled_learned_kfs = utils.stack_module_arr(learned_kfs)
 
-    # TODO: Slice the datasets
-    for ds_type, ds_info in vars(info).items():
-        ds_info.dataset = utils.multi_map(
-            lambda dataset: PTR(dataset.obj[
-                                :, :, :,
-                                :utils.rgetattr(DHP, f"{ds_type}.dataset_size"),
-                                :utils.rgetattr(DHP, f"{ds_type}.sequence_length")
-            ]), ds_info.dataset, dtype=PTR
-        )
+    # TODO: Slice the train dataset
+    info.train.dataset = utils.multi_map(
+        lambda dataset: PTR(dataset.obj[
+                            :, :, :,
+                            :DHP.train.dataset_size,
+                            :DHP.train.sequence_length
+        ]), info.train.dataset, dtype=PTR
+    )
 
     # DONE: Create train dataloader
     train_rem = DHP.train.dataset_size * DHP.train.sequence_length - DHP.train.total_sequence_length
@@ -335,7 +336,7 @@ def _run_unit_training_experiment(
 
     if THP.optim_type == "GD":
         train_index_dataset = TensorDict({
-            "sequence": torch.arange(DHP.train.dataset_size),
+            "sequence": torch.arange(DHP.train.dataset_size, dtype=torch.int),
             "start": torch.zeros((DHP.train.dataset_size,), dtype=torch.int),
             "stop": train_sequence_lengths
         }, batch_size=(DHP.train.dataset_size,))

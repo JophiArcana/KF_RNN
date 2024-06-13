@@ -31,15 +31,13 @@ def run_experiments(
 ) -> DimArray:
     HP = copy.deepcopy(HP)
 
-    training_iterparams, testing_iterparams = [], []
+    training_iterparams = []
     for param_group, params in iterparams:
         _training_params, _testing_params = {}, {}
         for n, v in params.items():
             (_testing_params if n.startswith("dataset.test.") else _training_params)[n] = v
         if len(_training_params) > 0:
             training_iterparams.append((param_group, _training_params))
-        if len(_testing_params) > 0:
-            testing_iterparams.append((param_group, _testing_params))
 
     training_result, training_cache = run_training_experiments(
         HP, training_iterparams, output_kwargs,
@@ -47,7 +45,7 @@ def run_experiments(
     )
 
     return run_testing_experiments(
-        HP, testing_iterparams, output_kwargs,
+        HP, iterparams, output_kwargs,
         systems=systems, result=training_result, cache=training_cache, save_experiment=save_experiment
     )
 
@@ -295,7 +293,6 @@ def run_testing_experiments(
     # SECTION: Run prologue to construct basic data structures
     conditions = (
         (lambda n, _: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
-        (lambda n, _: n.startswith("dataset.test."), "Can only sweep over test dataset hyperparameters during testing."),
         (_supports_dataset_condition(HP, "test"), "Cannot sweep over hyperparameters that determine shape of the testing dataset."),
     )
     numpy_HP, iterparams = _prologue(HP, iterparams, conditions)
@@ -370,11 +367,14 @@ def run_testing_experiments(
                 utils.rgetattr_default(EXPERIMENT_HP, "dataset.{0}.system.n_systems", TESTING_DATASET_TYPE, TRAINING_DATASET_TYPES[0])
             )
             for m in metrics:
-                r = Metrics[m].evaluate(
-                    (EXPERIMENT_HP, exclusive, ensembled_learned_kfs),
-                    metric_cache, sweep_position="outside", with_batch_dim=True
-                ).detach()
-                metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
+                try:
+                    r = Metrics[m].evaluate(
+                        (EXPERIMENT_HP, exclusive, ensembled_learned_kfs),
+                        metric_cache, sweep_position="outside", with_batch_dim=True
+                    ).detach()
+                    metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
+                except NotImplementedError:
+                    pass
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
             metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
 

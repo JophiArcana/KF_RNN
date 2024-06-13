@@ -756,6 +756,8 @@ if __name__ == '__main__':
     # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
 
     """ Sandbox 16 """
+    torch.save(MOPDistribution("gaussian", "gaussian", 0.1, 0.1), "sample_func.pt")
+    raise Exception()
 
     SHP = Namespace(
         S_D=10,

@@ -108,25 +108,25 @@ def test_interface():
 """
 Manually implemented computation of the Riccati solution. Worse precision but parallelizes much faster.
 """
-def _solve_stril_equation(T: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
-    n = T.shape[-1]
-    batch_shape = T.shape[:-2]
-
-    T, E = T.view(-1, n, n), E.view(-1, n, n)                                                   # [B x N x N], [B x N x N]
-
-    stril_indices = torch.tril_indices(n, n, offset=-1)                                         # [2 x (N(N - 1) / 2)]
-    coefficients = torch.zeros((T.shape[0], (n * (n - 1)) // 2, n, n))                          # [B x (N(N - 1) / 2) x N x N]
-
-    for idx, (i, j) in enumerate(zip(*stril_indices)):
-        coefficients[:, idx, i, :i] = coefficients[:, idx, i, :i] + T[:, :i, j]                 # [B x i]
-        coefficients[:, idx, j:, j] = coefficients[:, idx, j:, j] - T[:, i, j:]                 # [B x (N - j)]
-    coefficients = coefficients[:, :, *stril_indices]                                           # [B x (N(N - 1) / 2) x (N(N - 1) / 2)]
-
-    indexed_result = (torch.inverse(coefficients) @ E[:, *stril_indices, None]).squeeze(-1)     # [B x (N(N - 1) / 2)]
-
-    result = torch.zeros_like(T)                                                                # [B x N x N]
-    result[:, *stril_indices] = indexed_result
-    return result.view(*batch_shape, n, n)
+# def _solve_stril_equation(T: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
+#     n = T.shape[-1]
+#     batch_shape = T.shape[:-2]
+#
+#     T, E = T.view(-1, n, n), E.view(-1, n, n)                                                   # [B x N x N], [B x N x N]
+#
+#     stril_indices = torch.tril_indices(n, n, offset=-1)                                         # [2 x (N(N - 1) / 2)]
+#     coefficients = torch.zeros((T.shape[0], (n * (n - 1)) // 2, n, n))                          # [B x (N(N - 1) / 2) x N x N]
+#
+#     for idx, (i, j) in enumerate(zip(*stril_indices)):
+#         coefficients[:, idx, i, :i] = coefficients[:, idx, i, :i] + T[:, :i, j]                 # [B x i]
+#         coefficients[:, idx, j:, j] = coefficients[:, idx, j:, j] - T[:, i, j:]                 # [B x (N - j)]
+#     coefficients = coefficients[:, :, *stril_indices]                                           # [B x (N(N - 1) / 2) x (N(N - 1) / 2)]
+#
+#     indexed_result = (torch.inverse(coefficients) @ E[:, *stril_indices, None]).squeeze(-1)     # [B x (N(N - 1) / 2)]
+#
+#     result = torch.zeros_like(T)                                                                # [B x N x N]
+#     result[:, *stril_indices] = indexed_result
+#     return result.view(*batch_shape, n, n)
 
 
 def _torch_schur(A: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
