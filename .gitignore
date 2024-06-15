@@ -5,4 +5,5 @@ images/
 output/
 papers/
 venv/
+infrastructure/settings.py
 sandbox/cdc_reconstruction_save.pt
