@@ -293,6 +293,8 @@ def _run_training(
 
     if len(results) > 0:
         return torch.stack(results, dim=2)
+    else:
+        return torch.empty(())
 
 def _run_unit_training_experiment(
         HP: Namespace,

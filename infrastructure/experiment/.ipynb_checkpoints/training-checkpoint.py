@@ -1,6 +1,5 @@
 import copy
 import json
-import os
 import time
 from argparse import Namespace
 from inspect import signature
@@ -14,9 +13,9 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import PTR
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.settings import *
+from infrastructure.utils import PTR
 from model.kf import KF
 
 
@@ -292,7 +291,10 @@ def _run_training(
         for checkpoint_path in filter(os.path.exists, checkpoint_paths):
             os.remove(checkpoint_path)
 
-    return torch.stack(results, dim=2)
+    if len(results) > 0:
+        return torch.stack(results, dim=2)
+    else:
+        return torch.empty(())
 
 def _run_unit_training_experiment(
         HP: Namespace,

@@ -2,8 +2,8 @@ import os
 import torch
 
 
-DEVICE: str = "cpu"
-DTYPE: torch.dtype = torch.float64
+DEVICE: str = "cuda"
+DTYPE: torch.dtype = torch.float32
 PROJECT_NAME: str = "KF_RNN"
 PROJECT_PATH: str = os.getcwd()[:os.getcwd().find(PROJECT_NAME) + len(PROJECT_NAME)]
 
