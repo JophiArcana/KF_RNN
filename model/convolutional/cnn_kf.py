@@ -16,12 +16,8 @@ from model.kf import KF
 
 class CnnKF(ConvolutionalKF):
     def __init__(self, modelArgs: Namespace):
-        super().__init__()
-
-        self.I_D = modelArgs.I_D
-        self.O_D = modelArgs.O_D
+        super().__init__(modelArgs)
         self.ir_length = modelArgs.ir_length
-        self.input_enabled = modelArgs.input_enabled
 
         if self.input_enabled:
             self.input_IR = nn.Parameter(torch.zeros(modelArgs.I_D, self.ir_length, modelArgs.O_D))     # [I_D x R x O_D]

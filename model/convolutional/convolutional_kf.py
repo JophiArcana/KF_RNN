@@ -1,8 +1,6 @@
-from argparse import Namespace
 from typing import *
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as Fn
 from tensordict import TensorDict
 
@@ -73,7 +71,7 @@ class ConvolutionalKF(KF):
 
     @classmethod
     def to_sequential_batch(cls, kfs: TensorDict[str, torch.Tensor], input_enabled: bool) -> TensorDict[str, torch.Tensor]:
-        input_IR, observation_IR = torch.Tensor(kfs['input_IR']), torch.Tensor(kfs['observation_IR'])       # [... x I_D x R x O_D], [... x O_D x R x O_D]
+        input_IR, observation_IR = torch.Tensor(kfs["input_IR"]), torch.Tensor(kfs["observation_IR"])       # [... x I_D x R x O_D], [... x O_D x R x O_D]
         I_D, R, O_D = input_IR.shape[-3:]
 
         S_D = R * ((I_D + O_D) if input_enabled else O_D)
@@ -126,15 +124,15 @@ class ConvolutionalKF(KF):
         # DONE: Construct K matrix
         K = H.mT                                                                                            # [... x R(O_D + I_D) x O_D] or [... x RO_D x O_D]
 
-        return TensorDict({'F': F, 'B': B, 'H': H, 'K': K}, batch_size=kfs.shape)
+        return TensorDict({"F": F, "B": B, "H": H, "K": K}, batch_size=kfs.shape)
 
     """ forward
         :parameter {
-            'input': [B x L x I_D],
-            'observation': [B x L x O_D]
+            "input": [B x L x I_D],
+            "observation": [B x L x O_D]
         }
         :returns {
-            'observation_estimation': [B x L x O_D]
+            "observation_estimation": [B x L x O_D]
         }
     """
     def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
@@ -151,7 +149,7 @@ class ConvolutionalKF(KF):
             padding=(L - 1, 0)
         )[:, :L]
 
-        return {'observation_estimation': result}
+        return {"observation_estimation": result}
 
 
 

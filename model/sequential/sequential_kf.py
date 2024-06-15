@@ -101,7 +101,7 @@ class SequentialKF(KF):
 
         # Highlight
         w = t1t1_w - 2 * t1t2_w + t2t2_w                                                        # [B... x S_D x S_D]
-        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ w @ sqrt_S_Ws) # [Bf x Bs]
+        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ w @ sqrt_S_Ws)                      # [B...]
 
         # Observation noise error
         # Highlight

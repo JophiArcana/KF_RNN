@@ -12,12 +12,8 @@ from model.sequential import SequentialKF
 
 class RnnKF(SequentialKF):
     def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
-        super().__init__()
-
+        super().__init__(modelArgs)
         self.S_D = modelArgs.S_D
-        self.I_D = modelArgs.I_D
-        self.O_D = modelArgs.O_D
-        self.input_enabled = modelArgs.input_enabled
 
         self.F = nn.Parameter(initialization.get("F", 1.0 * torch.eye(self.S_D)))
         if self.input_enabled:

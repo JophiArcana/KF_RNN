@@ -144,10 +144,11 @@ class KF(nn.Module):
         cache.t += 1
         return error[None], terminate_condition()
 
-    def __init__(self):
+    def __init__(self, modelArgs: Namespace):
         super().__init__()
-        self.I_D = self.O_D = None
-        self.input_enabled = None
+        self.I_D: int = modelArgs.I_D
+        self.O_D: int = modelArgs.O_D
+        self.input_enabled: bool = modelArgs.input_enabled
 
     def extract(self, trace: Dict[str, torch.Tensor], S_D: int) -> Sequence[torch.Tensor]:
         inputs, observations = trace['input'], trace['observation']

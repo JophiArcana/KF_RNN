@@ -2,6 +2,7 @@ import copy
 import os
 import sys
 from argparse import Namespace
+from typing import *
 
 import numpy as np
 import tensordict.utils
@@ -26,6 +27,7 @@ from model.convolutional import CnnKFLeastSquares
 from model.kf import KF
 from model.sequential import RnnKFPretrainAnalytical
 from model.transformer import GPT2InContextKF
+from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LinearSystemGroup, MOPDistribution
 
 
@@ -42,9 +44,7 @@ if __name__ == "__main__":
     test_dataset_size = 256
 
     n_firs = 5
-    cnn_sequence_lengths = [*range(1, context_length)]
     rnn_increment = 5
-    rnn_sequence_lengths = [*range(rnn_increment, context_length, rnn_increment)]
 
     save_file = "sandbox/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
@@ -195,7 +195,8 @@ if __name__ == "__main__":
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
             ("total_trace_length", {
-                "dataset.train.total_sequence_length": cnn_sequence_lengths
+                "model.model": [ZeroPredictor] + [CnnKFLeastSquares] * (context_length - 1),
+                "dataset.train.total_sequence_length": [*range(context_length),]
             })
         ]
 
@@ -219,7 +220,8 @@ if __name__ == "__main__":
 
         configurations_baseline_rnn = [
             ("total_trace_length", {
-                "dataset.train.total_sequence_length": rnn_sequence_lengths
+                "model.model": [ZeroPredictor] + [RnnKFPretrainAnalytical] * ((context_length - 1) // rnn_increment),
+                "dataset.train.total_sequence_length": [*range(0, context_length, rnn_increment),]
             })
         ]
 
@@ -262,10 +264,6 @@ if __name__ == "__main__":
         il = utils.batch_trace(systems.S_prediction_err_inf)
         eil = loss(dataset["target"])
 
-        pad = (
-            0, 0,   # No pad for O_D
-            1, 0    # Predict zeros if no training data
-        )
 
         # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_test_systems x test_dataset_size x context_length x O_D]
@@ -276,36 +274,28 @@ if __name__ == "__main__":
 
         # [n_firs x train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
         # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [train.sequence_length x n_firs x n_test_systems x test_dataset_size x O_D]
-        # -> [n_firs x n_test_systems x test_dataset_size x train.sequence_length x O_D]
+        # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]
         # -> [n_firs x n_test_systems x test_dataset_size x context_length x O_D]
-        cnn_output = Fn.pad(M_baseline_cnn.output.squeeze(5).squeeze(4)[:, torch.arange(len(cnn_sequence_lengths)), :, :, torch.tensor(cnn_sequence_lengths)].permute(1, 2, 3, 0, 4), pad)
+        cnn_output = torch.diagonal(M_baseline_cnn.output.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
         cnn_l = loss(cnn_output)
-        # [n_firs x train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size]
-        # -> [n_firs x n_test_systems x test_dataset_size x train.sequence_length]
+        # [n_firs x context_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
+        # -> [n_firs x context_length x n_test_systems x test_dataset_size]
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
-        cnn_al = torch.cat([
-            zero_predictor_al[None, :, None, None].expand(n_firs, n_test_systems, test_dataset_size, 1),
-            M_baseline_cnn.al.squeeze(5).squeeze(4).permute(0, 2, 3, 1)
-        ], dim=-1)
+        cnn_al = M_baseline_cnn.al.squeeze(5).squeeze(4).permute(0, 2, 3, 1)
 
 
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
         # -> [train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [train.sequence_length x n_test_systems x test_dataset_size x O_D]
         # -> [n_test_systems x test_dataset_size x train.sequence_length x O_D]
-        # -> [n_test_systems x test_dataset_size x context_length x O_D]
-        rnn_output = Fn.pad(M_baseline_rnn.output.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3), pad)
+        rnn_sequence_lengths = [*range(0, context_length, rnn_increment),]
+        rnn_output = M_baseline_rnn.output.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
         # -> [train.sequence_length x n_test_systems x test_dataset_size]
         # -> [n_test_systems x test_dataset_size x train.sequence_length]
-        # -> [n_test_systems x test_dataset_size x context_length]
-        rnn_al = torch.cat([
-            zero_predictor_al[:, None, None].expand(n_test_systems, test_dataset_size, 1),
-            M_baseline_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
-        ], dim=-1)
+        rnn_al = M_baseline_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
+
 
         rnn_indices = torch.tensor([0, *rnn_sequence_lengths])
         padded_rnn_output = torch.zeros_like(transformer_output)

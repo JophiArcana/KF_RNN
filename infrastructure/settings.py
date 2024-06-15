@@ -3,7 +3,7 @@ import torch
 
 
 DEVICE: str = "cpu"
-DTYPE: torch.dtype = torch.float32
+DTYPE: torch.dtype = torch.float64
 PROJECT_NAME: str = "KF_RNN"
 PROJECT_PATH: str = os.getcwd()[:os.getcwd().find(PROJECT_NAME) + len(PROJECT_NAME)]
 

@@ -31,8 +31,9 @@ from model.kf import KF
 from model.sequential import *
 from model.convolutional import *
 from model.transformer import *
+from model.zero_predictor import ZeroPredictor
 
-from system import linear_time_invariant
+from system.linear_time_invariant import LinearSystemGroup
 
 
 if __name__ == '__main__':
@@ -624,50 +625,48 @@ if __name__ == '__main__':
     # # print((analytical_error > torch.diag(il)).squeeze())
 
     """ Sandbox 12 """
-    I_D, O_D, input_enabled = 1, 5, False
-    model_shape = ()
-
-    n_embd = 8 # 256
-    n_positions = 16
-    configuration = GPT2Config(
-        n_positions=n_positions,  # set to sthg large advised
-        n_embd=n_embd,
-        n_layer=2,  # 12
-        n_head=4,   # 8
-        resid_pdrop=0.0,
-        embd_pdrop=0.0,
-        attn_pdrop=0.0,
-        use_cache=False,
-    )
-    n_sys, B, L = 3, 5, 12
-
-    MHP = Namespace(gpt2=configuration, I_D=I_D, O_D=O_D, input_enabled=input_enabled)
-    # model = GPT2InContextKF(MHP)
+    # I_D, O_D, input_enabled = 1, 5, False
+    # model_shape = ()
+    #
+    # n_embd = 8 # 256
+    # n_positions = 16
+    # configuration = GPT2Config(
+    #     n_positions=n_positions,  # set to sthg large advised
+    #     n_embd=n_embd,
+    #     n_layer=2,  # 12
+    #     n_head=4,   # 8
+    #     resid_pdrop=0.0,
+    #     embd_pdrop=0.0,
+    #     attn_pdrop=0.0,
+    #     use_cache=False,
+    # )
+    # n_sys, B, L = 3, 5, 12
+    #
+    # MHP = Namespace(gpt2=configuration, I_D=I_D, O_D=O_D, input_enabled=input_enabled)
+    # # model = GPT2InContextKF(MHP)
+    # # dataset = TensorDict({
+    # #     "input": torch.randn((B, L, I_D)),
+    # #     "observation": nn.Parameter(torch.randn((B, L, O_D)))
+    # # }, batch_size=(B, L))
+    # # model(dataset)
+    #
+    # models = utils.multi_map(
+    #     lambda _: GPT2InContextKF(MHP),
+    #     np.empty(model_shape), dtype=object
+    # )
+    #
     # dataset = TensorDict({
-    #     "input": torch.randn((B, L, I_D)),
-    #     "observation": nn.Parameter(torch.randn((B, L, O_D)))
-    # }, batch_size=(B, L))
-    # model(dataset)
-
-    models = utils.multi_map(
-        lambda _: GPT2InContextKF(MHP),
-        np.empty(model_shape), dtype=object
-    )
-
-    dataset = TensorDict({
-        "input": torch.randn((*model_shape, n_sys, B, L, I_D)),
-        "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
-    }, batch_size=(*model_shape, n_sys, B, L))
-
-
-    out = KF.run(*utils.stack_module_arr(models), dataset)
-    print(out.shape)
-    print(torch.autograd.grad(
-        out[:, :, 0].norm(),
-        dataset["observation"]
-    )[0][0, 0])
-
-    raise Exception()
+    #     "input": torch.randn((*model_shape, n_sys, B, L, I_D)),
+    #     "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
+    # }, batch_size=(*model_shape, n_sys, B, L))
+    #
+    #
+    # out = KF.run(*utils.stack_module_arr(models), dataset)
+    # print(out.shape)
+    # print(torch.autograd.grad(
+    #     out[:, :, 0].norm(),
+    #     dataset["observation"]
+    # )[0][0, 0])
 
     """ Sandbox 13 """
     # base_exp_name = 'Basic'
@@ -759,9 +758,6 @@ if __name__ == '__main__':
     # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
 
     """ Sandbox 16 """
-    torch.save(MOPDistribution("gaussian", "gaussian", 0.1, 0.1), "sample_func.pt")
-    raise Exception()
-
     SHP = Namespace(
         S_D=10,
         I_D=1,
@@ -769,6 +765,12 @@ if __name__ == '__main__':
         SNR=5.0,
         input_enabled=False
     )
+    lsg = LinearSystemGroup.sample_stable_systems(SHP, (2, 3))
+    print(ZeroPredictor.analytical_error(None, lsg.td()))
+    print(utils.batch_trace(lsg.td()["S_observation_inf"]))
+    raise Exception()
+
+
     # systems = torch.load("output/in_context/CDCReconstruction/training/systems.pt", map_location=DEVICE)
     # lsgs = {
     #     k: utils.multi_map(

@@ -10,13 +10,10 @@ from model.kf import KF
 
 class GPT2InContextKF(KF):
     def __init__(self, modelArgs: Namespace):
-        super().__init__()
-
+        super().__init__(modelArgs)
         self.config = modelArgs.gpt2
-        self.I_D, self.O_D = modelArgs.I_D, modelArgs.O_D
         self.n_embd = self.config.n_embd
         self.n_positions = self.config.n_positions
-        self.input_enabled = modelArgs.input_enabled
 
         self.core = GPT2Model(self.config)
 
