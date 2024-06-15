@@ -46,7 +46,7 @@ if __name__ == "__main__":
     rnn_increment = 5
     rnn_sequence_lengths = [*range(rnn_increment, context_length, rnn_increment)]
 
-    save_file = "sandbox/cdc_reconstruction_save2.pt"
+    save_file = "sandbox/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
         save = torch.load(save_file, map_location=DEVICE)
 
@@ -59,7 +59,7 @@ if __name__ == "__main__":
         ))
     else:
         """ Transformer experiment """
-        exp_name_transformer = "CDCReconstruction_transformer2"
+        exp_name_transformer = "CDCReconstruction_transformer"
 
         ARGS_TRANSFORMER = loader.generate_args(SHP)
         ARGS_TRANSFORMER.model.model = GPT2InContextKF
