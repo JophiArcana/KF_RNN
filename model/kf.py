@@ -1,4 +1,6 @@
+import gc
 from argparse import Namespace
+from collections import OrderedDict
 from types import MappingProxyType
 from typing import *
 
@@ -8,7 +10,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.linear_system import LinearSystemGroup
+from system.linear_time_invariant import LinearSystemGroup
 
 
 class KF(nn.Module):
@@ -28,13 +30,10 @@ class KF(nn.Module):
             split_size: int = 1 << 20
     ) -> torch.Tensor:
         n = ensembled_kfs.ndim
-        d = dataset.ndim - n
+        L = dataset.shape[-1]
 
         # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        if d == 1:
-            return utils.run_module_arr(reference_module, ensembled_kfs, dataset, kwargs)["observation_estimation"]
-
-        _dataset = dataset.flatten(n, n + d - 2) if d > 2 else dataset
+        _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
         splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size + split_size - 1) // split_size + 1)).to(torch.int)
@@ -45,15 +44,50 @@ class KF(nn.Module):
             _result_list.append(utils.run_module_arr(
                 reference_module,
                 ensembled_kfs,
-                _dataset.flatten(0, n - 1)[:, lo:hi].unflatten(0, ensembled_kfs.shape),
+                _dataset.view(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L),
                 kwargs
             )["observation_estimation"])
-        _result = torch.cat(_result_list, dim=n)
 
-        if d > 2:
-            return _result.unflatten(n, dataset.shape[n:n + d - 1])
-        else:
-            return _result
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        _result = torch.cat(_result_list, dim=n)
+        return _result.view_as(dataset["observation"])
+
+    @classmethod
+    def gradient(cls,
+                 reference_module: nn.Module,
+                 ensembled_kfs: TensorDict[str, torch.Tensor],
+                 dataset: TensorDict[str, torch.Tensor],
+                 kwargs: Dict[str, Any] = MappingProxyType(dict()),
+                 split_size: int = 1 << 20
+    ) -> TensorDict[str, torch.Tensor]:
+        n = ensembled_kfs.ndim
+        L = dataset.shape[-1]
+
+        # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
+        _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
+        _dataset_size = sum(v.numel() for _, v in _dataset.items())
+
+        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size + split_size - 1) // split_size + 1)).to(torch.int)
+        splits = torch.tensor(sorted(set(splits.tolist())))
+
+        _result_list = []
+        for lo, hi in zip(splits[:-1], splits[1:]):
+            _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
+
+            out = utils.run_module_arr(reference_module, ensembled_kfs, _dataset_slice, kwargs)["observation_estimation"][:, -1].norm() ** 2
+            params = OrderedDict({k: v for k, v in _dataset_slice.items() if v.requires_grad})
+            _result_list.append(TensorDict(dict(zip(
+                params.keys(),
+                torch.autograd.grad(out, (*params.values(),), allow_unused=True)
+            )), batch_size=_dataset_slice.shape))
+
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        _result = torch.cat(_result_list, dim=n)
+        return _result.view(dataset.shape)
 
     @classmethod
     def evaluate_run(cls,
@@ -112,6 +146,7 @@ class KF(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.I_D = self.O_D = None
         self.input_enabled = None
 
     def extract(self, trace: Dict[str, torch.Tensor], S_D: int) -> Sequence[torch.Tensor]:

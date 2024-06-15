@@ -8,8 +8,7 @@ from dimarray import DimArray, Dataset
 
 from infrastructure import utils
 from infrastructure.experiment.static import *
-from model.linear_system import LinearSystemGroup, AnalyticalKFGroup
-from model.linear_system_distribution import LinearSystemDistribution
+from system.linear_time_invariant import LinearSystemGroup, AnalyticalKFGroup
 
 
 def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str, Any], bool]:
@@ -196,12 +195,12 @@ def _construct_info_dict(
     # DONE: Compute the irreducible losses that correspond to the generated systems
     irreducible_loss_arr = utils.dim_array_like(systems_arr, dtype=tuple)
     for idx, systems_subarr in utils.multi_enumerate(systems_arr):
-        S_observation_inf = utils.stack_tensor_arr(utils.multi_map(
-            lambda sys: sys.S_observation_inf, systems_subarr, dtype=torch.Tensor
+        S_prediction_err_inf = utils.stack_tensor_arr(utils.multi_map(
+            lambda sys: sys.S_prediction_err_inf, systems_subarr, dtype=torch.Tensor
         ))
 
         # DONE: Need to store as a tuple because directly storing a tensor breaks NumPy internals
-        irreducible_loss_arr[idx] = PTR(utils.batch_trace(S_observation_inf))
+        irreducible_loss_arr[idx] = PTR(utils.batch_trace(S_prediction_err_inf))
     result["irreducible_loss"] = irreducible_loss_arr
 
     return result

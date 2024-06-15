@@ -9,12 +9,11 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import PTR
 from model.kf import KF
-from model.linear_system import LinearSystemGroup
+from system.linear_time_invariant import LinearSystemGroup
+
 
 MetricVars = Tuple[Namespace, Namespace, TensorDict[str, torch.Tensor]]
-
 
 def _truncation_mask(config: Namespace) -> torch.Tensor:
     return torch.Tensor(torch.arange(config.sequence_length) >= config.sequence_buffer)

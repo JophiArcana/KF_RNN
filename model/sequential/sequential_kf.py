@@ -7,7 +7,6 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from model.kf import KF
-from model.linear_system import LinearSystemGroup
 
 
 class SequentialKF(KF):

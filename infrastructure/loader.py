@@ -8,7 +8,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.settings import DEVICE
-from model.linear_system import LinearSystemGroup
+from system.linear_time_invariant import LinearSystemGroup
 
 
 """

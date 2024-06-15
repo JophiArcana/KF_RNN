@@ -19,7 +19,6 @@ from infrastructure.experiment.metrics import Metrics
 from infrastructure.experiment.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
 from infrastructure.settings import DEVICE
-from model.linear_system import LinearSystemGroup
 
 
 def run_experiments(
@@ -227,7 +226,7 @@ def run_training_experiments(
         # Save code to for experiment reproducibility
         code_base_dir = f"{output_dir}/code"
         os.makedirs(code_base_dir, exist_ok=True)
-        for dir_name in ("infrastructure", "model"):
+        for dir_name in ("infrastructure", "model", "system"):
             code_dir = f"{code_base_dir}/{dir_name}"
             if not os.path.exists(code_dir):
                 shutil.copytree(dir_name, code_dir, dirs_exist_ok=True)
@@ -278,7 +277,7 @@ def run_testing_experiments(
         output_dir = test_output_dir = output_fname = None
 
     if save_experiment and os.path.exists(output_fname):
-        result = torch.load(output_fname)
+        result = torch.load(output_fname, map_location=DEVICE)
     elif result is None:
         train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
         assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."

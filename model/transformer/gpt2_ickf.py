@@ -46,7 +46,7 @@ class GPT2InContextKF(KF):
 
         if position == "absolute":
             assert L <= self.n_positions, f"Trace length must be at most the context length of the transformer but got {self.n_positions}."
-            # print("absolute position", embds.shape)
+            print("absolute position", embds.shape)
 
             out = self.core(inputs_embeds=embds)
             out_embds = out.last_hidden_state                                                           # [B x L x S_D]

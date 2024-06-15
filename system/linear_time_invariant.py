@@ -7,9 +7,10 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.discrete_are import solve_discrete_are
+from system.core import SystemGroup
 
 
-class LinearSystemGroup(nn.Module):
+class LinearSystemGroup(SystemGroup):
     @classmethod
     def sample_stable_systems(cls, shp: Namespace, batch_size: Tuple[int, ...], **kwargs: torch.Tensor):
         params = {
@@ -25,11 +26,10 @@ class LinearSystemGroup(nn.Module):
         return LinearSystemGroup(params, shp.input_enabled)
 
     def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
-        super().__init__()
+        super().__init__(input_enabled)
         self.eval()
 
         F, B, H, sqrt_S_W, sqrt_S_V = map(params.__getitem__, ("F", "B", "H", "sqrt_S_W", "sqrt_S_V"))
-        self.input_enabled = input_enabled
 
         self.group_shape = F.shape[:-2]
         self.S_D = F.shape[-1]                                                      # State dimension
@@ -55,10 +55,11 @@ class LinearSystemGroup(nn.Module):
         self.register_buffer("S_state_inf", (V @ (
             (Vinv @ torch.complex(self.S_W, torch.zeros_like(self.S_W)) @ Vinv.mT) / (1 - L.unsqueeze(-1) * L.unsqueeze(-2))
         ) @ V.mT).real)                                                                                             # [N... x S_D x S_D]
+        self.register_buffer("S_observation_inf", self.H @ self.S_state_inf @ self.H.mT + self.S_V)                 # [N... x S_D x S_D]
 
         S_state_inf_intermediate = solve_discrete_are(self.F.mT, self.H.mT, self.S_W, self.S_V)                     # [N... x S_D x S_D]
-        self.register_buffer("S_observation_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)         # [N... x O_D x O_D]
-        self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_observation_inf))     # [N... x S_D x O_D]
+        self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
+        self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
 
     def generate_dataset(self,
                          batch_size: int,       # B
@@ -69,12 +70,6 @@ class LinearSystemGroup(nn.Module):
 
         states = torch.randn((*self.group_shape, batch_size, self.S_D)) @ sqrt_S_state_inf.mT   # [N... x B x S_D]
         return self.continue_dataset(states, seq_length)
-
-    def td(self) -> TensorDict[str, torch.Tensor]:
-        return TensorDict({
-            **dict(self.named_parameters()),
-            **dict(self.named_buffers())
-        }, batch_size=self.group_shape)
 
     def continue_dataset(self,
                          states: torch.Tensor,  # [N... x B x S_D]
@@ -179,6 +174,45 @@ class AnalyticalKFGroup(nn.Module):
             "observation_estimation": torch.stack(observation_estimations, dim=-2),                     # [N... x B x L x O_D]
             "observation_covariance": torch.stack(observation_covariances, dim=-3).unsqueeze(-4).expand(*self.group_shape, B, -1, -1, -1)   # [N... x B x L x O_D x O_D]
         }, batch_size=(*self.group_shape, B, L))
+
+
+class LinearSystemDistribution(object):
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> Dict[str, torch.Tensor]:
+        raise NotImplementedError()
+
+    def sample(self, SHP: Namespace, shape: Tuple[int, ...]) -> LinearSystemGroup:
+        return LinearSystemGroup(self.sample_parameters(SHP, shape), SHP.input_enabled)
+
+
+class MOPDistribution(LinearSystemDistribution):
+    def __init__(self, F_mode: str, H_mode: str, W_std: float, V_std: float) -> None:
+        assert F_mode in ("gaussian", "uniform"), f"F_mode must be one of (gaussian, uniform) but got {F_mode}."
+        self.F_mode = F_mode
+
+        assert H_mode in ("gaussian", "uniform"), f"H_mode must be one of (gaussian, uniform) but got {H_mode}."
+        self.H_mode = H_mode
+
+        self.W_std = W_std
+        self.V_std = V_std
+
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> Dict[str, torch.Tensor]:
+        if self.F_mode == "gaussian":
+            F = torch.randn((*shape, SHP.S_D, SHP.S_D))
+        else:
+            F = torch.zeros((*shape, SHP.S_D, SHP.S_D)).uniform_(-1., 1.)
+        F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values.unsqueeze(-1).unsqueeze(-2))
+
+        B = torch.randn((*shape, SHP.S_D, SHP.I_D)) / (3 ** 0.5)
+
+        if self.H_mode == "gaussian":
+            H = torch.randn((*shape, SHP.O_D, SHP.S_D)) / (3 ** 0.5)
+        else:
+            H = torch.zeros((*shape, SHP.O_D, SHP.S_D)).uniform_(-1., 1.)
+
+        sqrt_S_W = (torch.eye(SHP.S_D) * self.W_std).expand(*shape, SHP.S_D, SHP.S_D)
+        sqrt_S_V = (torch.eye(SHP.O_D) * self.V_std).expand(*shape, SHP.O_D, SHP.O_D)
+
+        return {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V}
 
 
 

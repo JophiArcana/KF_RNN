@@ -2,10 +2,7 @@ import os
 
 from infrastructure import loader
 from infrastructure.experiment import *
-from model.sequential import *
 from model.convolutional import *
-from model.linear_system_distribution import get_mop_sample_func
-
 
 if __name__ == "__main__":
     os.chdir("..")

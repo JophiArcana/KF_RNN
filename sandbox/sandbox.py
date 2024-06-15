@@ -27,12 +27,13 @@ from infrastructure import utils, loader
 from infrastructure.experiment import *
 from infrastructure.settings import DTYPE, DEVICE
 from infrastructure.discrete_are import Riccati, solve_discrete_are
-from model.linear_system import LinearSystemGroup
-from model.linear_system_distribution import *
 from model.kf import KF
 from model.sequential import *
 from model.convolutional import *
 from model.transformer import *
+
+from system import linear_time_invariant
+
 
 if __name__ == '__main__':
     torch.set_printoptions(precision=12, sci_mode=False, linewidth=120)
@@ -623,48 +624,50 @@ if __name__ == '__main__':
     # # print((analytical_error > torch.diag(il)).squeeze())
 
     """ Sandbox 12 """
-    # I_D, O_D, input_enabled = 1, 5, False
-    # model_shape = (1, 2)
-    #
-    # n_embd = 8 # 256
-    # n_positions = 7
-    # configuration = GPT2Config(
-    #     n_positions=n_positions,  # set to sthg large advised
-    #     n_embd=n_embd,
-    #     n_layer=2,  # 12
-    #     n_head=4,   # 8
-    #     resid_pdrop=0.0,
-    #     embd_pdrop=0.0,
-    #     attn_pdrop=0.0,
-    #     use_cache=False,
-    # )
-    # n_sys, B, L = 3, 5, 12
-    #
-    # MHP = Namespace(gpt2=configuration, I_D=I_D, O_D=O_D, input_enabled=input_enabled)
-    # # model = GPT2InContextKF(MHP)
-    # # dataset = TensorDict({
-    # #     "input": torch.randn((B, L, I_D)),
-    # #     "observation": nn.Parameter(torch.randn((B, L, O_D)))
-    # # }, batch_size=(B, L))
-    # # model(dataset)
-    #
-    # models = utils.multi_map(
-    #     lambda _: GPT2InContextKF(MHP),
-    #     np.empty(model_shape), dtype=object
-    # )
-    #
+    I_D, O_D, input_enabled = 1, 5, False
+    model_shape = ()
+
+    n_embd = 8 # 256
+    n_positions = 16
+    configuration = GPT2Config(
+        n_positions=n_positions,  # set to sthg large advised
+        n_embd=n_embd,
+        n_layer=2,  # 12
+        n_head=4,   # 8
+        resid_pdrop=0.0,
+        embd_pdrop=0.0,
+        attn_pdrop=0.0,
+        use_cache=False,
+    )
+    n_sys, B, L = 3, 5, 12
+
+    MHP = Namespace(gpt2=configuration, I_D=I_D, O_D=O_D, input_enabled=input_enabled)
+    # model = GPT2InContextKF(MHP)
     # dataset = TensorDict({
-    #     "input": torch.randn((*model_shape, n_sys, B, L, I_D)),
-    #     "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
-    # }, batch_size=(*model_shape, n_sys, B, L))
-    #
-    # out = KF.run(*utils.stack_module_arr(models), dataset)
-    # print(torch.autograd.grad(
-    #     out[:, :, :, :, 1].norm(),
-    #     dataset["observation"]
-    # )[0][0, 0, 0, 0])
-    #
-    # raise Exception()
+    #     "input": torch.randn((B, L, I_D)),
+    #     "observation": nn.Parameter(torch.randn((B, L, O_D)))
+    # }, batch_size=(B, L))
+    # model(dataset)
+
+    models = utils.multi_map(
+        lambda _: GPT2InContextKF(MHP),
+        np.empty(model_shape), dtype=object
+    )
+
+    dataset = TensorDict({
+        "input": torch.randn((*model_shape, n_sys, B, L, I_D)),
+        "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
+    }, batch_size=(*model_shape, n_sys, B, L))
+
+
+    out = KF.run(*utils.stack_module_arr(models), dataset)
+    print(out.shape)
+    print(torch.autograd.grad(
+        out[:, :, 0].norm(),
+        dataset["observation"]
+    )[0][0, 0])
+
+    raise Exception()
 
     """ Sandbox 13 """
     # base_exp_name = 'Basic'
