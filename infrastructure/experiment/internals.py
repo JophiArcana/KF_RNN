@@ -8,7 +8,7 @@ from dimarray import DimArray, Dataset
 
 from infrastructure import utils
 from infrastructure.experiment.static import *
-from system.linear_time_invariant import LinearSystemGroup, AnalyticalKFGroup
+from system.core import SystemGroup
 
 
 def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str, Any], bool]:
@@ -118,7 +118,7 @@ def _construct_info_dict(
             SHP_arrs = OrderedDict(zip(SHP_arrs.keys(), broadcasted_arrs))
 
             print(f"Sampling new systems for dataset type {ds_type}")
-            systems_arr = utils.dim_array_like(distributions_arr, dtype=LinearSystemGroup)
+            systems_arr = utils.dim_array_like(distributions_arr, dtype=SystemGroup)
             for idx, dist in utils.multi_enumerate(distributions_arr):
 
                 SHP_copy = copy.deepcopy(SHP)
@@ -135,16 +135,10 @@ def _construct_info_dict(
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
     systems_arr = utils.multi_map(
-        lambda lsg: LinearSystemGroup(lsg.state_dict(), SHP.input_enabled),
-        systems_arr, dtype=LinearSystemGroup
+        lambda sg: type(sg)(sg.state_dict(), SHP.input_enabled),
+        systems_arr, dtype=SystemGroup
     )
     result["systems"] = systems_arr
-
-    # DONE: Construct dictionary with the analytical KFs that correspond to the generated systems
-    analytical_kfs_arr = utils.multi_map(
-        lambda lsg: AnalyticalKFGroup(lsg),
-        systems_arr, dtype=AnalyticalKFGroup
-    )
 
     # DONE: Check for saved dataset, otherwise sample and save datasets
     if "dataset" in save_dict:
@@ -153,10 +147,6 @@ def _construct_info_dict(
     else:
         if hasattr(DHP, ds_type):
             print(f"Generating new dataset for dataset type {ds_type}")
-            systems_arr, analytical_kfs_arr = utils.broadcast_dim_arrays(
-                systems_arr,
-                analytical_kfs_arr
-            )
             dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
                 _rgetattr_default("{0}.dataset_size"),
                 _rgetattr_default("{0}.total_sequence_length")
@@ -169,11 +159,9 @@ def _construct_info_dict(
 
             dataset_arr = utils.dim_array_like(systems_arr, dtype=TensorDict)
             for idx, system_group in utils.multi_enumerate(systems_arr):
-                dataset_subarr = analytical_kfs_arr.values[idx].add_targets(
-                    system_group.generate_dataset(
-                        batch_size=max_batch_size,
-                        seq_length=max_sequence_length
-                    )
+                dataset_subarr = system_group.generate_dataset(
+                    batch_size=max_batch_size,
+                    seq_length=max_sequence_length
                 )
                 # DONE: For valid and test, don't generate over the ensemble
                 if ds_type == TRAINING_DATASET_TYPES[0]:

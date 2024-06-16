@@ -111,6 +111,10 @@ def run_module_arr(
 def double_vmap(func: Callable) -> Callable:
     return torch.vmap(torch.vmap(func))
 
+def sqrtm(t: torch.Tensor) -> torch.Tensor:
+    L, V = torch.linalg.eig(t)
+    return (V @ torch.diag_embed(L ** 0.5) @ torch.inverse(V)).real
+
 
 """
 NumPy Array Comprehension Operations

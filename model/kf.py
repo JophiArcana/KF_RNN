@@ -10,7 +10,6 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from system.linear_time_invariant import LinearSystemGroup
 
 
 class KF(nn.Module):
@@ -179,7 +178,7 @@ class KF(nn.Module):
     @classmethod
     def analytical_error(cls,
                          kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
-                         lsg: LinearSystemGroup                 # [B... x ...]
+                         sg_td: TensorDict[str, torch.Tensor]   # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 

@@ -1,10 +1,13 @@
+from argparse import Namespace
+from typing import *
+
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
 
 class SystemGroup(nn.Module):
-    def __init__(self, input_enabled: bool):
+    def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
         super().__init__()
         self.input_enabled = input_enabled
 
@@ -21,6 +24,15 @@ class SystemGroup(nn.Module):
         )), batch_size=self.group_shape)
 
 
+class SystemDistribution(object):
+    def __init__(self, system_type: type):
+        self.system_type = system_type
+
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> Dict[str, torch.Tensor]:
+        raise NotImplementedError()
+
+    def sample(self, SHP: Namespace, shape: Tuple[int, ...]) -> SystemGroup:
+        return self.system_type(self.sample_parameters(SHP, shape), SHP.input_enabled)
 
 
 

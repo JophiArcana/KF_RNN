@@ -21,9 +21,7 @@ BaseDatasetArgs = Namespace(
         total_sequence_length=2000,
         system=Namespace(
             n_systems=1,
-            distribution=Namespace(
-                sample_func=...
-            )
+            distribution=...
         )
     ),
     valid=Namespace(

@@ -1,16 +1,20 @@
-import os
+from argparse import Namespace
 
 from infrastructure import loader
 from infrastructure.experiment import *
 from model.convolutional import *
+from system.linear_time_invariant import MOPDistribution
 
 if __name__ == "__main__":
-    os.chdir("..")
     base_exp_name = "SingleTrace_with_checkpointing"
     output_dir = "system2_CNN"
     output_fname = "result"
 
+
+    SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=False)
+    # args = loader.generate_args(SHP)
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
+    # args.dataset.train.system.distribution = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     args.model.S_D = args.system.S_D
     args.model.ir_length = 16
     args.train.epochs = 500

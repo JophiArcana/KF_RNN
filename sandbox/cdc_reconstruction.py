@@ -8,7 +8,6 @@ import numpy as np
 import tensordict.utils
 import torch
 import torch.nn as nn
-import torch.nn.functional as Fn
 from matplotlib import colors
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
@@ -21,7 +20,7 @@ if os.getcwd() not in sys.path:
 from infrastructure import loader
 from infrastructure import utils
 from infrastructure.experiment import *
-from infrastructure.settings import DEVICE, PROJECT_PATH
+from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnKFLeastSquares
 from model.kf import KF

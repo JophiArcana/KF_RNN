@@ -10,7 +10,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from model.kf import KF
-from system.linear_time_invariant import LinearSystemGroup
+from system.core import SystemGroup
 
 
 MetricVars = Tuple[Namespace, Namespace, TensorDict[str, torch.Tensor]]
@@ -84,10 +84,10 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
 def _get_analytical_error_with_dataset_type(ds_type: str) -> Metric:
     def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
         HP, exclusive, ensembled_learned_kfs = vars
-        def AE(lsg: LinearSystemGroup) -> torch.Tensor:
+        def AE(sg: SystemGroup) -> torch.Tensor:
             return _unsqueeze_if(exclusive.reference_module.analytical_error(
                 ensembled_learned_kfs[:, :, None],
-                lsg.td()[:, None, :]
+                sg.td()[:, None, :]
             ), with_batch_dim)
 
         with torch.set_grad_enabled(False):
