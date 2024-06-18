@@ -5,10 +5,10 @@ import torch.nn.functional as Fn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.kf import KF
+from model.base.filter import Filter
 
 
-class ConvolutionalKF(KF):
+class ConvolutionalFilter(Filter):
     @classmethod
     def analytical_error(cls,
                          kfs: TensorDict[str, torch.Tensor],    # [B... x ...]

@@ -1,6 +1,6 @@
-from .convolutional_kf import ConvolutionalKF
-from .cnn_kf import CnnKF, CnnKFLeastSquares, CnnKFPretrainLeastSquares, CnnKFAnalytical, CnnKFAnalyticalLeastSquares, \
-    CnnKFLeastSquaresRandomStep, CnnKFLeastSquaresNegation
+from .convolutional_filter import ConvolutionalFilter
+from .cnn_filter import CnnFilter, CnnFilterLeastSquares, CnnFilterPretrainLeastSquares, CnnFilterAnalytical, CnnFilterAnalyticalLeastSquares, \
+    CnnFilterLeastSquaresRandomStep, CnnFilterLeastSquaresNegation
 
 
 

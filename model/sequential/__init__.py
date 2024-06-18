@@ -1,5 +1,5 @@
-from .sequential_kf import SequentialKF
-from .rnn_kf import RnnKF, RnnKFAnalytical, RnnKFPretrainAnalytical
+from .sequential_filter import SequentialFilter
+from .rnn_filter import RnnFilter, RnnFilterAnalytical, RnnFilterPretrainAnalytical
 
 
 

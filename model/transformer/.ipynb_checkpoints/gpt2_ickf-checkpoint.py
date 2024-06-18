@@ -5,10 +5,10 @@ import torch
 import torch.nn as nn
 from transformers import GPT2Model
 
-from model.kf import KF
+from model.base.filter import Filter
 
 
-class GPT2InContextKF(KF):
+class GPT2InContextKF(Filter):
     def __init__(self, modelArgs: Namespace):
         super().__init__()
 

@@ -17,7 +17,7 @@ if __name__ == "__main__":
     # args.dataset.train.system.distribution = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     args.model.S_D = args.system.S_D
     args.model.ir_length = 16
-    args.train.epochs = 500
+    args.train.epochs = 2000
     args.train.subsequence_length = 32
     args.experiment.exp_name = base_exp_name
     args.experiment.metrics = {"validation_analytical"}
@@ -28,7 +28,7 @@ if __name__ == "__main__":
                 # RnnKF,
                 # RnnKFAnalytical,
                 # RnnKFPretrainAnalytical,
-                CnnKF,
+                CnnFilter,
                 CnnKFLeastSquares,
                 # CnnKFPretrainLeastSquares,
                 # CnnKFAnalytical,
@@ -50,7 +50,7 @@ if __name__ == "__main__":
         args, configurations, {
             "dir": output_dir,
             "fname": output_fname
-        }, system2, save_experiment=False
+        }, system2, save_experiment=True
     )
 
     M = get_metric_namespace_from_result(result)

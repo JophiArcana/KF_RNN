@@ -9,7 +9,7 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.kf import KF
+from model.base.filter import Filter
 from system.core import SystemGroup
 
 
@@ -29,7 +29,7 @@ class Metric(object):
             HP, exclusive, ensembled_learned_kfs = vars
             with torch.set_grad_enabled(False):
                 run = utils.multi_map(
-                    lambda dataset: KF.run(exclusive.reference_module, ensembled_learned_kfs, *dataset),
+                    lambda dataset: Filter.run(exclusive.reference_module, ensembled_learned_kfs, *dataset),
                     utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=torch.Tensor
                 )
             cache[dependency] = run
@@ -63,7 +63,7 @@ def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target) ->
         else:
             mask = _truncation_mask(getattr(HP.dataset, ds_type))
         return utils.multi_map(
-            lambda pair: KF.evaluate_run(pair[0], pair[1].obj[target], mask, batch_mean=not with_batch_dim),
+            lambda pair: Filter.evaluate_run(pair[0], pair[1].obj[target], mask, batch_mean=not with_batch_dim),
             utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
         )
     return Metric(eval_func)
@@ -76,7 +76,7 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
         else:
             mask = _truncation_mask(getattr(HP.dataset, ds_type))
         return utils.multi_map(
-            lambda dataset: KF.evaluate_run(dataset.obj[target1], dataset.obj[target2], mask, batch_mean=not with_batch_dim),
+            lambda dataset: Filter.evaluate_run(dataset.obj[target1], dataset.obj[target2], mask, batch_mean=not with_batch_dim),
             utils.rgetattr(exclusive, f"info.{ds_type}.dataset"), dtype=torch.Tensor
         )
     return Metric(eval_func)
@@ -98,18 +98,18 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
     def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
         HP, exclusive, ensembled_learned_kfs = vars
 
-        reset_ensembled_learned_kfs = KF.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs)
+        reset_ensembled_learned_kfs = Filter.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs)
         params = [p for p in reset_ensembled_learned_kfs.values() if isinstance(p, nn.Parameter)]
 
         dataset_arr = utils.rgetattr(exclusive, f"info.{ds_type}.dataset")
         mask = exclusive.train_mask if ds_type == "train" else None
         with torch.set_grad_enabled(True):
             run_arr = utils.multi_map(
-                lambda dataset: KF.run(exclusive.reference_module, reset_ensembled_learned_kfs, *dataset),
+                lambda dataset: Filter.run(exclusive.reference_module, reset_ensembled_learned_kfs, *dataset),
                 dataset_arr, dtype=torch.Tensor
             )
             loss_arr = utils.multi_map(
-                lambda pair: KF.evaluate_run(pair[0], pair[1].obj["observation"], mask).mean(dim=-1),
+                lambda pair: Filter.evaluate_run(pair[0], pair[1].obj["observation"], mask).mean(dim=-1),
                 utils.multi_zip(run_arr, dataset_arr), dtype=torch.Tensor
             )
 

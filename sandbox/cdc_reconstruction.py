@@ -22,10 +22,10 @@ from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
-from model.convolutional import CnnKFLeastSquares
-from model.kf import KF
-from model.sequential import RnnKFPretrainAnalytical
-from model.transformer import GPT2InContextKF
+from model.convolutional import CnnFilterLeastSquares
+from model.base.filter import Filter
+from model.sequential import RnnFilterPretrainAnalytical
+from model.transformer import GPT2InContextFilter
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LinearSystemGroup, MOPDistribution
 
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         exp_name_transformer = "CDCReconstruction_transformer"
 
         ARGS_TRANSFORMER = loader.generate_args(SHP)
-        ARGS_TRANSFORMER.model.model = GPT2InContextKF
+        ARGS_TRANSFORMER.model.model = GPT2InContextFilter
         ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
             n_positions=context_length,
             n_embd=256,
@@ -185,7 +185,6 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN = copy.deepcopy(ARGS_BASELINE_CNN)
 
         # SECTION: Set CNN exclusive hyperparameters
-        ARGS_BASELINE_CNN.model.model = CnnKFLeastSquares
         ARGS_BASELINE_CNN.model.ridge = 1.0
         ARGS_BASELINE_CNN.experiment.exp_name = exp_name_baseline_cnn
 
@@ -194,7 +193,7 @@ if __name__ == "__main__":
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [CnnKFLeastSquares] * (context_length - 1),
+                "model.model": [ZeroPredictor] + [CnnFilterLeastSquares] * (context_length - 1),
                 "dataset.train.total_sequence_length": [*range(context_length),]
             })
         ]
@@ -210,7 +209,6 @@ if __name__ == "__main__":
 
         """ RNN Experiment """
         # SECTION: Set RNN exclusive hyperparameters
-        ARGS_BASELINE_RNN.model.model = RnnKFPretrainAnalytical
         ARGS_BASELINE_RNN.model.S_D = SHP.S_D
         ARGS_BASELINE_RNN.train.optim_type = "GD"
         ARGS_BASELINE_RNN.train.max_lr = 1e-3
@@ -219,7 +217,7 @@ if __name__ == "__main__":
 
         configurations_baseline_rnn = [
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [RnnKFPretrainAnalytical] * ((context_length - 1) // rnn_increment),
+                "model.model": [ZeroPredictor] + [RnnFilterPretrainAnalytical] * ((context_length - 1) // rnn_increment),
                 "dataset.train.total_sequence_length": [*range(0, context_length, rnn_increment),]
             })
         ]
@@ -319,7 +317,7 @@ if __name__ == "__main__":
     dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
 
     with torch.set_grad_enabled(True):
-        transformer_response = KF.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
+        transformer_response = Filter.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
 
     gradient_norm = (transformer_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
     for sys_idx in range(n_test_systems):

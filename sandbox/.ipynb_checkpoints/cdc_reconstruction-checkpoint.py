@@ -23,7 +23,7 @@ from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnKFLeastSquares
-from model.kf import KF
+from model.base.filter import Filter
 from model.sequential import RnnKFPretrainAnalytical
 from model.transformer import GPT2InContextKF
 from model.zero_predictor import ZeroPredictor
@@ -319,7 +319,7 @@ if __name__ == "__main__":
     dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
 
     with torch.set_grad_enabled(True):
-        transformer_response = KF.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
+        transformer_response = Filter.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
 
     gradient_norm = (transformer_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
     for sys_idx in range(n_test_systems):

@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 
 
-class KF(nn.Module):
+class Filter(nn.Module):
     @classmethod
     def impulse(cls,
                 kf_arr: np.ndarray[nn.Module],
@@ -137,7 +137,7 @@ class KF(nn.Module):
             for k, v in ensembled_learned_kfs.items():
                 ensembled_learned_kfs[k] = initialization[k].expand_as(v)
             cache.initialization_error = error_.expand(ensembled_learned_kfs.shape)
-            error = KF.evaluate_run(0, exclusive.train_info.dataset.obj["observation"], mask=exclusive.train_mask).mean(-1)
+            error = Filter.evaluate_run(0, exclusive.train_info.dataset.obj["observation"], mask=exclusive.train_mask).mean(-1)
         else:
             cache.done = True
             error = cache.initialization_error

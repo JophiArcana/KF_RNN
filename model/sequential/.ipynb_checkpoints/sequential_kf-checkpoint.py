@@ -6,10 +6,10 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.kf import KF
+from model.base.filter import Filter
 
 
-class SequentialKF(KF):
+class SequentialKF(Filter):
     @classmethod
     def _evaluate_form(cls,
                        state: torch.Tensor,         # [B x S_D]

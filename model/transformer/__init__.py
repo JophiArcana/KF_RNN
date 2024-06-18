@@ -1,4 +1,4 @@
-from .gpt2_ickf import GPT2InContextKF
+from .gpt2_icfilter import GPT2InContextFilter
 
 
 

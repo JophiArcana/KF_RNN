@@ -1,39 +1,6 @@
-import copy
-import inspect
-import functools
-import json
-import os
-import sys
-import time
-from argparse import Namespace
-from matplotlib import pyplot as plt
-from matplotlib.collections import LineCollection
-
-import numpy as np
-import scipy as sc
-import sklearn.manifold
 import torch
-import torch.nn as nn
-import torch.nn.functional as Fn
-import torch.optim as optim
-import tensordict
-from dimarray import DimArray
-from tensordict import TensorDict
 
 # from huggingface_hub import hf_hub_download
-from transformers import GPT2Config, GPT2Model
-
-from infrastructure import utils, loader
-from infrastructure.experiment import *
-from infrastructure.settings import DTYPE, DEVICE
-from infrastructure.discrete_are import Riccati, solve_discrete_are
-from model.kf import KF
-from model.sequential import *
-from model.convolutional import *
-from model.transformer import *
-from model.zero_predictor import ZeroPredictor
-
-from system.linear_time_invariant import LinearSystemGroup
 
 
 if __name__ == '__main__':
@@ -758,16 +725,52 @@ if __name__ == '__main__':
     # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
 
     """ Sandbox 16 """
-    SHP = Namespace(
-        S_D=10,
-        I_D=1,
-        O_D=5,
-        SNR=5.0,
-        input_enabled=False
-    )
-    lsg = LinearSystemGroup.sample_stable_systems(SHP, (2, 3))
-    print(ZeroPredictor.analytical_error(None, lsg.td()))
-    print(utils.batch_trace(lsg.td()["S_observation_inf"]))
+    # from model.transformer.gpt2_icfilter import GPT2InContextFilter
+    # for dir_name in ("training", "testing"):
+    #     fname = f"output/in_context/CDCReconstruction_transformer/{dir_name}/result.pt"
+    #     backup_fname = f"{fname[:-3]}_backup_.pt"
+    #
+    #     result = torch.load(fname, map_location=DEVICE)
+    #     # torch.save(result, backup_fname)
+    #
+    #     for idx, _ in utils.multi_enumerate(result):
+    #         dict_idx = dict(zip(result.dims, idx))
+    #         experiment_record = result.take(indices=dict_idx)
+    #         reference_module, learned_kfs = experiment_record.learned_kfs
+    #
+    #         if isinstance(reference_module, GPT2InContextKF):
+    #             new_reference_module = GPT2InContextFilter(Namespace(
+    #                 I_D=reference_module.I_D,
+    #                 O_D=reference_module.O_D,
+    #                 gpt2=reference_module.config,
+    #                 input_enabled=False
+    #             ))
+    #             new_reference_module.load_state_dict(reference_module.state_dict())
+    #             experiment_record.learned_kfs = (new_reference_module, learned_kfs)
+    #
+    #     for idx, _ in utils.multi_enumerate(result):
+    #         dict_idx = dict(zip(result.dims, idx))
+    #         experiment_record = result.take(indices=dict_idx)
+    #         print(dict_idx, experiment_record.learned_kfs)
+    #
+    #     torch.save(result, fname)
+    raise Exception()
+
+
+
+
+    system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
+    args.model.model = RnnKFAnalytical
+    args.model.S_D = args.system.S_D
+
+    args.experiment.exp_name = "test"
+    args.experiment.metrics = {"validation_analytical"}
+
+
+    result = run_experiments(args, [], {}, system2, save_experiment=False)
+
+    print(result)
+
     raise Exception()
 
 
