@@ -296,7 +296,7 @@ if __name__ == "__main__":
         rnn_al = M_baseline_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
 
 
-        rnn_indices = torch.tensor([0, *rnn_sequence_lengths])
+        rnn_indices = torch.tensor(rnn_sequence_lengths)
         padded_rnn_output = torch.zeros_like(transformer_output)
         padded_rnn_output[:, :, rnn_indices] = rnn_output
         # -> [n_test_systems x test_dataset_size x context_length]
@@ -305,19 +305,29 @@ if __name__ == "__main__":
 
 
     # SECTION: Transformer impulse response
+    def cd(t: torch.Tensor) -> torch.Tensor:
+        return t.cpu().detach()
+
+    def to_rgb(c: Any) -> np.ndarray:
+        return np.array(colors.to_rgb(c))
+
+    
     reference_module, transformer_td = get_result_attr(result_transformer, "learned_kfs")[()]
     transformer_td = transformer_td.squeeze(1).squeeze(0)
 
     dataset_parameter = TensorDict.from_dict(dataset, batch_size=dataset.shape)
     dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
 
-    print(dataset_parameter)
     with torch.set_grad_enabled(True):
         transformer_response = KF.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
 
     gradient_norm = (transformer_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
     for sys_idx in range(n_test_systems):
-        plt.plot(torch.arange(1, context_length + 1), torch.flip(gradient_norm[sys_idx].clamp_min(1e-4), dims=(0,)), marker=".", label=f"System {sys_idx}")
+        plt.plot(
+            cd(torch.arange(1, context_length + 1)),
+            cd(torch.flip(gradient_norm[sys_idx].clamp_min(1e-4), dims=(0,))),
+            marker=".", label=f"System {sys_idx}"
+        )
 
     plt.xscale("log")
     plt.xlabel("recency")
@@ -330,12 +340,6 @@ if __name__ == "__main__":
 
 
     # SECTION: Plotting code
-    def cd(t: torch.Tensor) -> torch.Tensor:
-        return t.cpu().detach()
-
-    def to_rgb(c: Any) -> np.ndarray:
-        return np.array(colors.to_rgb(c))
-
     def plot(system_idx: int) -> None:
         x = torch.arange(1, context_length + 1)
 
