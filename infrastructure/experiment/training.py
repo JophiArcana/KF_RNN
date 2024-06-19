@@ -137,16 +137,9 @@ def _train_default(
             }, batch_size=(len(sequence_indices),))
         train_index_dataset = train_index_dataset.expand(exclusive.n_train_systems, *train_index_dataset.shape)
         train_index_dataset["system"] = torch.arange(exclusive.n_train_systems)[:, None].expand(*train_index_dataset.shape)
-        train_index_dataset = train_index_dataset.flatten()
 
-        index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, THP.batch_size)
-        def supply_train_index_dataloader():
-            if THP.optim_type == "GD":
-                return train_index_dataset.expand(*index_batch_shape)
-            else:
-                return train_index_dataset[torch.randint(0, train_index_dataset.shape[0], index_batch_shape)]
-
-        cache.supply_train_index_dataloader = supply_train_index_dataloader
+        cache.train_index_dataset = train_index_dataset.flatten()
+        cache.index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, THP.batch_size)
         cache.padded_train_dataset = TensorDict({
             k: torch.cat([v, torch.zeros((*dataset.shape[:-1], 1, v.shape[-1]))], dim=-2)
             for k, v in exclusive.train_info.dataset.obj.items()
@@ -160,9 +153,16 @@ def _train_default(
     cache.scheduler(None)
 
 
+    # SECTION: At start of each epoch, generate the training indices for that epoch
+    if THP.optim_type == "GD":
+        train_index_dataloader = cache.train_index_dataset.expand(*cache.index_batch_shape)
+    else:
+        train_index_dataloader = cache.train_index_dataset[torch.randint(0, cache.train_index_dataset.shape[0], cache.index_batch_shape)]
+
+
     # SECTION: Iterate through train indices and run gradient descent
     result = []
-    for batch, indices in enumerate(cache.supply_train_index_dataloader()):
+    for batch, indices in enumerate(train_index_dataloader):
         start_t = time.perf_counter()
 
         # DONE: Use indices to compute the mask for truncation and padding
