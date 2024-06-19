@@ -758,6 +758,12 @@ if __name__ == '__main__':
     # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
 
     """ Sandbox 16 """
+    arr = np.array([1, None, None])
+    print(DimArray(arr).values)
+    raise Exception()
+
+
+
     from system.linear_quadratic_gaussian import LQGDistribution
     from model.sequential.rnn_controller import RnnControllerAnalytical
 

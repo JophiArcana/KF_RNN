@@ -205,7 +205,17 @@ def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
         setattr(info_recarr, k, v.values)
     return DimArray(info_recarr, dims=ref.dims)
 
-def _populate_default_values(HP: Namespace) -> None:
+def _populate_values(
+        HP: Namespace,
+        iterparam_datasets: Tuple[Dataset, Sequence[str], Sequence[int]],
+        experiment_dict_index: Dict[str, int]
+) -> None:
+    # TODO: Populate hyperparameter values
+    for dataset, _, _ in iterparam_datasets:
+        for n, v in utils.take_from_dim_array(dataset, experiment_dict_index).items():
+            utils.rsetattr(HP, n, v.values[()])
+
+    # DONE: Populate default values if not present
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
     def _rgetattr_default(format_str: str, ds_type: str) -> Any:

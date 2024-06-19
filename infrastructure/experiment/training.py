@@ -60,8 +60,8 @@ TrainFunc = Callable[[
 ], Tuple[torch.Tensor, bool]]
 
 def _extract_dataset_and_mask_from_indices(
+        padded_train_dataset: TensorDict[str, torch.Tensor],
         indices: TensorDict[str, torch.Tensor],
-        exclusive: Namespace
 ) -> Tuple[TensorDict[str, torch.Tensor], torch.Tensor]:
     sequence_indices, start_indices, stop_indices, system_indices = map(indices.__getitem__, (
         "sequence",
@@ -85,14 +85,14 @@ def _extract_dataset_and_mask_from_indices(
     ensemble_size_idx = torch.arange(indices.shape[1])[None, :, None, None]
     system_idx = system_indices.unsqueeze(-1)
     sequence_idx = sequence_indices.unsqueeze(-1)
-    subsequence_idx = start_indices.unsqueeze(-1) + subsequence_offset
+    subsequence_idx = (start_indices.unsqueeze(-1) + subsequence_offset).clamp_min(-1)
 
     """
         input: [N x E x B x L_SS x I_D]
         observation: [N x E x B x L_SS x O_D]
         target: [N x E x B x L_SS x O_D]
     """
-    dataset_ss = exclusive.train_info.dataset.obj[
+    dataset_ss = padded_train_dataset[
         n_experiment_idx,
         ensemble_size_idx,
         system_idx,
@@ -112,19 +112,61 @@ def _train_default(
         return cache.t == THP.epochs
     assert not terminate_condition()
 
+    # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
     if not hasattr(cache, "optimizer"):
+        # TODO: Set up the dataset index sampler
+        dataset = exclusive.train_info.dataset.obj
+        sequence_length, dataset_size = dataset.shape[-2:]
+
+        train_sequence_lengths = torch.sum(exclusive.train_mask, dim=1)
+        if THP.optim_type == "GD":
+            THP.subsequence_length = sequence_length
+            THP.batch_size = exclusive.n_train_systems * dataset_size
+
+            train_index_dataset = TensorDict({
+                "sequence": torch.arange(dataset_size, dtype=torch.int),
+                "start": torch.zeros((dataset_size,), dtype=torch.int),
+                "stop": train_sequence_lengths
+            }, batch_size=(dataset_size,))
+        else:
+            sequence_indices, stop_indices_n1 = torch.where(exclusive.train_mask)
+            train_index_dataset = TensorDict({
+                "sequence": sequence_indices,
+                "start": stop_indices_n1 - THP.subsequence_length + 1,
+                "stop": stop_indices_n1 + 1
+            }, batch_size=(len(sequence_indices),))
+        train_index_dataset = train_index_dataset.expand(exclusive.n_train_systems, *train_index_dataset.shape)
+        train_index_dataset["system"] = torch.arange(exclusive.n_train_systems)[:, None].expand(*train_index_dataset.shape)
+        train_index_dataset = train_index_dataset.flatten()
+
+        index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, THP.batch_size)
+        def supply_train_index_dataloader():
+            if THP.optim_type == "GD":
+                return train_index_dataset.expand(*index_batch_shape)
+            else:
+                return train_index_dataset[torch.randint(0, train_index_dataset.shape[0], index_batch_shape)]
+
+        cache.supply_train_index_dataloader = supply_train_index_dataloader
+        cache.padded_train_dataset = TensorDict({
+            k: torch.cat([v, torch.zeros((*dataset.shape[:-1], 1, v.shape[-1]))], dim=-2)
+            for k, v in exclusive.train_info.dataset.obj.items()
+        }, batch_size=(*dataset.shape[:-1], dataset.shape[-1] + 1))
+
         # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
         for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
             ensembled_learned_kfs[k] = v
         cache.optimizer, cache.scheduler = _get_optimizer((v for v in ensembled_learned_kfs.values() if isinstance(v, nn.Parameter)), THP)
+
     cache.scheduler(None)
 
+
+    # SECTION: Iterate through train indices and run gradient descent
     result = []
-    for batch, indices in enumerate(exclusive.supply_train_index_dataloader()):
+    for batch, indices in enumerate(cache.supply_train_index_dataloader()):
         start_t = time.perf_counter()
 
         # DONE: Use indices to compute the mask for truncation and padding
-        dataset_ss, mask_ss = _extract_dataset_and_mask_from_indices(indices, exclusive)
+        dataset_ss, mask_ss = _extract_dataset_and_mask_from_indices(cache.padded_train_dataset, indices)
         mask_ss *= (torch.arange(THP.subsequence_length) >= getattr(THP, "sequence_buffer", 0))
 
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
@@ -328,44 +370,11 @@ def _run_unit_training_experiment(
     train_mask = torch.ones((DHP.train.dataset_size, DHP.train.sequence_length))
     if train_rem > 0:
         train_mask[-train_rem:, -1] = 0
-    train_sequence_lengths = torch.sum(train_mask, dim=1)
-
-    if THP.optim_type == "GD":
-        THP.subsequence_length = DHP.train.sequence_length
-        THP.batch_size = DHP.train.system.n_systems * DHP.train.dataset_size
-    else:
-        THP.subsequence_length = min(THP.subsequence_length, DHP.train.sequence_length)
-
-
-    if THP.optim_type == "GD":
-        train_index_dataset = TensorDict({
-            "sequence": torch.arange(DHP.train.dataset_size, dtype=torch.int),
-            "start": torch.zeros((DHP.train.dataset_size,), dtype=torch.int),
-            "stop": train_sequence_lengths
-        }, batch_size=(DHP.train.dataset_size,))
-    else:
-        sequence_indices, start_indices = torch.where(train_mask[:, THP.subsequence_length - 1:])
-        train_index_dataset = TensorDict({
-            "sequence": sequence_indices,
-            "start": start_indices,
-            "stop": start_indices + THP.subsequence_length
-        }, batch_size=(len(sequence_indices),))
-    train_index_dataset = train_index_dataset.expand(DHP.train.system.n_systems, *train_index_dataset.shape)
-    train_index_dataset["system"] = torch.arange(DHP.train.system.n_systems)[:, None].expand(*train_index_dataset.shape)
-    train_index_dataset = train_index_dataset.flatten()
-
-    index_batch_shape = (THP.iterations_per_epoch, EHP.n_experiments, EHP.ensemble_size, THP.batch_size)
-    def supply_train_index_dataloader():
-        if THP.optim_type == "GD":
-            return train_index_dataset.expand(*index_batch_shape)
-        else:
-            return train_index_dataset[torch.randint(0, train_index_dataset.shape[0], index_batch_shape)]
 
     exclusive = Namespace(
         info=info,
-        train_info=info.train[()],
         reference_module=reference_module,
-        supply_train_index_dataloader=supply_train_index_dataloader,
+        train_info=info.train[()],
         train_mask=train_mask,
         n_train_systems=DHP.train.system.n_systems
     )

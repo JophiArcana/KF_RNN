@@ -14,7 +14,7 @@ from dimarray import DimArray
 
 from infrastructure import utils
 from infrastructure.experiment.internals import _supports_dataset_condition, _prologue, _construct_info_dict, \
-    _process_info_dict, _construct_dataset_from_iterparam, _populate_default_values
+    _process_info_dict, _construct_dataset_from_iterparam, _populate_values
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.experiment.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
@@ -188,10 +188,7 @@ def run_training_experiments(
 
             # DONE: Set up experiment hyperparameters
             EXPERIMENT_HP = copy.deepcopy(HP)
-            for dataset, _, _ in iterparam_datasets:
-                for n, v in utils.take_from_dim_array(dataset, experiment_dict_index).items():
-                    utils.rsetattr(EXPERIMENT_HP, n, v.values[()])
-            _populate_default_values(EXPERIMENT_HP)
+            _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
 
             INFO = Namespace(**{
                 ds_type: np_records.fromrecords(utils.take_from_dim_array(ds_info, experiment_dict_index), dtype=ds_info.dtype)
@@ -345,10 +342,7 @@ def run_testing_experiments(
 
             # DONE: Set up experiment hyperparameters
             EXPERIMENT_HP = copy.deepcopy(HP)
-            for dataset, _, _ in iterparam_datasets:
-                for n, v in utils.take_from_dim_array(dataset, experiment_dict_index).items():
-                    utils.rsetattr(EXPERIMENT_HP, n, v.values[()])
-            _populate_default_values(EXPERIMENT_HP)
+            _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
 
             # DONE: Set up metric information
             reference_module, ensembled_learned_kfs = experiment_record.learned_kfs
