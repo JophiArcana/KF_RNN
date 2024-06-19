@@ -1,9 +1,16 @@
+import os
+import sys
 from argparse import Namespace
+
+# This line needs to be added since some terminals will not recognize the current directory
+if os.getcwd() not in sys.path:
+    sys.path.insert(0, os.getcwd())
 
 from infrastructure import loader
 from infrastructure.experiment import *
 from model.convolutional import *
 from system.linear_time_invariant import MOPDistribution
+
 
 if __name__ == "__main__":
     base_exp_name = "OptimizerComparison"
