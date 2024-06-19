@@ -32,6 +32,7 @@ class SystemDistribution(object):
         raise NotImplementedError()
 
     def sample(self, SHP: Namespace, shape: Tuple[int, ...]) -> SystemGroup:
+        print(self.system_type)
         return self.system_type(self.sample_parameters(SHP, shape), SHP.input_enabled)
 
 

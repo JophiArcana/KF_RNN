@@ -4,10 +4,10 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.base.filter import Filter
+from model.base.predictor import Predictor
 
 
-class ZeroPredictor(Filter):
+class ZeroPredictor(Predictor):
     @classmethod
     def analytical_error(cls,
                          kfs: TensorDict[str, torch.Tensor],    # [B... x ...]

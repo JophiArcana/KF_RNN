@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 
 
-class KF(nn.Module):
+class Predictor(nn.Module):
     @classmethod
     def impulse(cls,
                 kf_arr: np.ndarray[nn.Module],
@@ -27,7 +27,7 @@ class KF(nn.Module):
             dataset: TensorDict[str, torch.Tensor],
             kwargs: Dict[str, Any] = MappingProxyType(dict()),
             split_size: int = 1 << 20
-    ) -> torch.Tensor:
+    ) -> TensorDict[str, torch.Tensor]:
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
 
@@ -40,18 +40,19 @@ class KF(nn.Module):
 
         _result_list = []
         for lo, hi in zip(splits[:-1], splits[1:]):
-            _result_list.append(utils.run_module_arr(
+            _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
+            _result_list.append(TensorDict(utils.run_module_arr(
                 reference_module,
                 ensembled_kfs,
-                _dataset.view(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L),
+                _dataset_slice,
                 kwargs
-            )["observation_estimation"])
+            ), batch_size=_dataset_slice.shape))
 
             torch.cuda.empty_cache()
             gc.collect()
 
         _result = torch.cat(_result_list, dim=n)
-        return _result.view_as(dataset["observation"])
+        return _result.view(dataset.shape)
 
     @classmethod
     def gradient(cls,
@@ -137,7 +138,7 @@ class KF(nn.Module):
             for k, v in ensembled_learned_kfs.items():
                 ensembled_learned_kfs[k] = initialization[k].expand_as(v)
             cache.initialization_error = error_.expand(ensembled_learned_kfs.shape)
-            error = KF.evaluate_run(0, exclusive.train_info.dataset.obj["observation"], mask=exclusive.train_mask).mean(-1)
+            error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj["observation"], mask=exclusive.train_mask).mean(-1)
         else:
             cache.done = True
             error = cache.initialization_error

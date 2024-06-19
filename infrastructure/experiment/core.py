@@ -27,7 +27,7 @@ def run_experiments(
         output_kwargs: Dict[str, Any],
         systems: Dict[str, DimArray] = None,
         save_experiment: bool = True
-) -> DimArray:
+) -> Tuple[DimArray, DimArray]:
     HP = copy.deepcopy(HP)
 
     training_iterparams = []
@@ -257,7 +257,7 @@ def run_testing_experiments(
         result: DimArray = None,
         cache: Namespace = None,
         save_experiment: bool = True
-) -> DimArray:
+) -> Tuple[DimArray, DimArray]:
     HP = copy.deepcopy(HP)
 
     # Set up file names
@@ -352,6 +352,7 @@ def run_testing_experiments(
 
             # DONE: Set up metric information
             reference_module, ensembled_learned_kfs = experiment_record.learned_kfs
+            reference_module.eval()
 
             INFO = np_records.fromrecords(utils.take_from_dim_array(TEST_INFO, experiment_dict_index), dtype=TEST_INFO.dtype)
             exclusive = Namespace(info=Namespace(test=INFO), reference_module=reference_module)
@@ -376,7 +377,6 @@ def run_testing_experiments(
                     pass
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
             metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
-
             experiment_record.metrics = PTR(metric_result)
 
             if save_experiment:
@@ -402,19 +402,22 @@ def run_testing_experiments(
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-    return result
+    return result, INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
 
 def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:
     return getattr(np_records.fromrecords(r.values, dtype=RESULT_DTYPE), attr)
 
 def get_metric_namespace_from_result(r: DimArray) -> Namespace:
-    return Namespace(**utils.stack_tensor_arr(utils.multi_map(
+    result = Namespace()
+    for k, v in utils.stack_tensor_arr(utils.multi_map(
         lambda metrics: metrics.obj,
         get_result_attr(r, "metrics"), dtype=TensorDict
-    )))
-
-
-
+    )).items(include_nested=True):
+        if isinstance(k, str):
+            result.k = v
+        else:
+            utils.rsetattr(result, ".".join(k), v)
+    return result
 
 
 

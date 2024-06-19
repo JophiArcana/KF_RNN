@@ -16,7 +16,7 @@ from infrastructure import utils
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.settings import *
 from infrastructure.utils import PTR
-from model.base.filter import Filter
+from model.base.predictor import Predictor
 
 
 # Optimizer configuration
@@ -114,7 +114,7 @@ def _train_default(
 
     if not hasattr(cache, "optimizer"):
         # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
-        for k, v in Filter.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
+        for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
             ensembled_learned_kfs[k] = v
         cache.optimizer, cache.scheduler = _get_optimizer((v for v in ensembled_learned_kfs.values() if isinstance(v, nn.Parameter)), THP)
     cache.scheduler(None)
@@ -130,8 +130,8 @@ def _train_default(
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
         with torch.set_grad_enabled(True):
-            train_result = Filter.run(reference_module, ensembled_learned_kfs, dataset_ss)
-        result.append(losses := Filter.evaluate_run(train_result, dataset_ss["observation"], mask_ss))
+            train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)["observation_estimation"]
+        result.append(losses := Predictor.evaluate_run(train_result, dataset_ss["observation"], mask_ss))
 
         cache.optimizer.zero_grad()
         torch.sum(losses).backward()

@@ -6,10 +6,10 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.base.filter import Filter
+from model.base.predictor import Predictor
 
 
-class SequentialFilter(Filter):
+class SequentialPredictor(Predictor):
     @classmethod
     def _evaluate_form(cls,
                        state: torch.Tensor,         # [B x S_D]
@@ -123,8 +123,14 @@ class SequentialFilter(Filter):
         return kfs
 
     def forward(self, trace: Dict[str, torch.Tensor], mode: str = None) -> Dict[str, torch.Tensor]:
-        state, inputs, observations = self.extract(trace, self.S_D)
-        initial_state = state
+        return self.forward_with_initial(*self.extract(trace, self.S_D), mode=mode)
+
+    def forward_with_initial(self,
+                             state_estimation: torch.Tensor,
+                             inputs: torch.Tensor,
+                             observations: torch.Tensor,
+                             mode: str
+    ) -> Dict[str, torch.Tensor]:
         L = observations.shape[1]
 
         if mode is None:
@@ -133,34 +139,26 @@ class SequentialFilter(Filter):
         if mode == "sequential":
             result = []
             for l in range(L):
-                result.append(r := self._forward(state, inputs[:, l], observations[:, l]))
-                state = r["state_estimation"]
-            result = dict(torch.stack(result, dim=-1))
+                result.append(r := self._forward(state_estimation, inputs[:, l], observations[:, l]))
+                state_estimation = r["state_estimation"]
+            return dict(torch.stack(result, dim=-1))
         else:
             state_estimations, observation_estimations = [], []
-            result_generic = self._forward_generic(trace, mode)
+            result_generic = self._forward_generic(inputs, observations, mode)
 
             state_weights, state_biases_list = result_generic["state_form"]                     # [sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]
             observation_weights, observation_biases_list = result_generic["observation_form"]   # [sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D]
 
             for state_biases, observation_biases in zip(state_biases_list, observation_biases_list):
-                state_estimations.append(SequentialFilter._evaluate_form(state, (state_weights[:state_biases.shape[1]], state_biases)))
-                observation_estimations.append(SequentialFilter._evaluate_form(state, (observation_weights[:observation_biases.shape[1]], observation_biases)))
+                state_estimations.append(SequentialPredictor._evaluate_form(state_estimation, (state_weights[:state_biases.shape[1]], state_biases)))
+                observation_estimations.append(SequentialPredictor._evaluate_form(state_estimation, (observation_weights[:observation_biases.shape[1]], observation_biases)))
 
-                state = state_estimations[-1][:, -1]
+                state_estimation = state_estimations[-1][:, -1]
 
-            result = {
+            return {
                 "state_estimation": torch.cat(state_estimations, dim=1),
                 "observation_estimation": torch.cat(observation_estimations, dim=1)
             }
-
-        result["input_estimation"] = torch.cat([
-            initial_state[:, None],
-            result["state_estimation"]
-        ], dim=1) @ -self.L.mT
-        return result
-
-
 
     def _forward(self,
                  state: torch.Tensor,       # [B x S_D]
@@ -188,11 +186,10 @@ class SequentialFilter(Filter):
         }
     """
     def _forward_generic(self,
-                         trace: Dict[str, torch.Tensor],
+                         inputs: torch.Tensor,
+                         observations: torch.Tensor,
                          mode: str
     ) -> Dict[str, Tuple[torch.Tensor, Sequence[torch.Tensor]]]:
-        inputs, observations = trace["input"], trace["observation"]
-
         # Precomputation
         B, L = inputs.shape[:2]
         hsqrtL = int(math.ceil(math.sqrt(L)))

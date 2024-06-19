@@ -13,7 +13,7 @@ from system.core import SystemGroup, SystemDistribution
 class LinearSystemGroup(SystemGroup):
     class Distribution(SystemDistribution):
         def __init__(self):
-            super().__init__(LinearSystemGroup)
+            SystemDistribution.__init__(self, LinearSystemGroup)
 
     @classmethod
     def sample_stable_systems(cls, shp: Namespace, batch_size: Tuple[int, ...], **kwargs: torch.Tensor):
@@ -119,75 +119,6 @@ class LinearSystemGroup(SystemGroup):
             "state": torch.stack(states, dim=-2),                                   # [N... x B x L x S_D]
             "observation": torch.stack(observations, dim=-2)                        # [N... x B x L x O_D]
         }, batch_size=(*self.group_shape, B, L))
-
-
-# class AnalyticalKFGroup(nn.Module):
-#     def __init__(self, lsg: LinearSystemGroup):
-#         super().__init__()
-#         self.eval()
-#
-#         self.group_shape = lsg.group_shape
-#         self.S_D, self.I_D, self.O_D = lsg.S_D, lsg.I_D, lsg.O_D
-#         self.input_enabled = lsg.input_enabled
-#
-#         for k, v in lsg.named_parameters():
-#             self.register_parameter(k, v)
-#         for k, v in lsg.named_buffers():
-#             self.register_buffer(k, v)
-#
-#     def add_targets(self,
-#                     dataset: TensorDict[str, torch.Tensor]
-#     ) -> TensorDict[str, torch.Tensor]:
-#         with torch.set_grad_enabled(False):
-#             dataset["target"] = self(dataset, steady_state=True)["observation_estimation"]
-#         return dataset
-#
-#     def forward(self, trace: TensorDict[str, torch.Tensor], steady_state: bool = False) -> TensorDict[str, torch.Tensor]:
-#         inputs, observations = trace["input"], trace["observation"]                                     # [N... x B x L x I_D], [N... x B x L x O_D]
-#         B, L = inputs.shape[-3:-1]
-#         state = torch.zeros((*self.group_shape, B, self.S_D))                                           # [N... x B x S_D]
-#
-#
-#         state_estimation = state                                                                        # [N... x B x S_D]
-#         state_covariance = torch.zeros((*self.group_shape, self.S_D, self.S_D))                         # [N... x S_D x S_D]
-#
-#         state_estimations, observation_estimations = [], []
-#         state_covariances, observation_covariances = [], []
-#
-#
-#         inputs = inputs.permute(-2, *range(len(self.group_shape) + 1), -1)                              # [L x N... x B x I_D]
-#         observations = observations.permute(-2, *range(len(self.group_shape) + 1), -1)                  # [L x N... x B x O_D]
-#         for inputs_, observations_ in zip(inputs, observations):
-#             # Prediction
-#             state_estimation = state_estimation @ self.F.mT + inputs_ @ self.B.mT                       # [N... x B x S_D]
-#             state_covariance = self.F @ state_covariance @ self.F.mT + self.S_W                         # [N... x S_D x S_D]
-#
-#             observation_estimations.append(
-#                 observation_estimation := state_estimation @ self.H.mT                                  # [N... x B x O_D]
-#             )
-#             observation_covariances.append(
-#                 observation_covariance := self.H @ state_covariance @ self.H.mT + self.S_V              # [N... x O_D x O_D]
-#             )
-#
-#             if steady_state:                                                                            # [N... x S_D x O_D]
-#                 K = self.K
-#             else:
-#                 K = state_covariance @ self.H.mT @ torch.inverse(observation_covariance)                # [N... x S_D x O_D]
-#             state_covariances.append(
-#                 state_covariance := (torch.eye(self.S_D) - K @ self.H) @ state_covariance               # [N... x S_D x S_D]
-#             )
-#
-#             # Innovation
-#             state_estimations.append(
-#                 state_estimation := state_estimation + (observations_ - observation_estimation) @ K.mT  # [N... x B x S_D]
-#             )
-#
-#         return TensorDict({
-#             "state_estimation": torch.stack(state_estimations, dim=-2),                                 # [N... x B x L x S_D]
-#             "state_covariance": torch.stack(state_covariances, dim=-3).unsqueeze(-4).expand(*self.group_shape, B, -1, -1, -1),              # [N... x B x L x S_D x S_D]
-#             "observation_estimation": torch.stack(observation_estimations, dim=-2),                     # [N... x B x L x O_D]
-#             "observation_covariance": torch.stack(observation_covariances, dim=-3).unsqueeze(-4).expand(*self.group_shape, B, -1, -1, -1)   # [N... x B x L x O_D x O_D]
-#         }, batch_size=(*self.group_shape, B, L))
 
 
 class MOPDistribution(LinearSystemGroup.Distribution):

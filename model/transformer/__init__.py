@@ -1,4 +1,4 @@
-from .gpt2_icfilter import GPT2InContextFilter
+from .gpt2_icpredictor import GPT2InContextPredictor
 
 
 

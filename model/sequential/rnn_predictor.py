@@ -6,11 +6,11 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure.experiment.training import TrainFunc
-from model.base.filter import Filter
-from model.sequential import SequentialFilter
+from model.base.predictor import Predictor
+from model.sequential.sequential_predictor import SequentialPredictor
 
 
-class RnnFilter(SequentialFilter):
+class RnnPredictor(SequentialPredictor):
     def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
         super().__init__(modelArgs)
         self.S_D = modelArgs.S_D
@@ -21,12 +21,11 @@ class RnnFilter(SequentialFilter):
             # self.L = nn.Parameter(initialization.get("L", torch.zeros((self.I_D, self.S_D))))
         else:
             self.register_buffer("B", torch.zeros((self.S_D, self.I_D)))
-            # self.register_buffer("L", torch.zeros((self.I_D, self.S_D)))
         self.H = nn.Parameter(initialization.get('H', torch.zeros((self.O_D, self.S_D))))
         self.K = nn.Parameter(initialization.get('K', torch.zeros((self.S_D, self.O_D))))
 
 
-class RnnFilterAnalytical(RnnFilter):
+class RnnPredictorAnalytical(RnnPredictor):
     @classmethod
     def train_analytical(cls,
                          exclusive: Namespace,
@@ -34,11 +33,11 @@ class RnnFilterAnalytical(RnnFilter):
                          cache: Namespace
     ) -> Tuple[torch.Tensor, bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
-        return Filter._train_with_initialization_and_error(
+        return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs,
             lambda exclusive_: (
                 exclusive_.train_info.systems.td(),
-                Filter.evaluate_run(
+                Predictor.evaluate_run(
                     exclusive_.train_info.dataset.obj["target"],
                     exclusive_.train_info.dataset.obj["observation"],
                     mask=exclusive_.train_mask
@@ -48,13 +47,13 @@ class RnnFilterAnalytical(RnnFilter):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return RnnFilterAnalytical.train_analytical,
+        return RnnPredictorAnalytical.train_analytical,
 
 
-class RnnFilterPretrainAnalytical(RnnFilterAnalytical):
+class RnnPredictorPretrainAnalytical(RnnPredictorAnalytical):
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return RnnFilterAnalytical.train_analytical, default_train_func
+        return RnnPredictorAnalytical.train_analytical, default_train_func
 
 
 

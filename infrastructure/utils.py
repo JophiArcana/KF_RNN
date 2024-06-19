@@ -99,7 +99,7 @@ def run_module_arr(
         module_td: TensorDict[str, torch.Tensor],
         args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
         kwargs: Dict[str, Any] = MappingProxyType(dict())
-) -> TensorDict[str, torch.Tensor]:
+) -> Dict[str, torch.Tensor]:
     if isinstance(args, TensorDict):
         args = dict(args)
     def vmap_run(module_d, ags):

@@ -22,10 +22,10 @@ from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
-from model.convolutional import CnnFilterLeastSquares
-from model.base.filter import Filter
-from model.sequential import RnnFilterPretrainAnalytical
-from model.transformer import GPT2InContextFilter
+from model.convolutional import CnnPredictorLeastSquares
+from model.base.predictor import Predictor
+from model.sequential import RnnPredictorPretrainAnalytical
+from model.transformer import GPT2InContextPredictor
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LinearSystemGroup, MOPDistribution
 
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         exp_name_transformer = "CDCReconstruction_transformer"
 
         ARGS_TRANSFORMER = loader.generate_args(SHP)
-        ARGS_TRANSFORMER.model.model = GPT2InContextFilter
+        ARGS_TRANSFORMER.model.model = GPT2InContextPredictor
         ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
             n_positions=context_length,
             n_embd=256,
@@ -113,7 +113,7 @@ if __name__ == "__main__":
 
         configurations_transformer = []
 
-        result_transformer = run_experiments(
+        result_transformer, dataset = run_experiments(
             ARGS_TRANSFORMER, configurations_transformer, {
                 "dir": output_dir,
                 "fname": output_fname
@@ -124,8 +124,6 @@ if __name__ == "__main__":
             lambda lsg: LinearSystemGroup(lsg.state_dict(), SHP.input_enabled),
             torch.load(f"output/{output_dir}/{exp_name_transformer}/testing/systems.pt", map_location=DEVICE)["test"], dtype=LinearSystemGroup
         )
-        dataset = torch.load(f"output/{output_dir}/{exp_name_transformer}/testing/dataset.pt", map_location=DEVICE)["test"]
-
 
 
         """ Baseline experiment setup """
@@ -193,12 +191,12 @@ if __name__ == "__main__":
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [CnnFilterLeastSquares] * (context_length - 1),
+                "model.model": [ZeroPredictor] + [CnnPredictorLeastSquares] * (context_length - 1),
                 "dataset.train.total_sequence_length": [*range(context_length),]
             })
         ]
 
-        result_baseline_cnn = run_experiments(
+        result_baseline_cnn, _ = run_experiments(
             ARGS_BASELINE_CNN, configurations_baseline_cnn, {
                 "dir": output_dir,
                 "fname": output_fname
@@ -217,12 +215,12 @@ if __name__ == "__main__":
 
         configurations_baseline_rnn = [
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [RnnFilterPretrainAnalytical] * ((context_length - 1) // rnn_increment),
+                "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * ((context_length - 1) // rnn_increment),
                 "dataset.train.total_sequence_length": [*range(0, context_length, rnn_increment),]
             })
         ]
 
-        result_baseline_rnn = run_experiments(
+        result_baseline_rnn, _ = run_experiments(
             ARGS_BASELINE_RNN, configurations_baseline_rnn, {
                 "dir": output_dir,
                 "fname": output_fname
@@ -317,7 +315,7 @@ if __name__ == "__main__":
     dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
 
     with torch.set_grad_enabled(True):
-        transformer_response = Filter.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
+        transformer_response = Predictor.gradient(reference_module, transformer_td, dataset_parameter, split_size=1 << 17)
 
     gradient_norm = (transformer_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
     for sys_idx in range(n_test_systems):
