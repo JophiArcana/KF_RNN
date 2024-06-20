@@ -9,7 +9,7 @@ from model.base import Predictor, Controller
 
 class TransformerPredictor(Predictor):
     def __init__(self, modelArgs: Namespace, S_D: int):
-        super().__init__(modelArgs)
+        Predictor.__init__(self, modelArgs)
         self.S_D = S_D
 
         self.observation_in = nn.Parameter(torch.zeros((self.S_D, self.O_D)))       # [S_D x O_D]

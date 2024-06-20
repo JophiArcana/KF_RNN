@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from dimarray import DimArray, Dataset
 from tensordict import TensorDict
+from torch.utils._pytree import tree_flatten, tree_unflatten
 
 
 """
@@ -100,13 +101,30 @@ def run_module_arr(
         args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
         kwargs: Dict[str, Any] = MappingProxyType(dict())
 ) -> Dict[str, torch.Tensor]:
-    if isinstance(args, TensorDict):
+    if "TensorDict" in type(args).__name__:
         args = dict(args)
-    def vmap_run(module_d, ags):
-        return nn.utils.stateless.functional_call(reference_module, module_d, ags, kwargs)
-    for _ in range(module_td.ndim):
-        vmap_run = torch.func.vmap(vmap_run, randomness="different")
-    return vmap_run(dict(module_td), args)
+
+    if np.prod(module_td.shape) == 1:
+        flat_args, args_spec = tree_flatten(args)
+        flat_squeezed_args = [
+            t.flatten(0, module_td.ndim - 1).squeeze(0)
+            for t in flat_args
+        ]
+        squeezed_args = tree_unflatten(flat_squeezed_args, args_spec)
+
+        squeezed_out = nn.utils.stateless.functional_call(reference_module, dict(module_td.view()), squeezed_args, kwargs)
+        flat_squeezed_out, args_spec = tree_flatten(squeezed_out)
+        flat_out = [
+            t.unsqueeze(0).unflatten(0, module_td.shape)
+            for t in flat_squeezed_out
+        ]
+        return tree_unflatten(flat_out, args_spec)
+    else:
+        def vmap_run(module_d, ags):
+            return nn.utils.stateless.functional_call(reference_module, module_d, ags, kwargs)
+        for _ in range(module_td.ndim):
+            vmap_run = torch.func.vmap(vmap_run, randomness="different")
+        return vmap_run(dict(module_td), args)
 
 def double_vmap(func: Callable) -> Callable:
     return torch.vmap(torch.vmap(func))

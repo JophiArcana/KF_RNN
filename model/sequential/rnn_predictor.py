@@ -12,7 +12,7 @@ from model.sequential.base import SequentialPredictor
 
 class RnnPredictor(SequentialPredictor):
     def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
-        super().__init__(modelArgs)
+        SequentialPredictor.__init__(self, modelArgs)
         self.S_D = modelArgs.S_D
 
         self.F = nn.Parameter(initialization.get("F", 1.0 * torch.eye(self.S_D)))

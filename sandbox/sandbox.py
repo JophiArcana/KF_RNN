@@ -758,96 +758,94 @@ if __name__ == '__main__':
     # plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical")
 
     """ Sandbox 16 """
-    arr = np.array([1, None, None])
-    print(DimArray(arr).values)
-    raise Exception()
+    # from system.linear_quadratic_gaussian import LQGDistribution
+    # from model.sequential.rnn_controller import RnnControllerAnalytical
+    #
+    # SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
+    # args = loader.generate_args(SHP)
+    #
+    # args.model.model = RnnControllerAnalytical
+    # args.model.S_D = SHP.S_D
+    # args.dataset.train.system.distribution = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+    # args.dataset.train.system.n_systems = 1
+    #
+    # args.experiment.n_experiments = 6
+    # args.experiment.ensemble_size = 1
+    # args.experiment.exp_name = "test"
+    # # args.experiment.metrics = {"validation_analytical"}
+    # args.experiment.ignore_metrics = {"impulse_target"}
+    #
+    # result, dataset = run_experiments(args, [], {}, save_experiment=False)
+    #
+    # M = get_metric_namespace_from_result(result)
+    # dataset = dataset.values[()].obj
+    # print(dataset["input"].shape)
+    # print(M.output.input_estimation.shape)
+    #
+    # print(Fn.mse_loss(M.output.input_estimation, dataset["input"]))
+    # print(Fn.mse_loss(M.output.observation_estimation, dataset["target"]))
+    #
+    # raise Exception()
 
-
+    """ Sandbox 17 """
+    from transformers import TransfoXLConfig
 
     from system.linear_quadratic_gaussian import LQGDistribution
-    from model.sequential.rnn_controller import RnnControllerAnalytical
+    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
+
+    from torch.utils._pytree import tree_flatten, tree_unflatten
+
+    # # print(tree_flatten((3, 5)))
+    # print(tree_flatten(0))
+    # print(tree_flatten([
+    #     torch.randn((12, 7)), torch.randn((12, 9))
+    # ])[1])
+    # raise Exception()
+
+
+    exp_name = "TransformerXL"
 
     SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
     args = loader.generate_args(SHP)
+    args.model.model = TransformerXLInContextController
+    args.model.transformerxl = TransfoXLConfig(
+        d_model=16,
+        d_embed=8,
+        n_head=4,
+        d_head=4,
+        d_inner=32,
+        n_layer=2
+    )
+    args.dataset.train = Namespace(
+        dataset_size=1,
+        total_sequence_length=200,
+        system=Namespace(
+            n_systems=1,
+            distribution=LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+        )
+    )
+    args.dataset.valid = args.dataset.test = Namespace(
+        dataset_size=5,
+        total_sequence_length=10000,
+    )
 
-    args.model.model = RnnControllerAnalytical
-    args.model.S_D = SHP.S_D
-    args.dataset.train.system.distribution = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
-    args.dataset.train.system.n_systems = 1
+    del args.train.warmup_duration
+    args.train.epochs = 100
+    args.train.subsequence_length = 32
+    args.train.batch_size = 128
+    args.train.iterations_per_epoch = 1
 
-    args.experiment.n_experiments = 6
+    args.train.optim_type = "GD"
+    args.train.max_lr = 1e-4
+    args.train.lr_decay = 1.0
+    args.train.weight_decay = 1e-2
+
+    args.experiment.n_experiments = 1
     args.experiment.ensemble_size = 1
-    args.experiment.exp_name = "test"
-    # args.experiment.metrics = {"validation_analytical"}
-    args.experiment.ignore_metrics = {"impulse_target"}
+    args.experiment.exp_name = exp_name
+    args.experiment.metrics = {"validation"}
 
     result, dataset = run_experiments(args, [], {}, save_experiment=False)
-
-    M = get_metric_namespace_from_result(result)
-    dataset = dataset.values[()].obj
-    print(dataset["input"].shape)
-    print(M.output.input_estimation.shape)
-
-    print(Fn.mse_loss(M.output.input_estimation, dataset["input"]))
-    print(Fn.mse_loss(M.output.observation_estimation, dataset["target"]))
-
-    raise Exception()
-
-
-    # systems = torch.load("output/in_context/CDCReconstruction/training/systems.pt", map_location=DEVICE)
-    # lsgs = {
-    #     k: utils.multi_map(
-    #         lambda systems_arr: LinearSystemGroup(dict(utils.stack_module_arr(systems_arr)[1]), False),
-    #         v, dtype=LinearSystemGroup
-    #     )
-    #     for k, v in systems.items()
-    # }
-    # torch.save(lsgs, "output/in_context/CDCReconstruction/training/systems.pt")
-
-
-    lsg = LinearSystemGroup.sample_stable_systems(SHP, (3,))
-    LinearSystemGroup(lsg.state_dict(), SHP.input_enabled)
-
-    print(lsg.td()["F"] is lsg.F)
-
-    # akfg = AnalyticalKFGroup(lsg)
-    #
-    # ds = lsg.generate_dataset(5,1000)
-    # ds = akfg.add_targets(ds)
-    #
-    # print(utils.batch_trace(lsg.S_observation_inf))
-    # print(((ds["observation"] - ds["target"]) ** 2).sum(dim=-1).flatten(len(lsg.group_shape), -1).mean(-1))
-    # print(torch.autograd.grad(utils.batch_trace(lsg.S_observation_inf).norm(), lsg.F))
-    raise Exception()
-
-
-    # start_t = time.perf_counter()
-    # sys = utils.multi_map(
-    #     lambda _: LinearSystem.sample_stable_system(SHP),
-    #     np.empty((40000,)), dtype=object
-    # )
-    # end_t = time.perf_counter()
-    # print(f"Time to sample individual systems: {end_t - start_t}s")
-    #
-    # start_t = time.perf_counter()
-    # LinearSystemGroup.sample_stable_systems(SHP, (40000,))
-    # end_t = time.perf_counter()
-    # print(f"Time to sample system group: {end_t - start_t}s")
-
-    # r2 = utils.stack_tensor_arr(utils.multi_map(
-    #     lambda sys_: Riccati.apply(sys_.F.mT, sys_.H.mT, sys_.S_W, sys_.S_V),
-    #     sys, dtype=torch.Tensor
-    # ))
-
-    # def test_dare(P):
-    #     return P - (A.mT @ P @ A) + (A.mT @ P @ B) @ torch.inverse(R + B.mT @ P @ B) @ (B.mT @ P @ A) - Q
-
-    # print([grad.norm() for grad in torch.autograd.grad(r1.norm(), [v for k, v in sys_td.items() if isinstance(v, nn.Parameter)])])
-
-    # _, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
-    # dist = LinearSystemDistribution(get_mop_sample_func("gaussian", "gaussian", 0.1, 0.1))
-    # sys = dist.sample(args.system, ())[()]
-    # print(torch.linalg.eigvals(sys.F))
 
 
 

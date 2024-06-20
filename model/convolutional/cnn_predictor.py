@@ -16,7 +16,7 @@ from model.convolutional.base import ConvolutionalPredictor
 
 class CnnPredictor(ConvolutionalPredictor):
     def __init__(self, modelArgs: Namespace):
-        super().__init__(modelArgs)
+        ConvolutionalPredictor.__init__(self, modelArgs)
         self.ir_length = modelArgs.ir_length
 
         if self.input_enabled:
@@ -108,7 +108,7 @@ class CnnPredictorLeastSquares(CnnPredictor):
         }, error
 
     def __init__(self, modelArgs: Namespace):
-        super().__init__(modelArgs)
+        CnnPredictor.__init__(self, modelArgs)
         self.ridge = getattr(modelArgs, 'ridge', 0.)
 
 
@@ -147,7 +147,7 @@ class CnnPredictorAnalytical(CnnPredictor):
         }, torch.full((), torch.nan)
 
     def __init__(self, modelArgs: Namespace):
-        super().__init__(modelArgs)
+        CnnPredictor.__init__(self, modelArgs)
         self._initialization_error: torch.Tensor = None
 
 

@@ -191,7 +191,7 @@ class Predictor(nn.Module):
 
 class Controller(Predictor):
     def __init__(self, modelArgs: Namespace):
-        super().__init__(modelArgs)
+        Predictor.__init__(self, modelArgs)
         assert self.input_enabled, f"Input must be enabled for controller model but got {self.input_enabled}."
 
 

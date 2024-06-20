@@ -10,7 +10,7 @@ from model.transformer.base import TransformerController
 class TransformerXLInContextController(TransformerController):
     def __init__(self, modelArgs: Namespace):
         self.config = modelArgs.transformerxl
-        super().__init__(modelArgs, self.config.d_model)
+        TransformerController.__init__(self, modelArgs, self.config.d_model)
 
         self.core = TransfoXLModel(self.config)
 
@@ -18,10 +18,10 @@ class TransformerXLInContextController(TransformerController):
         B, L = trace["observation"].shape[:2]
 
         embd_dict = self.trace_to_embedding(trace)
-
-        embds = torch.zeros((B, 2 * L, self.S_D))               # [B x 2L x S_D]
-        embds[:, 2::2] = embd_dict["observation_embd"][:, :-1]  # [B x (L - 1) x S_D]
-        embds[:, 1::2] = embd_dict["input_embd"]                # [B x L x S_D]
+        embds = torch.stack([
+            torch.cat([torch.zeros((B, 1, self.S_D)), embd_dict["observation_embd"][:, :-1]], dim=-2),
+            embd_dict["input_embd"]
+        ], dim=-2).flatten(-3, -2)
 
         out = self.core(inputs_embeds=embds).last_hidden_state  # [B x 2L x S_D]
         return self.embedding_to_output({
