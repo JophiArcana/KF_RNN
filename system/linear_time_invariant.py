@@ -30,7 +30,7 @@ class LinearSystemGroup(SystemGroup):
         return LinearSystemGroup(params, shp.input_enabled)
 
     def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
-        super().__init__(params, input_enabled)
+        super().__init__(input_enabled)
 
         F, B, H, sqrt_S_W, sqrt_S_V = map(params.__getitem__, ("F", "B", "H", "sqrt_S_W", "sqrt_S_V"))
 

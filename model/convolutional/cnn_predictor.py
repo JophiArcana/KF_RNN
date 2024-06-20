@@ -10,8 +10,8 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.experiment.training import TrainFunc
-from model.convolutional.convolutional_predictor import ConvolutionalPredictor
-from model.base.predictor import Predictor
+from model.base import Predictor
+from model.convolutional.base import ConvolutionalPredictor
 
 
 class CnnPredictor(ConvolutionalPredictor):

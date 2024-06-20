@@ -4,7 +4,7 @@ from typing import *
 import torch
 import torch.nn as nn
 
-from model.sequential.sequential_controller import SequentialController
+from model.sequential.base import SequentialController
 from model.sequential.rnn_predictor import RnnPredictor, RnnPredictorAnalytical
 
 

@@ -16,7 +16,7 @@ from infrastructure import utils
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.settings import *
 from infrastructure.utils import PTR
-from model.base.predictor import Predictor
+from model.base import Predictor
 
 
 # Optimizer configuration

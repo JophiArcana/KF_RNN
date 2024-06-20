@@ -6,8 +6,8 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure.experiment.training import TrainFunc
-from model.base.predictor import Predictor
-from model.sequential.sequential_predictor import SequentialPredictor
+from model.base import Predictor
+from model.sequential.base import SequentialPredictor
 
 
 class RnnPredictor(SequentialPredictor):
@@ -18,7 +18,6 @@ class RnnPredictor(SequentialPredictor):
         self.F = nn.Parameter(initialization.get("F", 1.0 * torch.eye(self.S_D)))
         if self.input_enabled:
             self.B = nn.Parameter(initialization.get("B", torch.zeros((self.S_D, self.I_D))))
-            # self.L = nn.Parameter(initialization.get("L", torch.zeros((self.I_D, self.S_D))))
         else:
             self.register_buffer("B", torch.zeros((self.S_D, self.I_D)))
         self.H = nn.Parameter(initialization.get('H', torch.zeros((self.O_D, self.S_D))))

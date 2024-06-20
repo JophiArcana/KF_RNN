@@ -5,7 +5,7 @@ import torch.nn.functional as Fn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.base.predictor import Predictor
+from model.base import Predictor
 
 
 class ConvolutionalPredictor(Predictor):

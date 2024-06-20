@@ -23,7 +23,7 @@ from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnPredictorLeastSquares
-from model.base.predictor import Predictor
+from model.base import Predictor
 from model.sequential import RnnPredictorPretrainAnalytical
 from model.transformer import GPT2InContextPredictor
 from model.zero_predictor import ZeroPredictor

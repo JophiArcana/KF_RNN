@@ -9,7 +9,7 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
-from model.base.predictor import Predictor
+from model.base import Predictor
 from system.core import SystemGroup
 
 
