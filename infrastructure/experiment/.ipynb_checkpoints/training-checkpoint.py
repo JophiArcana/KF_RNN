@@ -167,12 +167,22 @@ def _train_default(
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss, mask_ss = _extract_dataset_and_mask_from_indices(cache.padded_train_dataset, indices)
         mask_ss *= (torch.arange(THP.subsequence_length) >= getattr(THP, "sequence_buffer", 0))
-
+        
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
         with torch.set_grad_enabled(True):
-            train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)["observation_estimation"]
-        result.append(losses := Predictor.evaluate_run(train_result, dataset_ss["observation"], mask_ss))
+            train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
+
+        losses = Predictor.evaluate_run(
+            train_result["observation_estimation"],
+            dataset_ss["observation"], mask_ss
+        )
+        if "input_estimation" in train_result.keys():
+            losses = losses + Predictor.evaluate_run(
+                train_result["input_estimation"],
+                dataset_ss["input"], mask_ss
+            )
+        result.append(losses)
 
         cache.optimizer.zero_grad()
         torch.sum(losses).backward()
@@ -195,8 +205,8 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 1000,
-        print_frequency: int = 10
+        checkpoint_frequency: int = 100,
+        print_frequency: int = 1
 ) -> TensorDict:
 
     SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))

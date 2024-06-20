@@ -115,7 +115,7 @@ def run_module_arr(
         squeezed_out = nn.utils.stateless.functional_call(reference_module, dict(module_td.view()), squeezed_args, kwargs)
         flat_squeezed_out, args_spec = tree_flatten(squeezed_out)
         flat_out = [
-            t.view(*module_td.shape, *t.shape[module_td.ndim:])
+            t.view(*module_td.shape, *t.shape)
             for t in flat_squeezed_out
         ]
         return tree_unflatten(flat_out, args_spec)
