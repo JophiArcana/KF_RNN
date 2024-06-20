@@ -262,11 +262,10 @@ if __name__ == "__main__":
 
         # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_test_systems x test_dataset_size x context_length x O_D]
-        transformer_output = M_transformer.output.squeeze(1).squeeze(0)
+        transformer_output = M_transformer.output.observation_estimation.squeeze(1).squeeze(0)
         # -> [n_test_systems x test_dataset_size x context_length]
         transformer_l = loss(transformer_output)
-
-
+        
         # [n_firs x train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
         # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]

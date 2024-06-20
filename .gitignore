@@ -6,3 +6,4 @@ output/
 papers/
 venv/
 sandbox/cdc_reconstruction_save.pt
+sandbox/cdc_reconstruction_save_backup.pt

@@ -195,8 +195,8 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 100,
-        print_frequency: int = 1
+        checkpoint_frequency: int = 1000,
+        print_frequency: int = 10
 ) -> TensorDict:
 
     SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))

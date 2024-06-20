@@ -27,6 +27,7 @@ transformers~=4.36.0
 huggingface_hub==0.23.4
 control~=0.9.4
 dimarray~=1.2.1
+netcdf4==1.7.1
 
 
 
