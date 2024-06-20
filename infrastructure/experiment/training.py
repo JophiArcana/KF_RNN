@@ -171,8 +171,15 @@ def _train_default(
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
         with torch.set_grad_enabled(True):
-            train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)["observation_estimation"]
-        result.append(losses := Predictor.evaluate_run(train_result, dataset_ss["observation"], mask_ss))
+            train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
+
+        result.append(losses := Predictor.evaluate_run(
+            train_result["observation_estimation"],
+            dataset_ss["observation"], mask_ss
+        ) + THP.control_coefficient * Predictor.evaluate_run(
+            train_result["input_estimation"],
+            dataset_ss["input"], mask_ss
+        ))
 
         cache.optimizer.zero_grad()
         torch.sum(losses).backward()

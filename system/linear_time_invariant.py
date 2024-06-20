@@ -30,7 +30,7 @@ class LinearSystemGroup(SystemGroup):
         return LinearSystemGroup(params, shp.input_enabled)
 
     def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
-        super().__init__(input_enabled)
+        SystemGroup.__init__(self, input_enabled)
 
         F, B, H, sqrt_S_W, sqrt_S_V = map(params.__getitem__, ("F", "B", "H", "sqrt_S_W", "sqrt_S_V"))
 
@@ -123,7 +123,7 @@ class LinearSystemGroup(SystemGroup):
 
 class MOPDistribution(LinearSystemGroup.Distribution):
     def __init__(self, F_mode: str, H_mode: str, W_std: float, V_std: float) -> None:
-        super().__init__()
+        LinearSystemGroup.Distribution.__init__(self)
         assert F_mode in ("gaussian", "uniform"), f"F_mode must be one of (gaussian, uniform) but got {F_mode}."
         self.F_mode = F_mode
 

@@ -16,7 +16,7 @@ class LinearQuadraticGaussianGroup(LinearSystemGroup):
             SystemDistribution.__init__(self, LinearQuadraticGaussianGroup)
 
     def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
-        super().__init__(params, input_enabled)
+        LinearSystemGroup.__init__(self, params, input_enabled)
         assert self.input_enabled, f"Input must be enabled for linear-quadratic Gaussian model but got {self.input_enabled}."
 
         Q, R = map(params.__getitem__, ("Q", "R"))

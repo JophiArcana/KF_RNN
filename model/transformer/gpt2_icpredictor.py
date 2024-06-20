@@ -11,7 +11,7 @@ class GPT2InContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
         self.config = modelArgs.gpt2
         self.n_positions = self.config.n_positions
-        super().__init__(modelArgs, self.config.n_embd)
+        TransformerPredictor.__init__(self, modelArgs, self.config.n_embd)
 
         self.core = GPT2Model(self.config)
 
