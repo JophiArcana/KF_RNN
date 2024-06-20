@@ -33,19 +33,27 @@ if __name__ == "__main__":
     from model.sequential.rnn_predictor import RnnPredictor, RnnPredictorPretrainAnalytical
     configurations = [
         ("optimizer", {
-            "name": ["adam", "gd", "adam_analytical_initialization", "gd_analytical_initialization"],
-            "model.model": [RnnPredictor, RnnPredictor, RnnPredictorPretrainAnalytical, RnnPredictorPretrainAnalytical],
-            "train.optim_type": ["Adam", "GD", "Adam", "GD"],
-            "train.max_lr": [2e-2, 1e-3, 2e-2, 1e-3]
+            "name": ["adam", "adam_analytical_initialization", "gd_analytical_initialization"],
+            "model.model": [RnnPredictor, RnnPredictorPretrainAnalytical, RnnPredictorPretrainAnalytical],
+            "train.optim_type": ["Adam", "Adam", "GD"],
+            "train.max_lr": [2e-2, 2e-2, 1e-3]
         }),
         ("total_trace_length", {
             "dataset.train.total_sequence_length": [1, 2, 5, 10, 20, 50, 100, 200, 500],
             # "dataset.train.total_sequence_length": [100, 200, 500, 1000, 2000, 5000, 10000]
-        }),
-        # ("validation_distribution", {
-        #     "dataset.valid.system.distribution.sample_func": [get_mop_sample_func("gaussian", "gaussian", 0.1, 0.1)] * 2
-        # })
+        })
     ]
+    # configurations2 = [
+    #     ("optimizer", {
+    #         "name": ["gd"],
+    #         "model.model": [RnnPredictor],
+    #         "train.optim_type": ["GD"],
+    #         "train.max_lr": [2e-1]
+    #     }),
+    #     ("total_trace_length", {
+    #         "dataset.train.total_sequence_length": [20, 50],
+    #     })
+    # ]
 
     result, dataset = run_experiments(
         args, configurations, {

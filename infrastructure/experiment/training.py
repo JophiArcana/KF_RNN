@@ -119,26 +119,29 @@ def _train_default(
 
         train_sequence_lengths = torch.sum(exclusive.train_mask, dim=1)
         if THP.optim_type == "GD":
-            THP.subsequence_length = sequence_length
-            THP.batch_size = exclusive.n_train_systems * dataset_size
-
+            cache.subsequence_length = sequence_length
+            cache.batch_size = exclusive.n_train_systems * dataset_size
+            
             train_index_dataset = TensorDict({
                 "sequence": torch.arange(dataset_size, dtype=torch.int),
                 "start": torch.zeros((dataset_size,), dtype=torch.int),
                 "stop": train_sequence_lengths
             }, batch_size=(dataset_size,))
         else:
+            cache.subsequence_length = THP.subsequence_length
+            cache.batch_size = THP.batch_size
+            
             sequence_indices, stop_indices_n1 = torch.where(exclusive.train_mask)
             train_index_dataset = TensorDict({
                 "sequence": sequence_indices,
-                "start": stop_indices_n1 - THP.subsequence_length + 1,
+                "start": stop_indices_n1 - cache.subsequence_length + 1,
                 "stop": stop_indices_n1 + 1
             }, batch_size=(len(sequence_indices),))
         train_index_dataset = train_index_dataset.expand(exclusive.n_train_systems, *train_index_dataset.shape)
         train_index_dataset["system"] = torch.arange(exclusive.n_train_systems)[:, None].expand(*train_index_dataset.shape)
 
         cache.train_index_dataset = train_index_dataset.flatten()
-        cache.index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, THP.batch_size)
+        cache.index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, cache.batch_size)
         cache.padded_train_dataset = TensorDict({
             k: torch.cat([v, torch.zeros((*dataset.shape[:-1], 1, v.shape[-1]))], dim=-2)
             for k, v in exclusive.train_info.dataset.obj.items()
@@ -166,7 +169,7 @@ def _train_default(
 
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss, mask_ss = _extract_dataset_and_mask_from_indices(cache.padded_train_dataset, indices)
-        mask_ss *= (torch.arange(THP.subsequence_length) >= getattr(THP, "sequence_buffer", 0))
+        mask_ss *= (torch.arange(cache.subsequence_length) >= getattr(THP, "sequence_buffer", 0))
         
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()

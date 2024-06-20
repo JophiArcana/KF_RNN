@@ -190,7 +190,11 @@ def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[DimArray]:
     dim_arrs = _dim_arrs
 
     dim_dict = broadcast_dim_array_shapes(*dim_arrs)
-    reference_dim_arr = DimArray(np.zeros((*dim_dict.values(),)), dims=(*dim_dict.keys(),))
+    reference_dim_arr = DimArray(
+        np.zeros((*dim_dict.values(),)),
+        dims=(*dim_dict.keys(),),
+        axes=(*map(np.arange, dim_dict.values()),)
+    )
     return (dim_arr.broadcast(reference_dim_arr) for dim_arr in dim_arrs)
 
 def take_from_dim_array(dim_arr: DimArray | Dataset, idx: Dict[str, Any]):
