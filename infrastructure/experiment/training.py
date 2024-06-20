@@ -115,7 +115,7 @@ def _train_default(
     if not hasattr(cache, "optimizer"):
         # TODO: Set up the dataset index sampler
         dataset = exclusive.train_info.dataset.obj
-        sequence_length, dataset_size = dataset.shape[-2:]
+        dataset_size, sequence_length = dataset.shape[-2:]
 
         train_sequence_lengths = torch.sum(exclusive.train_mask, dim=1)
         if THP.optim_type == "GD":
