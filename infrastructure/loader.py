@@ -30,8 +30,7 @@ BaseDatasetArgs = Namespace(
     ),
     test=Namespace(
         dataset_size=500,
-        total_sequence_length=800000,
-        sequence_buffer=50
+        total_sequence_length=800000
     ),
     impulse_length=32
 )

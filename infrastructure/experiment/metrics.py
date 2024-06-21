@@ -13,34 +13,36 @@ from model.base import Predictor
 from system.core import SystemGroup
 
 
-MetricVars = Tuple[Namespace, Namespace, TensorDict[str, torch.Tensor]]
-
-def _truncation_mask(config: Namespace) -> torch.Tensor:
-    return torch.Tensor(torch.arange(config.sequence_length) >= config.sequence_buffer)
+MetricVars = Tuple[Namespace, TensorDict[str, torch.Tensor]]
 
 class Metric(object):
     @classmethod
     def compute(cls,
-                vars: MetricVars,
+                mv: MetricVars,
                 dependency: str,
-                cache: Dict[str, np.ndarray[torch.Tensor]]
+                cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]]
     ) -> np.ndarray[TensorDict[str, torch.Tensor]]:
         if dependency not in cache:
-            HP, exclusive, ensembled_learned_kfs = vars
+            exclusive, ensembled_learned_kfs = mv
             with torch.set_grad_enabled(False):
                 run = utils.multi_map(
                     lambda dataset: Predictor.run(exclusive.reference_module, ensembled_learned_kfs, *dataset),
-                    utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=torch.Tensor
+                    utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=TensorDict
                 )
             cache[dependency] = run
         return cache[dependency]
 
-    def __init__(self, evaluate_func: Callable[[MetricVars, Dict[str, np.ndarray[torch.Tensor]], bool], np.ndarray[torch.Tensor]]) -> None:
+    def __init__(self, evaluate_func: Callable[[MetricVars, Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]], bool], np.ndarray[torch.Tensor]]) -> None:
         self._evaluate_func = evaluate_func
 
-    def evaluate(self, vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], sweep_position: str, with_batch_dim: bool) -> torch.Tensor:
+    def evaluate(self,
+                 mv: MetricVars,
+                 cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+                 sweep_position: str,
+                 with_batch_dim: bool
+    ) -> torch.Tensor:
         assert sweep_position in ("inside", "outside"), f"Position of hyperparameter sweep must be either before model_shape (outside) or after model_shape (inside), but got {sweep_position}."
-        result_arr = self._evaluate_func(vars, cache, with_batch_dim)
+        result_arr = self._evaluate_func(mv, cache, with_batch_dim)
         return utils.stack_tensor_arr(result_arr, dim=(0 if sweep_position == "outside" else 2))
 
 
@@ -55,35 +57,42 @@ def _unsqueeze_if(t: torch.Tensor, b: bool) -> torch.Tensor:
     return t.unsqueeze(-1) if b else t
 
 def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target) -> Metric:
-    def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
-        HP, exclusive, ensembled_learned_kfs = vars
-        run = Metric.compute(vars, ds_type, cache)
-        if ds_type == "train":
-            mask = _truncation_mask(getattr(HP.dataset, ds_type)) * exclusive.train_mask
-        else:
-            mask = _truncation_mask(getattr(HP.dataset, ds_type))
+    def eval_func(
+            mv: MetricVars,
+            cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        exclusive, ensembled_learned_kfs = mv
+        run = Metric.compute(mv, ds_type, cache)
+
         return utils.multi_map(
-            lambda pair: Predictor.evaluate_run(pair[0]["observation_estimation"], pair[1].obj[target], mask, batch_mean=not with_batch_dim),
-            utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
+            lambda pair: Predictor.evaluate_run(
+                pair[0]["observation_estimation"], pair[1].obj, target,
+                batch_mean=not with_batch_dim
+            ), utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
         )
     return Metric(eval_func)
 
 def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: str, target2: str) -> Metric:
-    def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
-        HP, exclusive, ensembled_learned_kfs = vars
-        if ds_type == "train":
-            mask = _truncation_mask(getattr(HP.dataset, ds_type)) * exclusive.train_mask
-        else:
-            mask = _truncation_mask(getattr(HP.dataset, ds_type))
+    def eval_func(
+            mv: MetricVars,
+            cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        exclusive, ensembled_learned_kfs = mv
         return utils.multi_map(
-            lambda dataset: Predictor.evaluate_run(dataset.obj[target1], dataset.obj[target2], mask, batch_mean=not with_batch_dim),
+            lambda dataset: Predictor.evaluate_run(dataset.obj[target1], dataset.obj, target2, batch_mean=not with_batch_dim),
             utils.rgetattr(exclusive, f"info.{ds_type}.dataset"), dtype=torch.Tensor
         )
     return Metric(eval_func)
 
 def _get_analytical_error_with_dataset_type(ds_type: str) -> Metric:
-    def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
-        HP, exclusive, ensembled_learned_kfs = vars
+    def eval_func(
+            mv: MetricVars,
+            cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        exclusive, ensembled_learned_kfs = mv
         def AE(sg: SystemGroup) -> torch.Tensor:
             return _unsqueeze_if(exclusive.reference_module.analytical_error(
                 ensembled_learned_kfs[:, :, None],
@@ -95,21 +104,24 @@ def _get_analytical_error_with_dataset_type(ds_type: str) -> Metric:
     return Metric(eval_func)
 
 def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
-    def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
-        HP, exclusive, ensembled_learned_kfs = vars
+    def eval_func(
+            mv: MetricVars,
+            cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        exclusive, ensembled_learned_kfs = mv
 
         reset_ensembled_learned_kfs = Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs)
         params = [p for p in reset_ensembled_learned_kfs.values() if isinstance(p, nn.Parameter)]
 
         dataset_arr = utils.rgetattr(exclusive, f"info.{ds_type}.dataset")
-        mask = exclusive.train_mask if ds_type == "train" else None
         with torch.set_grad_enabled(True):
             run_arr = utils.multi_map(
                 lambda dataset: Predictor.run(exclusive.reference_module, reset_ensembled_learned_kfs, *dataset)["observation_estimation"],
                 dataset_arr, dtype=torch.Tensor
             )
             loss_arr = utils.multi_map(
-                lambda pair: Predictor.evaluate_run(pair[0], pair[1].obj["observation"], mask).mean(dim=-1),
+                lambda pair: Predictor.evaluate_run(pair[0], pair[1].obj, "observation").mean(dim=-1),
                 utils.multi_zip(run_arr, dataset_arr), dtype=torch.Tensor
             )
 
@@ -127,11 +139,15 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
     return Metric(eval_func)
 
 def _get_irreducible_loss_with_dataset_type(ds_type: str) -> Metric:
-    def eval_func(vars: MetricVars, cache: Dict[str, np.ndarray[torch.Tensor]], with_batch_dim: bool) -> np.ndarray[torch.Tensor]:
-        HP, exclusive, ensembled_learned_kfs = vars
+    def eval_func(
+            mv: MetricVars,
+            cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        exclusive, ensembled_learned_kfs = mv
         return utils.multi_map(
-            lambda il: _unsqueeze_if(il.obj[:, None], with_batch_dim),
-            utils.rgetattr(exclusive, f"info.{ds_type}.irreducible_loss"), dtype=torch.Tensor
+            lambda sg: _unsqueeze_if(sg.irreducible_loss[:, None], with_batch_dim),
+            utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor
         )
     return Metric(eval_func)
 

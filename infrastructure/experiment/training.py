@@ -1,6 +1,5 @@
 import copy
 import json
-import time
 from argparse import Namespace
 from inspect import signature
 from typing import *
@@ -59,10 +58,10 @@ TrainFunc = Callable[[
     Namespace
 ], Tuple[torch.Tensor, bool]]
 
-def _extract_dataset_and_mask_from_indices(
+def _extract_dataset_from_indices(
         padded_train_dataset: TensorDict[str, torch.Tensor],
         indices: TensorDict[str, torch.Tensor],
-) -> Tuple[TensorDict[str, torch.Tensor], torch.Tensor]:
+) -> TensorDict[str, torch.Tensor]:
     sequence_indices, start_indices, stop_indices, system_indices = map(indices.__getitem__, (
         "sequence",
         "start",
@@ -92,15 +91,13 @@ def _extract_dataset_and_mask_from_indices(
         observation: [N x E x B x L_SS x O_D]
         target: [N x E x B x L_SS x O_D]
     """
-    dataset_ss = padded_train_dataset[
+    return padded_train_dataset[
         n_experiment_idx,
         ensemble_size_idx,
         system_idx,
         sequence_idx,
         subsequence_idx
     ]
-    mask_ss = torch.Tensor(subsequence_idx < stop_indices.unsqueeze(-1))
-    return dataset_ss, mask_ss
 
 def _train_default(
         THP: Namespace,
@@ -116,8 +113,9 @@ def _train_default(
         # TODO: Set up the dataset index sampler
         dataset = exclusive.train_info.dataset.obj
         dataset_size, sequence_length = dataset.shape[-2:]
+        mask = dataset["mask"].view(-1, dataset_size, sequence_length)[0]
 
-        train_sequence_lengths = torch.sum(exclusive.train_mask, dim=1)
+        train_sequence_lengths = torch.sum(mask, dim=1)
         if THP.optim_type == "GD":
             cache.subsequence_length = sequence_length
             cache.batch_size = exclusive.n_train_systems * dataset_size
@@ -131,7 +129,7 @@ def _train_default(
             cache.subsequence_length = THP.subsequence_length
             cache.batch_size = THP.batch_size
             
-            sequence_indices, stop_indices_n1 = torch.where(exclusive.train_mask)
+            sequence_indices, stop_indices_n1 = torch.where(mask)
             train_index_dataset = TensorDict({
                 "sequence": sequence_indices,
                 "start": stop_indices_n1 - cache.subsequence_length + 1,
@@ -143,7 +141,9 @@ def _train_default(
         cache.train_index_dataset = train_index_dataset.flatten()
         cache.index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, cache.batch_size)
         cache.padded_train_dataset = TensorDict({
-            k: torch.cat([v, torch.zeros((*dataset.shape[:-1], 1, v.shape[-1]))], dim=-2)
+            k: torch.cat([
+                v, torch.zeros((*dataset.shape[:-1], 1, *v.shape[dataset.ndim:]))
+            ], dim=dataset.ndim - 1)
             for k, v in exclusive.train_info.dataset.obj.items()
         }, batch_size=(*dataset.shape[:-1], dataset.shape[-1] + 1))
 
@@ -154,22 +154,17 @@ def _train_default(
 
     cache.scheduler(None)
 
-
     # SECTION: At start of each epoch, generate the training indices for that epoch
     if THP.optim_type == "GD":
         train_index_dataloader = cache.train_index_dataset.expand(*cache.index_batch_shape)
     else:
         train_index_dataloader = cache.train_index_dataset[torch.randint(0, cache.train_index_dataset.shape[0], cache.index_batch_shape)]
 
-
     # SECTION: Iterate through train indices and run gradient descent
     result = []
     for batch, indices in enumerate(train_index_dataloader):
-        start_t = time.perf_counter()
-
         # DONE: Use indices to compute the mask for truncation and padding
-        dataset_ss, mask_ss = _extract_dataset_and_mask_from_indices(cache.padded_train_dataset, indices)
-        mask_ss *= (torch.arange(cache.subsequence_length) >= getattr(THP, "sequence_buffer", 0))
+        dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
         
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
@@ -178,12 +173,12 @@ def _train_default(
 
         losses = Predictor.evaluate_run(
             train_result["observation_estimation"],
-            dataset_ss["observation"], mask_ss
+            dataset_ss, "observation"
         )
         if "input_estimation" in train_result.keys():
             losses = losses + Predictor.evaluate_run(
                 train_result["input_estimation"],
-                dataset_ss["input"], mask_ss
+                dataset_ss, "input"
             )
         result.append(losses)
 
@@ -194,12 +189,8 @@ def _train_default(
                 p.grad.nan_to_num_()
         cache.optimizer.step()
 
-        end_t = time.perf_counter()
-        # print(f"Time for forward and backward pass: {end_t - start_t}s")
         torch.cuda.empty_cache()
-
     cache.t += 1
-
     return torch.stack(result, dim=0), terminate_condition()
 
 # Full training scheme
@@ -266,8 +257,6 @@ def _run_training(
             cache = Namespace(t=0)
 
         while not done:
-            start_t = time.perf_counter()
-
             # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
             checkpoint = {
                 "training_func_idx": idx,
@@ -297,7 +286,7 @@ def _run_training(
             exclusive.reference_module.eval()
             r = TensorDict({
                 m: Metrics[m].evaluate(
-                    (HP, exclusive, ensembled_learned_kfs),
+                    (exclusive, ensembled_learned_kfs),
                     metric_cache, sweep_position="inside", with_batch_dim=False
                 ).detach()
                 for m in metrics
@@ -338,9 +327,6 @@ def _run_training(
             counter += 1
             torch.cuda.empty_cache()
 
-            end_t = time.perf_counter()
-            # print(f"Time to run one epoch: {end_t - start_t}s")
-
     # TODO: Delete the checkpoint so that it does not interfere with the next experiment
     if checkpoint_paths is not None:
         for checkpoint_path in filter(os.path.exists, checkpoint_paths):
@@ -372,31 +358,24 @@ def _run_unit_training_experiment(
 
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(
-        lambda dataset: PTR(dataset.obj[
-                            :, :, :,
-                            :DHP.train.dataset_size,
-                            :DHP.train.sequence_length
-        ]), info.train.dataset, dtype=PTR
+        lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
+            dataset.obj[:, :, :, :DHP.train.dataset_size, :DHP.train.sequence_length],
+            DHP.train.total_sequence_length
+        )), info.train.dataset, dtype=PTR
     )
 
     # DONE: Create train dataloader
-    train_rem = DHP.train.dataset_size * DHP.train.sequence_length - DHP.train.total_sequence_length
-    train_mask = torch.ones((DHP.train.dataset_size, DHP.train.sequence_length))
-    if train_rem > 0:
-        train_mask[-train_rem:, -1] = 0
-
     exclusive = Namespace(
         info=info,
-        reference_module=reference_module,
         train_info=info.train[()],
-        train_mask=train_mask,
+        reference_module=reference_module,
         n_train_systems=DHP.train.system.n_systems
     )
 
     # Setup result and run training
     print(f"Mean theoretical irreducible loss " + "-" * 80)
     for ds_type, ds_info in vars(info).items():
-        print(f"\t{ds_type}: {utils.multi_map(lambda il: il.obj.mean(), ds_info.irreducible_loss, dtype=float)}")
+        print(f"\t{ds_type}: {utils.multi_map(lambda sg: sg.irreducible_loss.mean(), ds_info.systems, dtype=float)}")
 
     return {
         "output": _run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach(),

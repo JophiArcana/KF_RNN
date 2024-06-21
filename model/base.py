@@ -35,7 +35,7 @@ class Predictor(nn.Module):
         _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size + split_size - 1) // split_size + 1)).to(torch.int)
+        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size - 1) // split_size + 2)).to(torch.int)
         splits = torch.tensor(sorted(set(splits.tolist())))
 
         _result_list = []
@@ -69,7 +69,7 @@ class Predictor(nn.Module):
         _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size + split_size - 1) // split_size + 1)).to(torch.int)
+        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size - 1) // split_size + 2)).to(torch.int)
         splits = torch.tensor(sorted(set(splits.tolist())))
 
         _result_list = []
@@ -92,19 +92,15 @@ class Predictor(nn.Module):
 
     @classmethod
     def evaluate_run(cls,
-                     result: torch.Tensor | float,
-                     target: torch.Tensor | float,
-                     mask: torch.Tensor = None,
+                     result: torch.Tensor | float,                          # [B... x N x B x L x ...]
+                     target_dict: TensorDict[str, torch.Tensor],            # [B... x N x B x L x ...]
+                     target_key: str,
                      batch_mean: bool = True
     ) -> torch.Tensor:
-        losses = torch.norm(result - target, dim=-1) ** 2
-        if mask is not None:
-            # assert mask.ndim <= 2, f"mask.ndim must be less than or equal to 2 but got {mask.ndim}."
-            mask = mask.expand(losses.shape[-mask.ndim:])
-            result_ = torch.sum(losses * mask, dim=-1) / torch.sum(mask, dim=-1)
-        else:
-            result_ = torch.mean(losses, dim=-1)
-        return result_.mean(-1) if batch_mean else result_
+        losses = torch.norm(result - target_dict[target_key], dim=-1) ** 2  # [B... x N x B x L]
+        mask = target_dict.get("mask", torch.full((target_dict.shape[-1],), True))
+        result_ = torch.sum(losses * mask, dim=-1) / torch.sum(mask, dim=-1)
+        return result_.mean(dim=-1) if batch_mean else result_
 
     @classmethod
     def clone_parameter_state(cls,
@@ -138,7 +134,7 @@ class Predictor(nn.Module):
             for k, v in ensembled_learned_kfs.items():
                 ensembled_learned_kfs[k] = initialization[k].expand_as(v)
             cache.initialization_error = error_.expand(ensembled_learned_kfs.shape)
-            error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj["observation"], mask=exclusive.train_mask).mean(-1)
+            error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj, "observation").mean(dim=-1)
         else:
             cache.done = True
             error = cache.initialization_error

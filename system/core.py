@@ -11,7 +11,7 @@ class SystemGroup(nn.Module):
         super().__init__()
         self.input_enabled = input_enabled
 
-    def generate_dataset(self, batch_size: int, seq_length: int) -> TensorDict[str, torch.Tensor]:
+    def generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict[str, torch.Tensor]:
         raise NotImplementedError()
 
     def td(self) -> TensorDict[str, torch.Tensor]:

@@ -63,6 +63,7 @@ class LinearSystemGroup(SystemGroup):
         S_state_inf_intermediate = solve_discrete_are(self.F.mT, self.H.mT, self.S_W, self.S_V)                     # [N... x S_D x S_D]
         self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
         self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
+        self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
 
     def supply_input(self,
                      state_estimation: torch.Tensor             # [N... x B x S_D]
@@ -70,11 +71,8 @@ class LinearSystemGroup(SystemGroup):
         B = state_estimation.shape[-2]
         return torch.randn((*self.group_shape, B, self.I_D))    # [N... x B x I_D]
 
-    def generate_dataset(self,
-                         batch_size: int,       # B
-                         seq_length: int        # L
-    ) -> TensorDict[str, torch.Tensor]:
-        B, L = batch_size, seq_length
+    def generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict[str, torch.Tensor]:
+        B, L = batch_size, sequence_length
 
         W = torch.randn((L, *self.group_shape, B, self.S_D)) @ self.sqrt_S_W.mT                     # [L x N... x B x S_D]
         V = torch.randn((L, *self.group_shape, B, self.O_D)) @ self.sqrt_S_V.mT                     # [L x N... x B x O_D]

@@ -793,16 +793,6 @@ if __name__ == '__main__':
     from system.linear_quadratic_gaussian import LQGDistribution
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
-    from torch.utils._pytree import tree_flatten, tree_unflatten
-
-    # # print(tree_flatten((3, 5)))
-    # print(tree_flatten(0))
-    # print(tree_flatten([
-    #     torch.randn((12, 7)), torch.randn((12, 9))
-    # ])[1])
-    # raise Exception()
-
-
     exp_name = "TransformerXL"
 
     SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)

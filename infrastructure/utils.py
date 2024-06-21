@@ -56,6 +56,13 @@ def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
             result = torch.cat([blocked_result[:, :N], blocked_result[:, N:]], dim=0)
         return result.reshape(1 << k, N, N)[:n]
 
+def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], total_sequence_length: int) -> TensorDict[str, torch.Tensor]:
+    batch_size, sequence_length = ds.shape[-2:]
+    ds["mask"] = torch.Tensor(torch.arange(batch_size * sequence_length) < total_sequence_length).view(
+        sequence_length, batch_size
+    ).mT.expand(ds.shape)
+    return ds
+
 def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
     result = torch.stack((*tensor_arr.ravel(),), dim=dim)
     if tensor_arr.ndim > 1:

@@ -5,15 +5,14 @@ import os
 import shutil
 import time
 from argparse import Namespace
-from collections import OrderedDict
-from typing import *
 
 import numpy.core.records as np_records
 import torch
 from dimarray import DimArray
 
 from infrastructure import utils
-from infrastructure.experiment.internals import _supports_dataset_condition, _prologue, _construct_info_dict, \
+from infrastructure.experiment.internals import _supports_dataset_condition, _prologue, \
+    _construct_info_dict_from_dataset_types, \
     _process_info_dict, _construct_dataset_from_iterparam, _populate_values
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.experiment.static import *
@@ -48,6 +47,7 @@ def run_experiments(
         systems=systems, result=training_result, cache=training_cache, save_experiment=save_experiment
     )
 
+
 """
     iterparams = [
         ('optimizer', {
@@ -69,6 +69,8 @@ def run_experiments(
         })
     ]
 """
+
+
 def run_training_experiments(
         HP: Namespace,
         iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
@@ -96,19 +98,16 @@ def run_training_experiments(
     else:
         output_dir = train_output_dir = output_fname = output_fname_backup = checkpoint_paths = None
 
-    cache = Namespace()
-    def update_cache(s: str, v: Any) -> None:
-        setattr(cache, s, v)
-
-
     # SECTION: Run prologue to construct basic data structures
+    cache = Namespace()
     conditions = (
-        (lambda n, _: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
-        (lambda n, _: not n.startswith("dataset.test."), "Cannot sweep over test dataset hyperparameters during training."),
-        (_supports_dataset_condition(HP, "valid"), "Cannot sweep over hyperparameters that determine shape of the validation dataset."),
+        (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
+        (lambda n: not n.startswith("dataset.test."),
+         "Cannot sweep over test dataset hyperparameters during training."),
+        (_supports_dataset_condition(HP, "valid"),
+         "Cannot sweep over hyperparameters that determine shape of the validation dataset."),
     )
     numpy_HP, iterparams = _prologue(HP, iterparams, conditions)
-
 
     # DONE: Filter out the hyperparameter sweeps that do not influence training
     train_iterparams = []
@@ -128,36 +127,19 @@ def run_training_experiments(
         train_datasets, train_dim_names, train_shapes = zip(*train_iterparam_datasets)
     else:
         train_datasets, train_dim_names, train_shapes = (), (), ()
-    update_cache("train_dim_names", train_dim_names := (*itertools.chain(*train_dim_names),))
-    update_cache("train_param_shape", train_param_shape := (*itertools.chain(*train_shapes),))
-
+    cache.train_dim_names = train_dim_names = (*itertools.chain(*train_dim_names),)
+    cache.train_param_shape = train_param_shape = (*itertools.chain(*train_shapes),)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
-    saved_attrs = ("systems", "dataset")
-    fname_dict = {attr: f"{train_output_dir}/{attr}.pt" for attr in saved_attrs}
-
-    save_dict = {}
-    if save_experiment:
-        for attr, fname in fname_dict.items():
-            if os.path.exists(fname):
-                save_dict[attr] = torch.load(fname, map_location=DEVICE)
-                print(f"Loaded {fname} from disk.")
-
-    INFO_DICT: Dict[str, OrderedDict[str, DimArray]] = {}
-    for ds_type in TRAINING_DATASET_TYPES:
-        INFO_DICT[ds_type] = _construct_info_dict(numpy_HP, INFO_DICT, ds_type, save_dict, systems=systems)
-
-    if save_experiment:
-        for attr, fname in fname_dict.items():
-            if not os.path.exists(fname):
-                torch.save(OrderedDict([(k, v[attr]) for k, v in INFO_DICT.items()]), fname)
-
+    _INFO_DICT = _construct_info_dict_from_dataset_types(
+        numpy_HP, OrderedDict(), TRAINING_DATASET_TYPES, train_output_dir,
+        default_systems=systems
+    )
 
     # SECTION: Construct DimRecarrays from accumulated information
     # DONE: Cache unprocessed INFO_DICT to use during testing
-    update_cache("info_dict", INFO_DICT)
-    INFO_DICT: Dict[str, DimArray] = {k: _process_info_dict(v) for k, v in INFO_DICT.items()}
-
+    cache.info_dict = _INFO_DICT
+    INFO_DICT: Dict[str, DimArray] = {k: _process_info_dict(v) for k, v in _INFO_DICT.items()}
 
     # SECTION: Run the experiments for hyperparameter sweeps
     # Result setup
@@ -169,7 +151,6 @@ def run_training_experiments(
     else:
         # Set up new result DimRecarray
         result = DimArray(np.recarray(train_param_shape, dtype=RESULT_DTYPE), dims=train_dim_names, dtype=RESULT_DTYPE)
-
 
     print("=" * 160)
     print(HP.experiment.exp_name)
@@ -191,7 +172,8 @@ def run_training_experiments(
             _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
 
             INFO = Namespace(**{
-                ds_type: np_records.fromrecords(utils.take_from_dim_array(ds_info, experiment_dict_index), dtype=ds_info.dtype)
+                ds_type: np_records.fromrecords(utils.take_from_dim_array(ds_info, experiment_dict_index),
+                                                dtype=ds_info.dtype)
                 for ds_type, ds_info in INFO_DICT.items()
             })
 
@@ -217,7 +199,6 @@ def run_training_experiments(
             counter += 1
         torch.cuda.empty_cache()
 
-
     # SECTION: Save relevant information
     if save_experiment:
         # Save code to for experiment reproducibility
@@ -238,13 +219,12 @@ def run_training_experiments(
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-        # Clean up result_backup and write final result with updated metadata
+        # Clean up result_backup
         if os.path.exists(output_fname_backup):
             os.remove(output_fname_backup)
-        torch.save(result, output_fname)
-        print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
 
     return result, cache
+
 
 def run_testing_experiments(
         HP: Namespace,
@@ -277,58 +257,44 @@ def run_testing_experiments(
         result = torch.load(output_fname, map_location=DEVICE)
     elif result is None:
         train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
-        assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
+        assert os.path.exists(
+            train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
         result = torch.load(train_output_fname, map_location=DEVICE)
 
     if cache is None:
         training_cache_fname = f"{output_dir}/{output_kwargs['training_dir']}/cache.pt"
-        assert os.path.exists(training_cache_fname), f"Training cache was not provided, and could not be found at {training_cache_fname}."
+        assert os.path.exists(
+            training_cache_fname), f"Training cache was not provided, and could not be found at {training_cache_fname}."
         cache = torch.load(training_cache_fname, map_location=DEVICE)
-
 
     # SECTION: Run prologue to construct basic data structures
     conditions = (
-        (lambda n, _: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
-        (_supports_dataset_condition(HP, "test"), "Cannot sweep over hyperparameters that determine shape of the testing dataset."),
+        (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
+        (_supports_dataset_condition(HP, "test"),
+         "Cannot sweep over hyperparameters that determine shape of the testing dataset."),
     )
     numpy_HP, iterparams = _prologue(HP, iterparams, conditions)
 
     # DONE: Construct Dataset structures
     iterparam_datasets = (*map(_construct_dataset_from_iterparam, iterparams),)
 
-
     # SECTION: Construct dataset-relevant metadata provided to the experiment
-    saved_attrs = ("systems", "dataset")
-    fname_dict = {attr: f"{test_output_dir}/{attr}.pt" for attr in saved_attrs}
+    INFO_DICT = _construct_info_dict_from_dataset_types(
+        numpy_HP, cache.info_dict, (TESTING_DATASET_TYPE,), test_output_dir,
+        default_systems=systems
+    )
 
-    save_dict = {}
-    if save_experiment:
-        for attr, fname in fname_dict.items():
-            if os.path.exists(fname):
-                save_dict[attr] = torch.load(fname, map_location=DEVICE)
-                print(f"Loaded {fname} from disk.")
-
-    INFO_DICT = OrderedDict([(
-        TESTING_DATASET_TYPE,
-        _construct_info_dict(numpy_HP, cache.info_dict, TESTING_DATASET_TYPE, save_dict, systems=systems)
-    )])
     for ds_info in INFO_DICT.values():
         shapes = utils.stack_tensor_arr(utils.multi_map(
-            lambda dataset: torch.IntTensor([*dataset.obj.shape,]),
+            lambda dataset: torch.IntTensor([*dataset.obj.shape, ]),
             ds_info["dataset"].values, dtype=tuple
         ))
         flattened_shapes = shapes.reshape(-1, shapes.shape[-1])
-        assert torch.all(flattened_shapes == flattened_shapes[0]), f"Cannot sweep over hyperparameters that determine shape of the testing dataset. Got dataset shapes {shapes}."
-
-    if save_experiment:
-        for attr, fname in fname_dict.items():
-            if not os.path.exists(fname):
-                torch.save(OrderedDict([(k, v[attr]) for k, v in INFO_DICT.items()]), fname)
-
+        assert torch.all(flattened_shapes == flattened_shapes[
+            0]), f"Cannot sweep over hyperparameters that determine shape of the testing dataset. Got dataset shapes {shapes}."
 
     # SECTION: Construct DimRecarray from accumulated information
     TEST_INFO = _process_info_dict(INFO_DICT[TESTING_DATASET_TYPE])
-
 
     # SECTION: Run the testing metrics
     counter = 0
@@ -348,7 +314,8 @@ def run_testing_experiments(
             reference_module, ensembled_learned_kfs = experiment_record.learned_kfs
             reference_module.eval()
 
-            INFO = np_records.fromrecords(utils.take_from_dim_array(TEST_INFO, experiment_dict_index), dtype=TEST_INFO.dtype)
+            INFO = np_records.fromrecords(utils.take_from_dim_array(TEST_INFO, experiment_dict_index),
+                                          dtype=TEST_INFO.dtype)
             exclusive = Namespace(info=Namespace(test=INFO), reference_module=reference_module)
 
             # DONE: Compute testing metrics
@@ -363,7 +330,7 @@ def run_testing_experiments(
             for m in metrics:
                 try:
                     r = Metrics[m].evaluate(
-                        (EXPERIMENT_HP, exclusive, ensembled_learned_kfs),
+                        (exclusive, ensembled_learned_kfs),
                         metric_cache, sweep_position="outside", with_batch_dim=True
                     ).detach()
                     metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
@@ -383,13 +350,8 @@ def run_testing_experiments(
             counter += 1
         torch.cuda.empty_cache()
 
-
     # SECTION: Save relevant information
     if save_experiment:
-        # Save the results of the experiment after computing metrics
-        torch.save(result, output_fname)
-        print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
-
         # Write hyperparameters to JSON
         hp_fname = f"{test_output_dir}/hparams.json"
         if not os.path.exists(hp_fname):
@@ -398,14 +360,16 @@ def run_testing_experiments(
 
     return result, INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
 
+
 def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:
     return getattr(np_records.fromrecords(r.values, dtype=RESULT_DTYPE), attr)
+
 
 def get_metric_namespace_from_result(r: DimArray) -> Namespace:
     result = Namespace()
     for k, v in utils.stack_tensor_arr(utils.multi_map(
-        lambda metrics: metrics.obj,
-        get_result_attr(r, "metrics"), dtype=TensorDict
+            lambda metrics: metrics.obj,
+            get_result_attr(r, "metrics"), dtype=TensorDict
     )).items(include_nested=True):
         if isinstance(k, str):
             setattr(result, k, v)

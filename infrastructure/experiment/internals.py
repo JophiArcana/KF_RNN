@@ -1,21 +1,22 @@
 import copy
+import os
 from argparse import Namespace
 from collections import OrderedDict
-from typing import *
 
 import torch
 from dimarray import DimArray, Dataset
 
 from infrastructure import utils
 from infrastructure.experiment.static import *
+from infrastructure.settings import DEVICE
 from system.core import SystemGroup
 
 
-def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str, Any], bool]:
+def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str], bool]:
     train_support_names = [f"dataset.{TRAINING_DATASET_TYPES[0]}.{p}" for p in DATASET_SUPPORT_PARAMS]
     ds_support_names = [f"dataset.{ds_type}.{p}" for p in DATASET_SUPPORT_PARAMS]
 
-    def condition(n: str, v: Any) -> bool:
+    def condition(n: str) -> bool:
         if n in ds_support_names:
             return False
         else:
@@ -28,7 +29,7 @@ def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str, A
 def _prologue(
         HP: Namespace,
         iterparams: List[Tuple[str, Dict[str, Any]]],
-        assertion_conditions: Iterable[Tuple[Callable[[str, Any], bool], str]] = ()
+        assertion_conditions: Iterable[Tuple[Callable[[str], bool], str]] = ()
 ) -> Tuple[Namespace, List[Tuple[str, Dict[str, DimArray]]]]:
 
     # SECTION: Set up the hyperparameters in data structures that make if convenient to perform the iteration
@@ -40,7 +41,7 @@ def _prologue(
     for param_group, params in iterparams:
         for n, v in params.items():
             for condition, message in assertion_conditions:
-                assert condition(n, v), message
+                assert condition(n), message
 
             if n != "name":
                 utils.rsetattr(HP, n, v)
@@ -77,7 +78,7 @@ def _construct_dataset_from_iterparam(iterparam: Tuple[str, Dict[str, DimArray]]
 
 def _construct_info_dict(
         HP: Namespace,
-        info_dict: Dict[str, OrderedDict[str, DimArray]],
+        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
         ds_type: str,
         save_dict: Dict[str, Dict[str, Any]],
         systems: Dict[str, DimArray] = None,
@@ -151,7 +152,7 @@ def _construct_info_dict(
                 _rgetattr_default("{0}.dataset_size"),
                 _rgetattr_default("{0}.total_sequence_length")
             )
-            sequence_length_arr = (total_sequence_length_arr + dataset_size_arr - 1) // dataset_size_arr
+            sequence_length_arr = (total_sequence_length_arr - 1) // dataset_size_arr + 1
 
             max_dataset_size = dataset_size_arr.max()
             max_sequence_length = sequence_length_arr.max()
@@ -161,7 +162,7 @@ def _construct_info_dict(
             for idx, system_group in utils.multi_enumerate(systems_arr):
                 dataset_subarr = system_group.generate_dataset(
                     batch_size=max_batch_size,
-                    seq_length=max_sequence_length
+                    sequence_length=max_sequence_length
                 )
                 # DONE: For valid and test, don't generate over the ensemble
                 if ds_type == TRAINING_DATASET_TYPES[0]:
@@ -179,19 +180,34 @@ def _construct_info_dict(
             print(f"Defaulting to train dataset for dataset type {ds_type}")
             dataset_arr = info_dict[TRAINING_DATASET_TYPES[0]]["dataset"]
     result["dataset"] = dataset_arr
-
-    # DONE: Compute the irreducible losses that correspond to the generated systems
-    irreducible_loss_arr = utils.dim_array_like(systems_arr, dtype=tuple)
-    for idx, systems_subarr in utils.multi_enumerate(systems_arr):
-        S_prediction_err_inf = utils.stack_tensor_arr(utils.multi_map(
-            lambda sys: sys.S_prediction_err_inf, systems_subarr, dtype=torch.Tensor
-        ))
-
-        # DONE: Need to store as a tuple because directly storing a tensor breaks NumPy internals
-        irreducible_loss_arr[idx] = PTR(utils.batch_trace(S_prediction_err_inf))
-    result["irreducible_loss"] = irreducible_loss_arr
-
     return result
+
+def _construct_info_dict_from_dataset_types(
+        HP: Namespace,
+        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        dataset_types: Sequence[str],
+        output_dir: str,
+        default_systems: Dict[str, DimArray] = None
+) -> OrderedDict[str, OrderedDict[str, DimArray]]:
+    saved_fname_dict, unsaved_fname_dict = {}, {}
+    for attr in INFO_DTYPE.names:
+        fname = f"{output_dir}/{attr}.pt"
+        (saved_fname_dict if os.path.exists(fname) else unsaved_fname_dict)[attr] = fname
+
+    save_dict = {}
+    if output_dir is not None:
+        for attr, fname in saved_fname_dict.items():
+            save_dict[attr] = torch.load(fname, map_location=DEVICE)
+            print(f"Loaded {fname} from disk.")
+
+    for ds_type in dataset_types:
+        info_dict[ds_type] = _construct_info_dict(HP, info_dict, ds_type, save_dict, systems=default_systems)
+
+    if output_dir is not None:
+        for attr, fname in unsaved_fname_dict.items():
+            torch.save(OrderedDict([(k, v[attr]) for k, v in info_dict.items()]), fname)
+
+    return info_dict
 
 def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
     ds_info = OrderedDict(filter(
@@ -207,7 +223,7 @@ def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
 
 def _populate_values(
         HP: Namespace,
-        iterparam_datasets: Tuple[Dataset, Sequence[str], Sequence[int]],
+        iterparam_datasets: Sequence[Tuple[Dataset, Sequence[str], Sequence[int]]],
         experiment_dict_index: Dict[str, int]
 ) -> None:
     # TODO: Populate hyperparameter values
@@ -228,10 +244,7 @@ def _populate_values(
         if isinstance(ds_config, Namespace):
             dataset_size = _rgetattr_default("{0}.dataset_size", ds_type)
             total_sequence_length = _rgetattr_default("{0}.total_sequence_length", ds_type)
-            ds_config.sequence_length = (total_sequence_length + dataset_size - 1) // dataset_size
-
-            if not hasattr(ds_config, "sequence_buffer"):
-                ds_config.sequence_buffer = 0
+            ds_config.sequence_length = (total_sequence_length - 1) // dataset_size + 1
 
 
 

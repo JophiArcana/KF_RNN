@@ -38,8 +38,7 @@ class RnnPredictorAnalytical(RnnPredictor):
                 exclusive_.train_info.systems.td(),
                 Predictor.evaluate_run(
                     exclusive_.train_info.dataset.obj["target"],
-                    exclusive_.train_info.dataset.obj["observation"],
-                    mask=exclusive_.train_mask
+                    exclusive_.train_info.dataset.obj, "observation"
                 ).squeeze(-1)
             ), cache
         )
