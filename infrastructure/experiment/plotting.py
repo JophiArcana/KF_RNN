@@ -47,9 +47,6 @@ def plot_experiment(
     for snvl, name, color in zip(snvl_arr, hp_list, COLOR_LIST):
         # DONE: Plotting code
         name = str(name)
-        if len(name) > 50:
-            name = name[:50]
-
         quantiles = torch.tensor([0.25, 0.75])
 
         # Take the median over validation traces, mean over validation systems, and median over training resampling

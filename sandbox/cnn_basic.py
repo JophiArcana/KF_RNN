@@ -11,7 +11,7 @@ from model.convolutional import *
 
 
 if __name__ == "__main__":
-    base_exp_name = "MultipleTrace"
+    base_exp_name = "MultipleTraceLSTSQ"
     output_dir = "system2_CNN"
     output_fname = "result"
 
@@ -27,10 +27,10 @@ if __name__ == "__main__":
 
     configurations = [
         ("model", {
-            "model.model": [CnnPredictor, CnnPredictorLeastSquares]
+            "model.model": [CnnPredictorLeastSquares]
         }),
         ("total_trace_length", {
-            "dataset.train.total_sequence_length": [100, 128, 200, 256, 500, 768, 1000, 1536]
+            "dataset.train.total_sequence_length": [100, 128, 200, 256, 500, 768, 1000, 1536, 2000, 3072, 5000, 7680, 10000]
         })
     ]
 
