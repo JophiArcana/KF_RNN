@@ -11,7 +11,7 @@ import torch.nn as nn
 from matplotlib import colors
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
-from transformers import GPT2Config
+from transformers import GPT2Config, TransfoXLConfig
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -25,7 +25,7 @@ from infrastructure.utils import PTR
 from model.convolutional import CnnPredictorLeastSquares
 from model.base import Predictor
 from model.sequential import RnnPredictorPretrainAnalytical
-from model.transformer import GPT2InContextPredictor
+from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LinearSystemGroup, MOPDistribution
 
@@ -61,17 +61,32 @@ if __name__ == "__main__":
         exp_name_transformer = "CDCReconstruction_transformer"
 
         ARGS_TRANSFORMER = loader.generate_args(SHP)
-        ARGS_TRANSFORMER.model.model = GPT2InContextPredictor
+
+        # SECTION: Transformer architecture hyperparameters
+        d_embed = 256
+        n_layer = 12
+        n_head = 8
+        d_inner = 4 * d_embed
+
         ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
             n_positions=context_length,
-            n_embd=256,
-            n_layer=12,
-            n_head=8,
-            resid_pdrop=0.0,
-            embd_pdrop=0.0,
-            attn_pdrop=0.0,
-            use_cache=False,
+            n_embd=d_embed,
+            n_layer=n_layer,
+            n_head=n_head,
+            n_inner=d_inner,
+            resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
         )
+        ARGS_TRANSFORMER.model.transformerxl = TransfoXLConfig(
+            d_model=d_embed,
+            d_embed=d_embed,
+            n_layer=n_layer,
+            n_head=n_head,
+            d_head=d_embed // n_head,
+            d_inner=d_inner,
+            dropout=0.0,
+        )
+
+        # SECTION: Dataset hyperparameters
         ARGS_TRANSFORMER.dataset.train = Namespace(
             dataset_size=1,
             total_sequence_length=context_length,
@@ -95,10 +110,11 @@ if __name__ == "__main__":
             )
         )
 
+        # SECTION: Training hyperparameters
         del ARGS_TRANSFORMER.train.warmup_duration
         ARGS_TRANSFORMER.train.epochs = 40000
         ARGS_TRANSFORMER.train.subsequence_length = context_length
-        ARGS_TRANSFORMER.train.batch_size = 28
+        ARGS_TRANSFORMER.train.batch_size = 32
         ARGS_TRANSFORMER.train.iterations_per_epoch = 1
 
         ARGS_TRANSFORMER.train.optim_type = "Adam"
@@ -111,7 +127,11 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
         ARGS_TRANSFORMER.experiment.metrics = set() # {"validation"}
 
-        configurations_transformer = []
+        configurations_transformer = [
+            ("model", {
+                "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor],
+            })
+        ]
 
         result_transformer, dataset = run_experiments(
             ARGS_TRANSFORMER, configurations_transformer, {

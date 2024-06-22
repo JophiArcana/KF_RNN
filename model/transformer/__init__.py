@@ -1,4 +1,6 @@
 from .gpt2_icpredictor import GPT2InContextPredictor
+from .transformerxl_icpredictor import TransformerXLInContextPredictor
+from .transformerxl_iccontroller import TransformerXLInContextController
 
 
 

@@ -788,7 +788,38 @@ if __name__ == '__main__':
     # raise Exception()
 
     """ Sandbox 17 """
-    from transformers import TransfoXLConfig
+    from transformers import GPT2Config, GPT2Model
+    from transformers import TransfoXLConfig, TransfoXLModel
+
+    context_length = 250
+    d_embed = 256
+    n_layer = 12
+    n_head = 8
+    d_inner = 4 * d_embed
+
+    gpt2 = GPT2Model(GPT2Config(
+        n_positions=context_length,
+        n_embd=d_embed,
+        n_layer=n_layer,
+        n_head=n_head,
+        n_inner=d_inner,
+        resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
+    ))
+    transfoxl = TransfoXLModel(TransfoXLConfig(
+        d_model=d_embed,
+        d_embed=d_embed,
+        n_layer=n_layer,
+        n_head=n_head,
+        d_head=d_embed // n_head,
+        d_inner=d_inner,
+        dropout=0.0,
+    ))
+
+    print(utils.model_size(gpt2))
+    print(utils.model_size(transfoxl))
+    raise Exception()
+
+
 
     from system.linear_quadratic_gaussian import LQGDistribution
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController

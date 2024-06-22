@@ -204,6 +204,10 @@ def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[DimArray]:
     )
     return (dim_arr.broadcast(reference_dim_arr) for dim_arr in dim_arrs)
 
+def broadcast_arrays_preserve_ndims(*arrs: np.ndarray) -> Iterator[np.ndarray]:
+    shape = np.broadcast_shapes(*(arr.shape for arr in arrs))
+    return (np.broadcast_to(arr, shape[-arr.ndim:]) for arr in arrs)
+
 def take_from_dim_array(dim_arr: DimArray | Dataset, idx: Dict[str, Any]):
     dims = set(dim_arr.dims)
     return dim_arr.take(indices={k: v for k, v in idx.items() if k in dims})
@@ -323,13 +327,8 @@ def npfy_namespace(n: Namespace) -> None:
         else:
             setattr(n, k, np.array(v))
 
-def broadcast_arrays_preserve_ndims(*arrs: np.ndarray) -> Iterator[np.ndarray]:
-    shape = np.broadcast_shapes(*(arr.shape for arr in arrs))
-    return (np.broadcast_to(arr, shape[-arr.ndim:]) for arr in arrs)
-
-
-
-
+def model_size(m: nn.Module):
+    return sum(p.numel() for p in m.parameters())
 
 
 
