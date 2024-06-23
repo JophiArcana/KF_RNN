@@ -341,7 +341,8 @@ def run_testing_experiments(
             experiment_record.metrics = PTR(metric_result)
 
             if save_experiment:
-                if counter % HP.experiment.backup_frequency == 0:
+                # TODO: Save if backup frequency or if it was the last experiment
+                if (counter % HP.experiment.backup_frequency == 0) or (done.sum().item() + 1 == done.size):
                     print("\n" + "#" * 160)
                     torch.save(result, output_fname)
                     print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
