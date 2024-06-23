@@ -1,5 +1,6 @@
 import functools
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -331,6 +332,13 @@ def npfy_namespace(n: Namespace) -> None:
 
 def model_size(m: nn.Module):
     return sum(p.numel() for p in m.parameters())
+
+def call_func_with_kwargs(func: Callable, args: Tuple[Any, ...], kwargs: Dict[str, Any]):
+    params = inspect.signature(func).parameters
+    return func(*args, **{
+        k: v for k, v in kwargs.items()
+        if k in params and params[k].default is not inspect.Parameter.empty
+    })
 
 
 

@@ -328,37 +328,37 @@ if __name__ == "__main__":
         return np.array(colors.to_rgb(c))
     
     
-    (gpt2_rm, gpt2_td), (transfoxl_rm, transfoxl_td) = get_result_attr(result_transformer, "learned_kfs")
-    gpt2_td = gpt2_td.squeeze(1).squeeze(0)
-    transfoxl_td = transfoxl_td.squeeze(1).squeeze(0)
-    
-    dataset_parameter = TensorDict.from_dict(dataset, batch_size=dataset.shape)
-    dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
-    
-    with torch.set_grad_enabled(True):
-        gpt2_response = Predictor.gradient(gpt2_rm, gpt2_td, dataset_parameter, split_size=1 << 17)
-        transfoxl_response = Predictor.gradient(transfoxl_rm, transfoxl_td, dataset_parameter, split_size=1 << 17)
-    
-    gpt2_gn = (gpt2_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
-    for sys_idx in range(n_test_systems):
-        plt.plot(
-            cd(torch.arange(1, context_length + 1)),
-            cd(torch.flip(gpt2_gn[sys_idx].clamp_min(1e-4), dims=(0,))),
-            marker=".", label=f"gpt2_system{sys_idx}"
-        )
-    
-    plt.xscale("log")
-    plt.xlabel("recency")
-    plt.yscale("log")
-    plt.ylabel("gradient_norm")
-    
-    plt.legend()
-    plt.show()
+    # (gpt2_rm, gpt2_td), (transfoxl_rm, transfoxl_td) = get_result_attr(result_transformer, "learned_kfs")
+    # gpt2_td = gpt2_td.squeeze(1).squeeze(0)
+    # transfoxl_td = transfoxl_td.squeeze(1).squeeze(0)
+    #
+    # dataset_parameter = TensorDict.from_dict(dataset, batch_size=dataset.shape)
+    # dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
+    #
+    # with torch.set_grad_enabled(True):
+    #     gpt2_response = Predictor.gradient(gpt2_rm, gpt2_td, dataset_parameter, split_size=1 << 17)
+    #     transfoxl_response = Predictor.gradient(transfoxl_rm, transfoxl_td, dataset_parameter, split_size=1 << 17)
+    #
+    # gpt2_gn = (gpt2_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
+    # for sys_idx in range(n_test_systems):
+    #     plt.plot(
+    #         cd(torch.arange(1, context_length + 1)),
+    #         cd(torch.flip(gpt2_gn[sys_idx].clamp_min(1e-4), dims=(0,))),
+    #         marker=".", label=f"gpt2_system{sys_idx}"
+    #     )
+    #
+    # plt.xscale("log")
+    # plt.xlabel("recency")
+    # plt.yscale("log")
+    # plt.ylabel("gradient_norm")
+    #
+    # plt.legend()
+    # plt.show()
     
     
     
     # SECTION: Plotting code
-    def plot(system_idx: int) -> None:
+    def plot(system_idx: int, normalized: bool) -> None:
         x = torch.arange(1, context_length + 1)
     
         def plot_analytical(
@@ -375,8 +375,12 @@ if __name__ == "__main__":
             }
             plt_kwargs.update(kwargs)
             x_ = x[indices]
-    
-            l = (l - tensordict.utils.expand_as_right(il, l))[system_idx]
+
+            if normalized:
+                l = (l - tensordict.utils.expand_as_right(il, l))[system_idx]
+            else:
+                l = l[system_idx]
+
             if l.ndim == 1:
                 plt.plot(cd(x_), cd(l), **plt_kwargs, zorder=12)
             else:
@@ -400,8 +404,12 @@ if __name__ == "__main__":
             }
             plt_kwargs.update(kwargs)
             x_ = x[indices]
-    
-            l = (l - eil[:, :, indices])[system_idx]
+
+            if normalized:
+                l = (l - eil[:, :, indices])[system_idx]
+            else:
+                l = l[system_idx]
+
             plt.plot(cd(x_), cd(l.mean(dim=0)), label=name, **plt_kwargs)
             if error_bars:
                 plt.fill_between(
@@ -412,6 +420,10 @@ if __name__ == "__main__":
         # SECTION: Plot zero predictor
         plot_empirical(zero_predictor_l, "zero_predictor", "black")
         plot_analytical(zero_predictor_al[:, None].expand(n_test_systems, context_length), "black")
+
+        # SECTION: Plot Kalman filter
+        plot_empirical(eil, "kalman_filter", "black")
+        plot_analytical(il[:, None].expand(n_test_systems, context_length), "black")
     
         # SECTION: Plot CNN baseline
         c_list = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -438,7 +450,7 @@ if __name__ == "__main__":
         plt.show()
     
     for sys_idx in range(n_test_systems):
-        plot(sys_idx)
+        plot(sys_idx, False)
 
 
 

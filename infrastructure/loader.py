@@ -36,24 +36,31 @@ BaseDatasetArgs = Namespace(
 )
 BaseTrainArgs = Namespace(
     # Batch sampling
-    subsequence_length=16,
-    batch_size=128,
+    sampling=Namespace(
+        method="subsequence_padded",
+        batch_size=128,
+        subsequence_length=16
+    ),
 
     # Optimizer
-    optim_type="Adam",          # {"GD", "SGD", "SGDMomentum", "Adam"}
-    scheduler="exponential",    # {"exponential", "cosine"}
-    momentum=0.9,
-    min_lr=1.e-6,
-    max_lr=2.e-2,
-    T_0=10,
-    T_mult=2,
-    num_restarts=8,
-    warmup_duration=100,
-    weight_decay=0.0,
-    lr_decay=0.995,
+    optimizer=Namespace(
+        type="Adam",                        # {"SGD", "Adam"}
+        max_lr=2e-2, min_lr=1e-6,
+        weight_decay=0.0,
+
+        momentum=0.9,                       # SECTION: Used for Adam and SGD
+    ),
+
+    # Scheduler
+    scheduler=Namespace(
+        type="exponential",                 # {"exponential", "cosine"}
+        warmup_duration=100,
+
+        epochs=2500, lr_decay=0.995,        # SECTION: Used for exponential scheduler
+        T_0=10, T_mult=2, num_restarts=8,   # SECTION: Used for cosine scheduler
+    ),
 
     # Iteration
-    epochs=2500,
     iterations_per_epoch=20
 )
 BaseExperimentArgs = Namespace(

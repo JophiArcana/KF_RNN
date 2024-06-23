@@ -8,6 +8,7 @@ import time
 from argparse import Namespace
 from matplotlib import pyplot as plt
 from matplotlib.collections import LineCollection
+from typing import *
 
 import numpy as np
 import scipy as sc
@@ -864,6 +865,20 @@ if __name__ == '__main__':
     # result, dataset = run_experiments(args, [], {}, save_experiment=False)
 
     """ Sandbox 18 """
+    import torch.optim as optim
+    import inspect
+    print(dir(inspect.signature(optim.SGD)))
+    print(dir(inspect.Parameter))
+
+    for k, v in inspect.signature(optim.SGD).parameters.items():
+        print(k, v.default is inspect.Parameter.empty)
+    # print(list(inspect.signature(optim.SGD).parameters.values())[0].kind)
+    # print(inspect.getargs(optim.SGD))
+    print(utils.call_func_with_kwargs(optim.SGD, ((nn.Parameter(torch.zeros(5, 5)),), 0.01), {"a": 10}))
+    # optim.SGD((nn.Parameter(torch.zeros(5, 5)),), 0.01, a=10)
+    raise Exception()
+
+
     from system.linear_quadratic_gaussian import LinearQuadraticGaussianGroup, LinearQuadraticGaussianNoisyControlGroup
     from system.linear_quadratic_gaussian import LQGDistribution
 
@@ -871,6 +886,21 @@ if __name__ == '__main__':
     dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
 
     params = dist.sample_parameters(SHP, ())
+    # params["R"] = torch.zeros_like(params["R"])
+    lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
+
+    from infrastructure.discrete_are import solve_discrete_are
+    A, B, Q, R = lqg.F, lqg.B, lqg.Q, lqg.R
+    P = solve_discrete_are(A, B, Q, R)
+
+    def check_riccati(A, B, Q, R, P):
+        print(P)
+        print(A.mT @ P.mT @ A - (A.mT @ P @ B) @ torch.inverse(R + B.mT @ P @ B) @ (B.mT @ P @ A) + Q)
+
+    check_riccati(A, B, Q, R, P)
+
+    raise Exception()
+
     lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
     noisy_lqg = LinearQuadraticGaussianNoisyControlGroup(params, SHP.input_enabled)
 
@@ -887,6 +917,15 @@ if __name__ == '__main__':
         # il = 0
         return sl + il
 
+
+    indices = torch.randint(0, batch_size * horizon, (2000,))
+    plt.scatter(*ds["state"].flatten(0, -2)[indices].mT, s=1, label="optimal_controller_states")
+    plt.scatter(*noisy_ds["state"].flatten(0, -2)[indices].mT, s=1, label="noisy_controller_states")
+    plt.show()
+    # plt.plot(noisy_ds["state"].mean(dim=0).norm(dim=-1), label="noisy_controller_mean")
+
+
+
     l = loss(ds, lqg)
     noisy_l = loss(noisy_ds, noisy_lqg)
 
@@ -898,7 +937,6 @@ if __name__ == '__main__':
     plt.xscale("log")
     plt.xlabel("horizon")
     plt.yscale("log")
-
     plt.legend()
     plt.show()
 
