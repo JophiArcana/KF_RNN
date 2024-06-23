@@ -359,7 +359,7 @@ def _run_unit_training_experiment(
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(
         lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
-            dataset.obj[:, :, :, :DHP.train.dataset_size, :DHP.train.sequence_length],
+            dataset.obj[..., :DHP.train.dataset_size, :DHP.train.sequence_length],
             DHP.train.total_sequence_length
         )), info.train.dataset, dtype=PTR
     )

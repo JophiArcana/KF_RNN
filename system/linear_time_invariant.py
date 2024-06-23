@@ -80,22 +80,21 @@ class LinearSystemGroup(SystemGroup):
         state = torch.randn((*self.group_shape, B, self.S_D)) @ utils.sqrtm(self.S_state_inf).mT    # [N... x B x S_D]
         state_estimation = torch.zeros((*self.group_shape, B, self.S_D))                            # [N... x B x S_D]
 
-        states, inputs, observations, targets = [], [], [], []
+        r = {k: [] for k in ("state", "input", "observation", "target")}
         with torch.set_grad_enabled(False):
             for W_, V_ in zip(W, V):
-                inputs.append(input_ := self.supply_input(state_estimation))
-                states.append(state := state @ self.F.mT + input_ @ self.B.mT + W_)                     # [N... x B x S_D]
-                state_estimation = state_estimation @ self.F.mT + input_ @ self.B.mT                    # [N... x B x S_D]
+                r["input"].append(input_ := self.supply_input(state_estimation))                    # [N... x B x I_D]
+                r["state"].append(state := state @ self.F.mT + input_ @ self.B.mT + W_)             # [N... x B x S_D]
+                state_estimation = state_estimation @ self.F.mT + input_ @ self.B.mT                # [N... x B x S_D]
 
-                targets.append(target_ := state_estimation @ self.H.mT)                                 # [N... x B x O_D]
-                observations.append(observation_ := state @ self.H.mT + V_)                             # [N... x B x O_D]
-                state_estimation = state_estimation + (observation_ - target_) @ self.K.mT              # [N... x B x S_D]
+                r["target"].append(target_ := state_estimation @ self.H.mT)                         # [N... x B x O_D]
+                r["observation"].append(observation_ := state @ self.H.mT + V_)                     # [N... x B x O_D]
+                state_estimation = state_estimation + (observation_ - target_) @ self.K.mT          # [N... x B x S_D]
 
         return TensorDict({
-            "input": torch.stack(inputs, dim=-2),                                                   # [N... x B x L x I_D]
-            "observation": torch.stack(observations, dim=-2),                                       # [N... x B x L x O_D]
-            "target": torch.stack(targets, dim=-2)                                                  # [N... x B x L x O_D]
-        }, batch_size=(*self.group_shape, B, L))
+            k: torch.stack(v, dim=-2)
+            for k, v in r.items()
+        },  batch_size=(*self.group_shape, B, L))
 
     def forward(self,
                 state: torch.Tensor,            # [N... x B x S_D]

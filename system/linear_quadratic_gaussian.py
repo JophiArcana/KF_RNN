@@ -35,6 +35,23 @@ class LinearQuadraticGaussianGroup(LinearSystemGroup):
         return state_estimation @ -self.L.mT        # [N... x B x I_D]
 
 
+class LinearQuadraticGaussianNoisyControlGroup(LinearQuadraticGaussianGroup):
+    class Distribution(SystemDistribution):
+        def __init__(self):
+            SystemDistribution.__init__(self, LinearQuadraticGaussianNoisyControlGroup)
+
+    def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
+        LinearQuadraticGaussianGroup.__init__(self, params, input_enabled)
+
+        scale = torch.normal(torch.ones_like(self.L), 1.0)
+        self.register_buffer("L", self.L * scale)
+
+    def supply_input(self,
+                     state_estimation: torch.Tensor # [N... x B x S_D]
+    ) -> torch.Tensor:
+        return state_estimation @ -self.L.mT        # [N... x B x I_D]
+
+
 class LQGDistribution(LinearQuadraticGaussianGroup.Distribution, MOPDistribution):
     def __init__(self,
                  F_mode: str,
@@ -56,10 +73,7 @@ class LQGDistribution(LinearQuadraticGaussianGroup.Distribution, MOPDistribution
         Q_ = torch.randn((*shape, SHP.S_D, SHP.S_D)) * self.Q_scale
         R_ = torch.randn((*shape, SHP.I_D, SHP.I_D)) * self.R_scale
 
-        result.update({
-            "Q": utils.sqrtm(Q_ @ Q_.mT),
-            "R": utils.sqrtm(R_ @ R_.mT)
-        })
+        result.update({"Q": utils.sqrtm(Q_ @ Q_.mT), "R": utils.sqrtm(R_ @ R_.mT)})
         return result
 
 

@@ -50,7 +50,7 @@ class ConvolutionalPredictor(Predictor):
         # Highlight
         ws_recent_err = (Hs_cumQlHsLl_Lk @ sqrt_S_Ws.unsqueeze(-3)).flatten(-3, -1).norm(dim=-1) ** 2   # [B...]
 
-        Hs_cumQlHsLl_R = Hs_cumQlHsLl.index_select(-3, torch.tensor([R - 1])).squeeze(-3)       # [B... x O_D x S_D]
+        Hs_cumQlHsLl_R = Hs_cumQlHsLl[..., -1, :, :]                                            # [B... x O_D x S_D]
         cll = L.unsqueeze(-1) * L.unsqueeze(-2)                                                 # [B... x S_D x S_D]
 
         # Highlight

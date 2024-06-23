@@ -190,12 +190,9 @@ def solve_discrete_are(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R: tor
     ], dim=-1)
 
     T, U = _torch_schur(Z)
-
-    l_idx, h_idx = torch.arange(m), torch.arange(m, 2 * m)
-    U_1 = U.index_select(-1, l_idx)
-    U11 = U_1.index_select(-2, l_idx)
-    U21 = U_1.index_select(-2, h_idx)
-
+    U_1 = U[..., :m]
+    U11 = U_1[..., :m, :]
+    U21 = U_1[..., m:, :]
     return U21 @ torch.inverse(U11)
 
 

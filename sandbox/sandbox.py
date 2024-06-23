@@ -788,85 +788,124 @@ if __name__ == '__main__':
     # raise Exception()
 
     """ Sandbox 17 """
-    from transformers import GPT2Config, GPT2Model
-    from transformers import TransfoXLConfig, TransfoXLModel
+    # from transformers import GPT2Config, GPT2Model
+    # from transformers import TransfoXLConfig, TransfoXLModel
+    #
+    # context_length = 250
+    # d_embed = 256
+    # n_layer = 12
+    # n_head = 8
+    # d_inner = 4 * d_embed
+    #
+    # gpt2 = GPT2Model(GPT2Config(
+    #     n_positions=context_length,
+    #     n_embd=d_embed,
+    #     n_layer=n_layer,
+    #     n_head=n_head,
+    #     n_inner=d_inner,
+    #     resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
+    # ))
+    # transfoxl = TransfoXLModel(TransfoXLConfig(
+    #     d_model=d_embed,
+    #     d_embed=d_embed,
+    #     n_layer=n_layer,
+    #     n_head=n_head,
+    #     d_head=d_embed // n_head,
+    #     d_inner=d_inner,
+    #     dropout=0.0,
+    # ))
+    #
+    #
+    # from system.linear_quadratic_gaussian import LQGDistribution
+    # from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
+    #
+    # exp_name = "TransformerXL"
+    #
+    # SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
+    # args = loader.generate_args(SHP)
+    # args.model.model = TransformerXLInContextController
+    # args.model.transformerxl = TransfoXLConfig(
+    #     d_model=16,
+    #     d_embed=8,
+    #     n_head=4,
+    #     d_head=4,
+    #     d_inner=32,
+    #     n_layer=2
+    # )
+    # args.dataset.train = Namespace(
+    #     dataset_size=1,
+    #     total_sequence_length=200,
+    #     system=Namespace(
+    #         n_systems=1,
+    #         distribution=LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+    #     )
+    # )
+    # args.dataset.valid = args.dataset.test = Namespace(
+    #     dataset_size=5,
+    #     total_sequence_length=10000,
+    # )
+    #
+    # del args.train.warmup_duration
+    # args.train.epochs = 100
+    # args.train.subsequence_length = 32
+    # args.train.batch_size = 128
+    # args.train.iterations_per_epoch = 1
+    #
+    # args.train.optim_type = "GD"
+    # args.train.max_lr = 1e-4
+    # args.train.lr_decay = 1.0
+    # args.train.weight_decay = 1e-2
+    #
+    # args.experiment.n_experiments = 1
+    # args.experiment.ensemble_size = 1
+    # args.experiment.exp_name = exp_name
+    # args.experiment.metrics = {"validation"}
+    #
+    # result, dataset = run_experiments(args, [], {}, save_experiment=False)
 
-    context_length = 250
-    d_embed = 256
-    n_layer = 12
-    n_head = 8
-    d_inner = 4 * d_embed
-
-    gpt2 = GPT2Model(GPT2Config(
-        n_positions=context_length,
-        n_embd=d_embed,
-        n_layer=n_layer,
-        n_head=n_head,
-        n_inner=d_inner,
-        resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
-    ))
-    transfoxl = TransfoXLModel(TransfoXLConfig(
-        d_model=d_embed,
-        d_embed=d_embed,
-        n_layer=n_layer,
-        n_head=n_head,
-        d_head=d_embed // n_head,
-        d_inner=d_inner,
-        dropout=0.0,
-    ))
-
-    print(utils.model_size(gpt2))
-    print(utils.model_size(transfoxl))
-    raise Exception()
-
-
-
+    """ Sandbox 18 """
+    from system.linear_quadratic_gaussian import LinearQuadraticGaussianGroup, LinearQuadraticGaussianNoisyControlGroup
     from system.linear_quadratic_gaussian import LQGDistribution
-    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
-
-    exp_name = "TransformerXL"
 
     SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
-    args = loader.generate_args(SHP)
-    args.model.model = TransformerXLInContextController
-    args.model.transformerxl = TransfoXLConfig(
-        d_model=16,
-        d_embed=8,
-        n_head=4,
-        d_head=4,
-        d_inner=32,
-        n_layer=2
-    )
-    args.dataset.train = Namespace(
-        dataset_size=1,
-        total_sequence_length=200,
-        system=Namespace(
-            n_systems=1,
-            distribution=LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
-        )
-    )
-    args.dataset.valid = args.dataset.test = Namespace(
-        dataset_size=5,
-        total_sequence_length=10000,
-    )
+    dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
 
-    del args.train.warmup_duration
-    args.train.epochs = 100
-    args.train.subsequence_length = 32
-    args.train.batch_size = 128
-    args.train.iterations_per_epoch = 1
+    params = dist.sample_parameters(SHP, ())
+    lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
+    noisy_lqg = LinearQuadraticGaussianNoisyControlGroup(params, SHP.input_enabled)
 
-    args.train.optim_type = "GD"
-    args.train.max_lr = 1e-4
-    args.train.lr_decay = 1.0
-    args.train.weight_decay = 1e-2
+    print(lqg.L.norm(), noisy_lqg.L.norm())
 
-    args.experiment.n_experiments = 1
-    args.experiment.ensemble_size = 1
-    args.experiment.exp_name = exp_name
-    args.experiment.metrics = {"validation"}
+    batch_size = 1024
+    horizon = 1000
+    ds = lqg.generate_dataset(batch_size, horizon)
+    noisy_ds = noisy_lqg.generate_dataset(batch_size, horizon)
 
-    result, dataset = run_experiments(args, [], {}, save_experiment=False)
+    def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LinearQuadraticGaussianGroup) -> torch.Tensor:
+        sl = (ds_["state"].unsqueeze(-2) @ lqg_.Q @ ds_["state"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
+        il = (ds_["input"].unsqueeze(-2) @ lqg_.R @ ds_["input"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
+        # il = 0
+        return sl + il
+
+    l = loss(ds, lqg)
+    noisy_l = loss(noisy_ds, noisy_lqg)
+
+    print(l.shape, noisy_l.shape)
+
+    plt.plot(torch.cumsum(l, dim=1).median(dim=0).values.detach(), label="optimal_controller")
+    plt.plot(torch.cumsum(noisy_l, dim=1).median(dim=0).values.detach(), label="noisy_controller")
+
+    plt.xscale("log")
+    plt.xlabel("horizon")
+    plt.yscale("log")
+
+    plt.legend()
+    plt.show()
+
+
+
+
+
 
 
 

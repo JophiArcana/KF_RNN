@@ -40,7 +40,7 @@ def plot_experiment(
     else:
         snvl_arr = None
         assert loss_type in ("empirical", "analytical"), f"Loss type must be one of ('empirical', 'analytical') but got {repr(loss_type)}."
-    snvl_arr = torch.index_select(snvl_arr, -4, torch.tensor([n_experiment_idx])).squeeze(-4)
+    snvl_arr = snvl_arr[..., n_experiment_idx, :, :, :]
 
     hp_name, hp_dict = configurations[0]
     hp_list = hp_dict.get("name", list(hp_dict.values())[0])
