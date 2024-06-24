@@ -15,6 +15,7 @@ if __name__ == "__main__":
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
     exp_name = "TransformerXLImitationLearning"
+    output_dir = "transformerxl"
 
     d_embed = 256
     n_layer = 12
