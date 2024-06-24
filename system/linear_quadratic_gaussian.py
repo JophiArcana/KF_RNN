@@ -43,7 +43,7 @@ class LinearQuadraticGaussianNoisyControlGroup(LinearQuadraticGaussianGroup):
     def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
         LinearQuadraticGaussianGroup.__init__(self, params, input_enabled)
 
-        scale = torch.normal(torch.ones_like(self.L), 2.0)
+        scale = torch.normal(torch.ones_like(self.L), 1.0)
         self.register_buffer("L", self.L * scale)
 
     def supply_input(self,
