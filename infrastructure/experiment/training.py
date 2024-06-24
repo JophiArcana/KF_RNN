@@ -346,7 +346,7 @@ def _run_training(
                     (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
                     for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics))
                 ]
-                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>8f}' for k, v in mean_losses])}, LR: {lr}")
+                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>12.8f}' for k, v in mean_losses])}, LR: {lr}")
 
             # DONE: Check for divergence
             if "overfit" in metrics:
