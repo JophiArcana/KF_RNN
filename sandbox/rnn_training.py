@@ -24,6 +24,7 @@ if __name__ == "__main__":
     args.dataset.train.system.distribution = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     args.model.model = RnnPredictorPretrainAnalytical
     args.model.S_D = args.system.S_D
+    args.train.sampling.method = "full"
 
     args.experiment.exp_name = base_exp_name
     args.experiment.metrics = {"validation_analytical"}
@@ -42,8 +43,6 @@ if __name__ == "__main__":
                     max_lr=1.0, history_size=10
                 )
             ],
-            "train.sampling.method": ["full", "subsequence_padded", "full"],
-            "train.sampling.subsequence_length": [None, 128, None],
             "train.scheduler.warmup_duration": [100, 100, 0],
             "train.scheduler.epochs": [2000, 2000, 200],
         }),

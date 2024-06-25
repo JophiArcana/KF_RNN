@@ -1,6 +1,7 @@
 import copy
 import json
 from argparse import Namespace
+from collections import OrderedDict
 from inspect import signature
 from typing import *
 
@@ -19,36 +20,47 @@ from model.base import Predictor
 
 
 # Optimizer configuration
-def _get_optimizer(
-        params: Iterable[torch.Tensor],
-        hp: Namespace
-) -> Tuple[optim.Optimizer, ignite.handlers.LRScheduler | ignite.handlers.ConcatScheduler]:
-    optim_type = hp.optim_type
-    if optim_type == "GD" or optim_type == "SGD":
-        optimizer = optim.SGD(params, lr=hp.max_lr, momentum=0.0, weight_decay=hp.weight_decay)
-    elif optim_type == "SGDMomentum":
-        optimizer = optim.SGD(params, lr=hp.max_lr, momentum=hp.momentum, weight_decay=hp.weight_decay)
-    elif optim_type == "Adam":
-        optimizer = optim.AdamW(params, lr=hp.max_lr, betas=(hp.momentum, 0.98), weight_decay=hp.weight_decay)
-    else:
-        raise ValueError(optim_type)
+OptimDict: OrderedDict[str, type] = OrderedDict([
+    ("SGD", optim.SGD),
+    ("Adam", optim.AdamW),
+    ("LBFGS", optim.LBFGS),
+])
 
-    if hp.scheduler == 'cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, hp.T_0, T_mult=hp.T_mult, eta_min=hp.min_lr)
-        hp.epochs = hp.T_0 * ((hp.T_mult ** hp.num_restarts - 1) // (hp.T_mult - 1))
-    elif hp.scheduler == 'exponential':
-        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, hp.lr_decay)
+def _get_optimizer_and_scheduler(
+        params: Iterable[torch.Tensor],
+        THP: Namespace
+) -> Tuple[optim.Optimizer, ignite.handlers.LRScheduler | ignite.handlers.ConcatScheduler]:
+
+    optimizer_params = THP.optimizer
+    optimizer = utils.call_func_with_kwargs(
+        OptimDict[optimizer_params.type],
+        (params, optimizer_params.max_lr), vars(optimizer_params)
+    )
+
+
+    scheduler_params = THP.scheduler
+    scheduler_type = scheduler_params.type
+    if scheduler_type == "cosine":
+        scheduler = utils.call_func_with_kwargs(
+            optim.lr_scheduler.CosineAnnealingWarmRestarts,
+            (optimizer, scheduler_params.T_0), vars(scheduler_params)
+        )
+        scheduler_params.epochs = scheduler_params.T_0 * ((scheduler_params.T_mult ** scheduler_params.num_restarts - 1) // (scheduler_params.T_mult - 1))
+    elif scheduler_type == "exponential":
+        scheduler = utils.call_func_with_kwargs(
+            optim.lr_scheduler.ExponentialLR,
+            (optimizer, scheduler_params.lr_decay), vars(scheduler_params)
+        )
     else:
-        raise ValueError(hp.scheduler)
-    
-    if (warmup_duration := getattr(hp, 'warmup_duration', None)) is None:
+        raise ValueError(scheduler_type)
+
+
+    if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
         return optimizer, ignite.handlers.param_scheduler.LRScheduler(scheduler)
     else:
-        hp.epochs += (warmup_duration - 1)
+        scheduler_params.epochs += (warmup_duration - 1)
         return optimizer, ignite.handlers.param_scheduler.create_lr_scheduler_with_warmup(
-            scheduler,
-            hp.min_lr,
-            hp.warmup_duration
+            scheduler, optimizer_params.min_lr, warmup_duration
         )
 
 # Training
@@ -57,6 +69,52 @@ TrainFunc = Callable[[
     TensorDict[str, torch.Tensor],
     Namespace
 ], Tuple[torch.Tensor, bool]]
+
+def _sample_dataset_indices(
+        dataset: TensorDict[str, torch.Tensor],
+        iterations: int, **kwargs: Any
+) -> TensorDict[str, torch.Tensor]:
+
+    n_systems, dataset_size, sequence_length = dataset.shape[-3:]
+    index_outer_shape = (iterations, *dataset.shape[:2])
+
+    def add_system_indices(indices: TensorDict[str, torch.Tensor]) -> TensorDict[str, torch.Tensor]:
+        indices = indices.expand(n_systems, *indices.shape)
+        indices["system"] = torch.arange(n_systems)[:, None].expand(*indices.shape)
+        return indices.flatten()
+
+    mask = dataset["mask"].flatten(0, -3)[0]
+    train_sequence_lengths = mask.sum(dim=1)
+
+
+    sample_method = kwargs["method"]
+    if sample_method == "full":
+        return add_system_indices(TensorDict({
+            "sequence": torch.arange(dataset_size, dtype=torch.int),
+            "start": torch.zeros((dataset_size,), dtype=torch.int),
+            "stop": train_sequence_lengths
+        }, batch_size=(dataset_size,))).expand(*index_outer_shape, n_systems * dataset_size)
+
+    elif sample_method == "subsequence_padded":
+        sequence_indices, stop_indices_n1 = torch.where(mask)
+        index_dataset = add_system_indices(TensorDict({
+            "sequence": sequence_indices,
+            "start": stop_indices_n1 - kwargs["subsequence_length"] + 1,
+            "stop": stop_indices_n1 + 1
+        }, batch_size=(len(sequence_indices),)))
+        return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
+
+    elif sample_method == "subsequence_unpadded":
+        sequence_indices, start_indices = torch.where(mask[:, kwargs["subsequence_length"] - 1:])
+        index_dataset = add_system_indices(TensorDict({
+            "sequence": sequence_indices,
+            "start": start_indices,
+            "stop": start_indices + kwargs["subsequence_length"]
+        }, batch_size=(len(sequence_indices),)))
+        return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
+
+    else:
+        raise ValueError(sample_method)
 
 def _extract_dataset_from_indices(
         padded_train_dataset: TensorDict[str, torch.Tensor],
@@ -106,90 +164,65 @@ def _train_default(
         cache: Namespace
 ) -> Tuple[torch.Tensor, bool]:
     def terminate_condition() -> bool:
-        return cache.t >= THP.epochs
+        return cache.t >= THP.scheduler.epochs
 
     # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
     if not hasattr(cache, "optimizer"):
         # TODO: Set up the dataset index sampler
         dataset = exclusive.train_info.dataset.obj
-        dataset_size, sequence_length = dataset.shape[-2:]
-        mask = dataset["mask"].view(-1, dataset_size, sequence_length)[0]
-
-        train_sequence_lengths = torch.sum(mask, dim=1)
-        if THP.optim_type == "GD":
-            cache.subsequence_length = sequence_length
-            cache.batch_size = exclusive.n_train_systems * dataset_size
-            
-            train_index_dataset = TensorDict({
-                "sequence": torch.arange(dataset_size, dtype=torch.int),
-                "start": torch.zeros((dataset_size,), dtype=torch.int),
-                "stop": train_sequence_lengths
-            }, batch_size=(dataset_size,))
-        else:
-            cache.subsequence_length = THP.subsequence_length
-            cache.batch_size = THP.batch_size
-            
-            sequence_indices, stop_indices_n1 = torch.where(mask)
-            train_index_dataset = TensorDict({
-                "sequence": sequence_indices,
-                "start": stop_indices_n1 - cache.subsequence_length + 1,
-                "stop": stop_indices_n1 + 1
-            }, batch_size=(len(sequence_indices),))
-        train_index_dataset = train_index_dataset.expand(exclusive.n_train_systems, *train_index_dataset.shape)
-        train_index_dataset["system"] = torch.arange(exclusive.n_train_systems)[:, None].expand(*train_index_dataset.shape)
-
-        cache.train_index_dataset = train_index_dataset.flatten()
-        cache.index_batch_shape = (THP.iterations_per_epoch, *ensembled_learned_kfs.shape, cache.batch_size)
         cache.padded_train_dataset = TensorDict({
             k: torch.cat([
                 v, torch.zeros((*dataset.shape[:-1], 1, *v.shape[dataset.ndim:]))
             ], dim=dataset.ndim - 1)
-            for k, v in exclusive.train_info.dataset.obj.items()
+            for k, v in dataset.items()
         }, batch_size=(*dataset.shape[:-1], dataset.shape[-1] + 1))
 
         # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
         for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
             ensembled_learned_kfs[k] = v
-        cache.optimizer, cache.scheduler = _get_optimizer((v for v in ensembled_learned_kfs.values() if isinstance(v, nn.Parameter)), THP)
+        cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((v for v in ensembled_learned_kfs.values() if isinstance(v, nn.Parameter)), THP)
 
     cache.scheduler(None)
 
-    # SECTION: At start of each epoch, generate the training indices for that epoch
-    if THP.optim_type == "GD":
-        train_index_dataloader = cache.train_index_dataset.expand(*cache.index_batch_shape)
-    else:
-        train_index_dataloader = cache.train_index_dataset[torch.randint(0, cache.train_index_dataset.shape[0], cache.index_batch_shape)]
-
     # SECTION: Iterate through train indices and run gradient descent
     result = []
-    for batch, indices in enumerate(train_index_dataloader):
+    for batch, indices in enumerate(_sample_dataset_indices(
+        exclusive.train_info.dataset.obj,
+        THP.iterations_per_epoch, **vars(THP.sampling)
+    )):
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
         
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
-        with torch.set_grad_enabled(True):
-            train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
 
-        losses = Predictor.evaluate_run(
-            train_result["observation_estimation"],
-            dataset_ss, "observation"
-        )
-        if "input_estimation" in train_result.keys():
-            losses = losses + Predictor.evaluate_run(
-                train_result["input_estimation"],
-                dataset_ss, "input"
-            )
-        result.append(losses)
+        pre_runs: List[torch.Tensor] = []
+        def compute_losses() -> torch.Tensor:
+            if len(pre_runs) == 0:
+                with torch.set_grad_enabled(True):
+                    train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
+                    losses = Predictor.evaluate_run(train_result["observation_estimation"], dataset_ss, "observation")
+                    if "input_estimation" in train_result.keys():
+                        losses = losses + Predictor.evaluate_run(train_result["input_estimation"], dataset_ss, "input")
+                return losses
+            else:
+                return pre_runs.pop()
 
-        cache.optimizer.zero_grad()
-        torch.sum(losses).backward()
-        for p in cache.optimizer.param_groups[0]["params"]:
-            if p.grad is not None:
-                p.grad.nan_to_num_()
-        cache.optimizer.step()
+        def closure() -> float:
+            cache.optimizer.zero_grad()
+            loss = torch.sum(compute_losses())
+            loss.backward()
+            return loss.item()
 
-        torch.cuda.empty_cache()
+        pre_runs.append(_losses := compute_losses())
+        result.append(_losses)
+
+        cache.optimizer.step(closure)
+
+        # for p in cache.optimizer.param_groups[0]["params"]:
+        #     if p.grad is not None:
+        #         p.grad.nan_to_num_()
+
     cache.t += 1
     return torch.stack(result, dim=0), terminate_condition()
 
@@ -199,8 +232,8 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 1000,
-        print_frequency: int = 10
+        checkpoint_frequency: int = 100,
+        print_frequency: int = 1
 ) -> TensorDict:
 
     SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
@@ -279,7 +312,7 @@ def _run_training(
                 "impulse_target",
                 "overfit_gradient_norm"
             } - getattr(EHP, "ignore_metrics", set()))
-            if THP.epochs is None:
+            if THP.scheduler.epochs is None:
                 metrics.add("overfit_gradient_norm")
 
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
@@ -313,7 +346,7 @@ def _run_training(
                     (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
                     for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics))
                 ]
-                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>8f}' for k, v in mean_losses])}, LR: {lr}")
+                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>12.8f}' for k, v in mean_losses])}, LR: {lr}")
 
             # DONE: Check for divergence
             if "overfit" in metrics:
@@ -359,7 +392,7 @@ def _run_unit_training_experiment(
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(
         lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
-            dataset.obj[:, :, :, :DHP.train.dataset_size, :DHP.train.sequence_length],
+            dataset.obj[..., :DHP.train.dataset_size, :DHP.train.sequence_length],
             DHP.train.total_sequence_length
         )), info.train.dataset, dtype=PTR
     )

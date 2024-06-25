@@ -874,10 +874,21 @@ if __name__ == '__main__':
     params = dist.sample_parameters(SHP, ())
     # params["R"] = torch.zeros_like(params["R"])
 
-    # lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
-    # from infrastructure.discrete_are import solve_discrete_are
-    # A, B, Q, R = lqg.F, lqg.B, lqg.Q, lqg.R
-    # P = solve_discrete_are(A, B, Q, R)
+    lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
+    from infrastructure.discrete_are import solve_discrete_are
+    A, B, Q, R = lqg.F, lqg.B, lqg.Q, lqg.R
+    P = solve_discrete_are(A, B, Q, R)
+
+    L, U = torch.linalg.eig(P)
+    print(L)
+    print(U)
+
+    print()
+    L2, U2 = torch.linalg.eig(solve_discrete_are(0.5 * A, B, Q, R))
+    print(L2)
+    print(U2)
+    # print(solve_discrete_are(A, B, 2 * Q, 2 * R) / P)
+    raise Exception()
     #
     # def check_riccati(A, B, Q, R, P):
     #     print(P)

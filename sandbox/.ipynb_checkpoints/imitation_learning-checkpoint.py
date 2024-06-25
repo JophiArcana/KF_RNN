@@ -16,6 +16,7 @@ if __name__ == "__main__":
 
     exp_name = "TransformerXLImitationLearning"
     output_dir = "transformerxl"
+    output_fname = "result"
 
     d_embed = 256
     n_layer = 12
@@ -47,10 +48,10 @@ if __name__ == "__main__":
         total_sequence_length=10000,
     )
 
-    args.train.sampling = Namespace(type="full")
+    args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
         type="SGD",
-        max_lr=1e-4, min_lr=1e-6,
+        max_lr=1e-6, min_lr=1e-9,
         weight_decay=0.0
     )
     args.train.scheduler = Namespace(
@@ -64,7 +65,10 @@ if __name__ == "__main__":
     args.experiment.exp_name = exp_name
     args.experiment.metrics = {"validation"}
 
-    result, dataset = run_experiments(args, [], {}, save_experiment=True)
+    result, dataset = run_experiments(args, [], {
+        "dir": output_dir,
+        "fname": output_fname
+    }, save_experiment=False)
 
 
 
