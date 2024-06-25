@@ -18,14 +18,23 @@ if __name__ == "__main__":
     output_dir = "transformerxl"
     output_fname = "result"
 
-    d_embed = 256
-    n_layer = 12
-    n_head = 8
+    d_embed = 256    # 256
+    n_layer = 3     # 12
+    n_head = 8      # 8
     d_inner = 4 * d_embed
 
     SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
     args = loader.generate_args(SHP)
     args.model.model = TransformerXLInContextController
+    
+    # args.model.transformerxl = TransfoXLConfig(
+    #     d_model=16,
+    #     d_embed=8,
+    #     n_head=4,
+    #     d_head=4,
+    #     d_inner=32,
+    #     n_layer=2
+    # )
     args.model.transformerxl = TransfoXLConfig(
         d_model=d_embed,
         d_embed=d_embed,
@@ -44,19 +53,18 @@ if __name__ == "__main__":
         )
     )
     args.dataset.valid = args.dataset.test = Namespace(
-        dataset_size=5,
+        dataset_size=10,
         total_sequence_length=10000,
     )
-
     args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
         type="SGD",
-        max_lr=1e-6, min_lr=1e-9,
+        max_lr=1e-3, min_lr=1e-9,
         weight_decay=0.0
     )
     args.train.scheduler = Namespace(
         type="exponential",
-        epochs=2000, lr_decay=1.0,
+        epochs=4000, lr_decay=1.0,
     )
     args.train.iterations_per_epoch = 1
 
@@ -68,7 +76,7 @@ if __name__ == "__main__":
     result, dataset = run_experiments(args, [], {
         "dir": output_dir,
         "fname": output_fname
-    }, save_experiment=False)
+    }, save_experiment=True)
 
 
 
