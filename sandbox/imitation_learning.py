@@ -1,6 +1,7 @@
 import os
 import sys
 from argparse import Namespace
+from dimarray import DimArray
 from matplotlib import pyplot as plt
 
 # This line needs to be added since some terminals will not recognize the current directory
@@ -9,35 +10,37 @@ if os.getcwd() not in sys.path:
 
 from infrastructure import loader
 from infrastructure.experiment import *
-from system.linear_time_invariant import LinearSystemGroup
+from system.linear_quadratic_gaussian import LQGDistribution
+from model.sequential.rnn_controller import RnnController
 
 if __name__ == "__main__":
-    from transformers import TransfoXLConfig
-    from system.linear_quadratic_gaussian import LQGDistribution
-    from model.sequential.rnn_controller import RnnController, RnnControllerPretrainAnalytical, RnnDetachedController
-    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
+    SHP = Namespace(S_D=3, I_D=2, O_D=2, input_enabled=True)
 
-    exp_name = "RnnController_detachedcontrol"
+    hp_name = "control_noise_std"
+    control_noise_std = [0.0, 0.1, 0.2, 0.3]
+
+    dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+    lqg = dist.sample(SHP, (1, 1))
+    lqg_list = [
+        dist.sample(Namespace(**vars(SHP), **{hp_name: cns}), (), params=lqg.td())
+        for cns in control_noise_std
+    ]
+
+    from infrastructure.experiment.static import PARAM_GROUP_FORMATTER
+    systems = {"train": DimArray(lqg_list, dims=(PARAM_GROUP_FORMATTER.format(hp_name, -1),))}
+
+    # Experiment setup
+    exp_name = "ControlNoiseComparison"
     output_dir = "imitation_learning"
     output_fname = "result"
 
-    d_embed = 256   # 256
-    n_layer = 3     # 12
-    n_head =  16     # 8
-    d_inner = 4 * d_embed
-
-    SHP = Namespace(S_D=3, I_D=2, O_D=2, input_enabled=True)
     args = loader.generate_args(SHP)
-
     args.model.model = RnnController
     args.model.S_D = SHP.S_D
     args.dataset.train = Namespace(
         dataset_size=1,
         total_sequence_length=2000,
-        system=Namespace(
-            n_systems=1,
-            distribution=LQGDistribution("gaussian", "gaussian", 0.3, 0.1, 1.0, 1.0)
-        )
+        system=Namespace(n_systems=1)
     )
     args.dataset.valid = args.dataset.test = Namespace(
         dataset_size=10,
@@ -51,68 +54,78 @@ if __name__ == "__main__":
     )
     args.train.scheduler = Namespace(
         type="exponential",
+        warmup_duration=100,
         epochs=2000, lr_decay=0.995,
     )
-    args.train.iterations_per_epoch = 1
 
     args.experiment.n_experiments = 1
     args.experiment.ensemble_size = 32
     args.experiment.exp_name = exp_name
     args.experiment.metrics = {"validation_analytical"}
-    
+
     configurations = [
-        ("model", {
-            "model.model": [RnnController, RnnControllerPretrainAnalytical, RnnDetachedController]
-        })
+        (hp_name, {"system.control_noise_std": control_noise_std})
     ]
 
-    result, systems, dataset = run_experiments(args, configurations, {
+    result, _, dataset = run_experiments(args, configurations, {
         "dir": output_dir,
         "fname": output_fname
-    }, save_experiment=True)
+    }, systems=systems, save_experiment=True)
+    raise Exception()
 
-    # SECTION: Result analysis
-    identity_training_output, analytical_training_output, detached_training_output = map(
-        lambda td: td.squeeze(0),
-        get_result_attr(result, "output")
-    )
-    lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
-    print(lsg.irreducible_loss, lsg.zero_predictor_loss)
 
-    plt.plot(identity_training_output["validation_analytical"].median(dim=0).values, label="identity_initialization")
-    plt.plot(analytical_training_output["validation_analytical"].median(dim=0).values, label="analytical_initialization")
-    plt.plot(detached_training_output["validation_analytical"].median(dim=0).values, label="detached_control")
+    # SECTION: LQG system visualization
+    squeezed_lqg_list = [
+        LinearQuadraticGaussianGroup(
+            lqg.td().squeeze(1).squeeze(0),
+            SHP.input_enabled, control_noise_std=lqg.control_noise_std
+        ) for lqg in lqg_list
+    ]
+
+    batch_size = 1024
+    horizon = 1000
+    datasets = [
+        squeezed_lqg.generate_dataset(batch_size, horizon)
+        for squeezed_lqg in squeezed_lqg_list
+    ]
+
+    # Plot covariances of sampled states
+    from infrastructure.experiment.plotting import COLOR_LIST
+    indices = torch.randint(0, batch_size * horizon, (2000,))
+
+    for idx, (cns, ds_) in enumerate(zip(control_noise_std, datasets)):
+        states = ds_["state"].flatten(0, -2)
+        color = COLOR_LIST[idx]
+
+        plt.scatter(*states[indices].mT, s=3, color=color, alpha=0.15)
+        utils.confidence_ellipse(
+            *states.mT, plt.gca(),
+            n_std=2.0, linewidth=1.5, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{cns}_states", zorder=12
+        )
+
+    plt.xlim(left=-0.5, right=0.5)
+    plt.ylim(bottom=-0.5, top=0.5)
+    plt.title("state_covariance")
 
     plt.legend()
     plt.show()
 
 
-    # def squeeze(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> torch.Tensor | TensorDict[str, torch.Tensor]:
-    #     return t.view(t.shape[3:])
-    #
-    # lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
-    # dataset = squeeze(dataset.values[()].obj)
-    #
-    # M = get_metric_namespace_from_result(result)
-    # observation_estimation = squeeze(M.output.observation_estimation)
-    # input_estimation = squeeze(M.output.input_estimation)
-    #
-    # print("Result processing" + "\n" + "-" * 120)
-    # print("Irreducible loss:", lsg.irreducible_loss)
-    # print("Zero predictor loss:", utils.batch_trace(lsg.H @ lsg.S_state_inf @ lsg.H.mT + lsg.S_V))
-    #
-    # print(Predictor.evaluate_run(observation_estimation, dataset, "observation"))
-    # print(Predictor.evaluate_run(0, dataset, "observation"))
-    # # print(Predictor.evaluate_run(input_estimation, dataset, "input"))
-    #
-    # print(observation_estimation.shape)
-    # print(input_estimation.shape)
-    # print(dataset)
-    #
-    # plt.plot(dataset["observation"][0, :100, 0], label="observation")
-    # plt.plot(observation_estimation[0, :100, 0], label="observation_estimation")
-    # plt.legend()
-    # plt.show()
+    # Plot cumulative loss over horizon
+    def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LinearQuadraticGaussianGroup) -> torch.Tensor:
+        sl = (ds_["state"].unsqueeze(-2) @ lqg_.Q @ ds_["state"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
+        il = (ds_["input"].unsqueeze(-2) @ lqg_.R @ ds_["input"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
+        # il = 0
+        return sl + il
+
+    for idx, (cns, lqg_, ds_) in enumerate(zip(control_noise_std, squeezed_lqg_list, datasets)):
+        l = loss(ds_, lqg_)
+        plt.plot(torch.cumsum(l, dim=1).median(dim=0).values.detach(), color=COLOR_LIST[idx], label=f"{hp_name}{cns}_regret")
+
+    plt.xlabel("horizon")
+    plt.ylabel("cumulative_loss")
+    plt.legend()
+    plt.show()
 
 
 
