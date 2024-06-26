@@ -26,7 +26,7 @@ def run_experiments(
         output_kwargs: Dict[str, Any],
         systems: Dict[str, DimArray] = None,
         save_experiment: bool = True
-) -> Tuple[DimArray, DimArray]:
+) -> Tuple[DimArray, DimArray, DimArray]:
     HP = copy.deepcopy(HP)
 
     training_iterparams = []
@@ -234,7 +234,7 @@ def run_testing_experiments(
         result: DimArray = None,
         cache: Namespace = None,
         save_experiment: bool = True
-) -> Tuple[DimArray, DimArray]:
+) -> Tuple[DimArray, DimArray, DimArray]:
     HP = copy.deepcopy(HP)
 
     # Set up file names
@@ -359,7 +359,7 @@ def run_testing_experiments(
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-    return result, INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
+    return result, INFO_DICT[TESTING_DATASET_TYPE]["systems"], INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
 
 
 def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:

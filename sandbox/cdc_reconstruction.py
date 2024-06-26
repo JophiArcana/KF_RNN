@@ -7,10 +7,8 @@ from typing import *
 import numpy as np
 import tensordict.utils
 import torch
-import torch.nn as nn
 from matplotlib import colors
 from matplotlib import pyplot as plt
-from tensordict import TensorDict
 from transformers import GPT2Config, TransfoXLConfig
 
 # This line needs to be added since some terminals will not recognize the current directory
@@ -23,7 +21,6 @@ from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnPredictorLeastSquares
-from model.base import Predictor
 from model.sequential import RnnPredictorPretrainAnalytical
 from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
 from model.zero_predictor import ZeroPredictor
@@ -133,16 +130,11 @@ if __name__ == "__main__":
             })
         ]
     
-        result_transformer, dataset = run_experiments(
+        result_transformer, systems, dataset = run_experiments(
             ARGS_TRANSFORMER, configurations_transformer, {
                 "dir": output_dir,
                 "fname": output_fname
             }, save_experiment=True
-        )
-    
-        systems = utils.multi_map(
-            lambda lsg: LinearSystemGroup(lsg.state_dict(), SHP.input_enabled),
-            torch.load(f"output/{output_dir}/{exp_name_transformer}/testing/systems.pt", map_location=DEVICE)["test"], dtype=LinearSystemGroup
         )
     
     
@@ -216,7 +208,7 @@ if __name__ == "__main__":
             })
         ]
     
-        result_baseline_cnn, _ = run_experiments(
+        result_baseline_cnn, _, _ = run_experiments(
             ARGS_BASELINE_CNN, configurations_baseline_cnn, {
                 "dir": output_dir,
                 "fname": output_fname
@@ -240,7 +232,7 @@ if __name__ == "__main__":
             })
         ]
     
-        result_baseline_rnn, _ = run_experiments(
+        result_baseline_rnn, _, _ = run_experiments(
             ARGS_BASELINE_RNN, configurations_baseline_rnn, {
                 "dir": output_dir,
                 "fname": output_fname

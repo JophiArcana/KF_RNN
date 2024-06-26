@@ -212,16 +212,15 @@ def _train_default(
             cache.optimizer.zero_grad()
             loss = torch.sum(compute_losses())
             loss.backward()
+            for p in cache.optimizer.param_groups[0]["params"]:
+                if p.grad is not None:
+                    p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
             return loss.item()
 
         pre_runs.append(_losses := compute_losses())
         result.append(_losses)
 
         cache.optimizer.step(closure)
-
-        # for p in cache.optimizer.param_groups[0]["params"]:
-        #     if p.grad is not None:
-        #         p.grad.nan_to_num_()
 
     cache.t += 1
     return torch.stack(result, dim=0), terminate_condition()
@@ -344,9 +343,9 @@ def _run_training(
             if ((cache.t - 1) % print_frequency == 0) or (training_func is not DEFAULT_TRAINING_FUNC):
                 mean_losses = [
                     (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
-                    for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics))
+                    for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics), "learning_rate")
                 ]
-                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>12.8f}' for k, v in mean_losses])}, LR: {lr}")
+                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>12.8f}' for k, v in mean_losses])}")
 
             # DONE: Check for divergence
             if "overfit" in metrics:

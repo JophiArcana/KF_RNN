@@ -34,10 +34,10 @@ if __name__ == "__main__":
             "train.optimizer": [
                 Namespace(
                     type="SGD",
-                    max_lr=1e-3, min_lr=1e-6, momentum=0.0, weight_decay=0.0
+                    max_lr=1e-3, min_lr=1e-6, momentum=0.0
                 ), Namespace(
                     type="Adam",
-                    max_lr=2e-2, min_lr=1e-6, momentum=0.9, weight_decay=0.9
+                    max_lr=1e-2, min_lr=1e-6, momentum=0.9
                 ), Namespace(
                     type="LBFGS",
                     max_lr=1.0, history_size=10
