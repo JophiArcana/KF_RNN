@@ -12,10 +12,10 @@ from infrastructure.experiment import *
 if __name__ == "__main__":
     from transformers import TransfoXLConfig
     from system.linear_quadratic_gaussian import LQGDistribution
-    from model.sequential.rnn_controller import RnnController, RnnControllerPretrainAnalytical
+    from model.sequential.rnn_controller import RnnController, RnnControllerPretrainAnalytical, RnnDetachedController
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
-    exp_name = "RnnControllerInitalizationComparison"
+    exp_name = "RnnController_detachedcontrol"
     output_dir = "imitation_learning"
     output_fname = "result"
 
@@ -67,17 +67,58 @@ if __name__ == "__main__":
     args.experiment.ensemble_size = 32
     args.experiment.exp_name = exp_name
     args.experiment.metrics = {"validation_analytical"}
-
+    
     configurations = [
         ("model", {
-            "model.model": [RnnController, RnnControllerPretrainAnalytical]
+            "model.model": [RnnController, RnnControllerPretrainAnalytical, RnnDetachedController]
         })
     ]
 
-    result, dataset = run_experiments(args, configurations, {
+    result, systems, dataset = run_experiments(args, configurations, {
         "dir": output_dir,
         "fname": output_fname
     }, save_experiment=True)
+
+    # SECTION: Result analysis
+    # identity_training_output, analytical_training_output = map(
+    #     lambda td: td.squeeze(0),
+    #     get_result_attr(result, "output")
+    # )
+    # lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
+    # print(lsg.irreducible_loss, lsg.zero_predictor_loss)
+
+    # plt.plot(identity_training_output["validation_analytical"].median(dim=0).values, label="identity_initialization")
+    # plt.plot(analytical_training_output["validation_analytical"].median(dim=0).values, label="analytical_initialization")
+    # plt.legend()
+    # plt.show()
+
+
+    # def squeeze(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> torch.Tensor | TensorDict[str, torch.Tensor]:
+    #     return t.view(t.shape[3:])
+    #
+    # lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
+    # dataset = squeeze(dataset.values[()].obj)
+    #
+    # M = get_metric_namespace_from_result(result)
+    # observation_estimation = squeeze(M.output.observation_estimation)
+    # input_estimation = squeeze(M.output.input_estimation)
+    #
+    # print("Result processing" + "\n" + "-" * 120)
+    # print("Irreducible loss:", lsg.irreducible_loss)
+    # print("Zero predictor loss:", utils.batch_trace(lsg.H @ lsg.S_state_inf @ lsg.H.mT + lsg.S_V))
+    #
+    # print(Predictor.evaluate_run(observation_estimation, dataset, "observation"))
+    # print(Predictor.evaluate_run(0, dataset, "observation"))
+    # # print(Predictor.evaluate_run(input_estimation, dataset, "input"))
+    #
+    # print(observation_estimation.shape)
+    # print(input_estimation.shape)
+    # print(dataset)
+    #
+    # plt.plot(dataset["observation"][0, :100, 0], label="observation")
+    # plt.plot(observation_estimation[0, :100, 0], label="observation_estimation")
+    # plt.legend()
+    # plt.show()
 
 
 

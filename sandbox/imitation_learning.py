@@ -1,29 +1,21 @@
 import os
 import sys
 from argparse import Namespace
-from matplotlib import pyplot as plt
-
-import torch
-from tensordict import TensorDict
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
-from infrastructure import loader, utils
+from infrastructure import loader
 from infrastructure.experiment import *
-from model.base import Predictor
-from system.linear_time_invariant import LinearSystemGroup
-
 
 if __name__ == "__main__":
-    torch.set_printoptions(precision=6)
     from transformers import TransfoXLConfig
     from system.linear_quadratic_gaussian import LQGDistribution
-    from model.sequential.rnn_controller import RnnController, RnnControllerPretrainAnalytical
+    from model.sequential.rnn_controller import RnnController, RnnControllerPretrainAnalytical, RnnDetachedController
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
-    exp_name = "RnnControllerInitializationComparison_lowcontrolcoefficient"
+    exp_name = "RnnController_detachedcontrol"
     output_dir = "imitation_learning"
     output_fname = "result"
 
@@ -70,16 +62,15 @@ if __name__ == "__main__":
         epochs=2000, lr_decay=0.995,
     )
     args.train.iterations_per_epoch = 1
-    args.train.control_coefficient = 1e-3
 
     args.experiment.n_experiments = 1
     args.experiment.ensemble_size = 32
     args.experiment.exp_name = exp_name
     args.experiment.metrics = {"validation_analytical"}
-
+    
     configurations = [
         ("model", {
-            "model.model": [RnnController, RnnControllerPretrainAnalytical]
+            "model.model": [RnnController, RnnControllerPretrainAnalytical, RnnDetachedController]
         })
     ]
 
@@ -89,17 +80,17 @@ if __name__ == "__main__":
     }, save_experiment=True)
 
     # SECTION: Result analysis
-    identity_training_output, analytical_training_output = map(
-        lambda td: td.squeeze(0),
-        get_result_attr(result, "output")
-    )
-    lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
-    print(lsg.irreducible_loss, lsg.zero_predictor_loss)
+    # identity_training_output, analytical_training_output = map(
+    #     lambda td: td.squeeze(0),
+    #     get_result_attr(result, "output")
+    # )
+    # lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
+    # print(lsg.irreducible_loss, lsg.zero_predictor_loss)
 
-    plt.plot(identity_training_output["validation_analytical"].median(dim=0).values, label="identity_initialization")
-    plt.plot(analytical_training_output["validation_analytical"].median(dim=0).values, label="analytical_initialization")
-    plt.legend()
-    plt.show()
+    # plt.plot(identity_training_output["validation_analytical"].median(dim=0).values, label="identity_initialization")
+    # plt.plot(analytical_training_output["validation_analytical"].median(dim=0).values, label="analytical_initialization")
+    # plt.legend()
+    # plt.show()
 
 
     # def squeeze(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> torch.Tensor | TensorDict[str, torch.Tensor]:
@@ -128,7 +119,6 @@ if __name__ == "__main__":
     # plt.plot(observation_estimation[0, :100, 0], label="observation_estimation")
     # plt.legend()
     # plt.show()
-
 
 
 
