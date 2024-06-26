@@ -8,12 +8,12 @@ from matplotlib import pyplot as plt
 from infrastructure.experiment import *
 
 COLOR_LIST = np.array([
-    [76, 186, 182],
-    [237, 125, 102],
     [127, 113, 240],
     [247, 214, 124],
+    [76, 186, 182],
+    [237, 125, 102],
     [217, 17, 17],
-    [237, 92, 208]
+    [237, 92, 208],
 ], dtype=float) / 255
 
 

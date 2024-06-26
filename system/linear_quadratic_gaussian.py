@@ -15,7 +15,7 @@ class LinearQuadraticGaussianGroup(LinearSystemGroup):
         def __init__(self):
             SystemDistribution.__init__(self, LinearQuadraticGaussianGroup)
 
-    def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
+    def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool, **kwargs):
         LinearSystemGroup.__init__(self, params, input_enabled)
         assert self.input_enabled, f"Input must be enabled for linear-quadratic Gaussian model but got {self.input_enabled}."
 
@@ -23,33 +23,21 @@ class LinearQuadraticGaussianGroup(LinearSystemGroup):
         assert Q.shape[-2] == Q.shape[-1] == self.S_D, f"Q matrix must be of shape {(self.S_D, self.S_D)} but got {Q.shape[-2:]}."
         assert R.shape[-2] == R.shape[-1] == self.I_D, f"R matrix must be of shape {(self.I_D, self.I_D)} but got {R.shape[-2:]}."
 
+        # SECTION: Compute all the system matrices
         self.Q = nn.Parameter(Q.clone())                                                                    # [N... x S_D x S_D]
         self.R = nn.Parameter(R.clone())                                                                    # [N... x I_D x I_D]
 
         S = solve_discrete_are(self.F, self.B, self.Q, self.R)                                              # [N... x S_D x S_D]
         self.register_buffer("L", torch.inverse(self.B.mT @ S @ self.B + self.R) @ self.B.mT @ S @ self.F)  # [N... x I_D x S_D]
 
-    def supply_input(self,
-                     state_estimation: torch.Tensor # [N... x B x S_D]
-    ) -> torch.Tensor:
-        return state_estimation @ -self.L.mT        # [N... x B x I_D]
-
-
-class LinearQuadraticGaussianNoisyControlGroup(LinearQuadraticGaussianGroup):
-    class Distribution(SystemDistribution):
-        def __init__(self):
-            SystemDistribution.__init__(self, LinearQuadraticGaussianNoisyControlGroup)
-
-    def __init__(self, params: Dict[str, torch.Tensor], input_enabled: bool):
-        LinearQuadraticGaussianGroup.__init__(self, params, input_enabled)
-
-        scale = torch.normal(torch.ones_like(self.L), 1.0)
-        self.register_buffer("L", self.L * scale)
+        # SECTION: Set up optional arguments
+        self.control_noise_std = kwargs.get("control_noise_std", 0.0)
 
     def supply_input(self,
-                     state_estimation: torch.Tensor # [N... x B x S_D]
+                     state_estimation: torch.Tensor                             # [N... x B x S_D]
     ) -> torch.Tensor:
-        return state_estimation @ -self.L.mT        # [N... x B x I_D]
+        control = state_estimation @ -self.L.mT
+        return control + self.control_noise_std * torch.randn_like(control)     # [N... x B x I_D]
 
 
 class LQGDistribution(LinearQuadraticGaussianGroup.Distribution, MOPDistribution):

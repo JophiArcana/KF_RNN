@@ -34,11 +34,13 @@ class LinearSystemGroup(SystemGroup):
 
         F, B, H, sqrt_S_W, sqrt_S_V = map(params.__getitem__, ("F", "B", "H", "sqrt_S_W", "sqrt_S_V"))
 
+        # SECTION: Define system group dimensions
         self.group_shape = F.shape[:-2]
         self.S_D = F.shape[-1]                                                      # State dimension
         self.I_D = B.shape[-1]                                                      # Input dimension
         self.O_D = H.shape[-2]                                                      # Observation dimension
 
+        # SECTION: Compute all the system matrices
         if not torch.all(torch.linalg.eigvals(F).abs() < 1):
             raise RuntimeError(f"Eigenvalues of F matrix {F.clone().detach()} are unstable")
         self.F = nn.Parameter(F.clone())                                            # [N... x S_D x S_D]
@@ -64,7 +66,7 @@ class LinearSystemGroup(SystemGroup):
         self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
         self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
         self.register_buffer("zero_predictor_loss", utils.batch_trace(self.S_observation_inf))                      # [N...]
-        self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
+        self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))
 
     def supply_input(self,
                      state_estimation: torch.Tensor             # [N... x B x S_D]

@@ -865,79 +865,121 @@ if __name__ == '__main__':
     # result, dataset = run_experiments(args, [], {}, save_experiment=False)
 
     """ Sandbox 18 """
-    from system.linear_quadratic_gaussian import LinearQuadraticGaussianGroup, LinearQuadraticGaussianNoisyControlGroup
+    from system.linear_quadratic_gaussian import LinearQuadraticGaussianGroup
     from system.linear_quadratic_gaussian import LQGDistribution
+    from model.sequential.rnn_controller import RnnController
 
-    SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
+    # SECTION: Run imitation learning experiment across different control noises
+    SHP = Namespace(S_D=3, I_D=2, O_D=2, input_enabled=True)
+
+    hp_name = "control_noise_std"
+    control_noise_std = [0.0, 0.1, 0.2, 0.3]
+
     dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+    lqg = dist.sample(SHP, (1, 1))
+    lqg_list = [
+        dist.sample(Namespace(**vars(SHP), **{hp_name: cns}), (), params=lqg.td())
+        for cns in control_noise_std
+    ]
 
-    params = dist.sample_parameters(SHP, ())
-    # params["R"] = torch.zeros_like(params["R"])
+    from infrastructure.experiment.static import PARAM_GROUP_FORMATTER
+    systems = {"train": DimArray(lqg_list, dims=(PARAM_GROUP_FORMATTER.format(hp_name, -1),))}
 
-    lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
-    from infrastructure.discrete_are import solve_discrete_are
-    A, B, Q, R = lqg.F, lqg.B, lqg.Q, lqg.R
-    P = solve_discrete_are(A, B, Q, R)
+    # Experiment setup
+    exp_name = "ControlNoiseComparison"
+    output_dir = "imitation_learning"
+    output_fname = "result"
 
-    L, U = torch.linalg.eig(P)
-    print(L)
-    print(U)
+    args = loader.generate_args(SHP)
+    args.model.model = RnnController
+    args.model.S_D = SHP.S_D
+    args.dataset.train = Namespace(
+        dataset_size=1,
+        total_sequence_length=2000,
+        system=Namespace(n_systems=1)
+    )
+    args.dataset.valid = args.dataset.test = Namespace(
+        dataset_size=10,
+        total_sequence_length=100000,
+    )
+    args.train.sampling = Namespace(method="full")
+    args.train.optimizer = Namespace(
+        type="Adam",
+        max_lr=1e-2, min_lr=1e-9,
+        weight_decay=0.0
+    )
+    args.train.scheduler = Namespace(
+        type="exponential",
+        warmup_duration=100,
+        epochs=2000, lr_decay=0.995,
+    )
 
-    print()
-    L2, U2 = torch.linalg.eig(solve_discrete_are(0.5 * A, B, Q, R))
-    print(L2)
-    print(U2)
-    # print(solve_discrete_are(A, B, 2 * Q, 2 * R) / P)
+    args.experiment.n_experiments = 1
+    args.experiment.ensemble_size = 32
+    args.experiment.exp_name = exp_name
+    args.experiment.metrics = {"validation_analytical"}
+
+    configurations = [
+        (hp_name, {"system.control_noise_std": control_noise_std})
+    ]
+
+    result, _, dataset = run_experiments(args, configurations, {
+        "dir": output_dir,
+        "fname": output_fname
+    }, systems=systems, save_experiment=True)
     raise Exception()
-    #
-    # def check_riccati(A, B, Q, R, P):
-    #     print(P)
-    #     print(A.mT @ P.mT @ A - (A.mT @ P @ B) @ torch.inverse(R + B.mT @ P @ B) @ (B.mT @ P @ A) + Q)
-    #
-    # check_riccati(A, B, Q, R, P)
-    #
-    # raise Exception()
 
-    lqg = LinearQuadraticGaussianGroup(params, SHP.input_enabled)
-    noisy_lqg = LinearQuadraticGaussianNoisyControlGroup(params, SHP.input_enabled)
 
-    print(lqg.L.norm(), noisy_lqg.L.norm())
+    # SECTION: LQG system visualization
+    squeezed_lqg_list = [
+        LinearQuadraticGaussianGroup(
+            lqg.td().squeeze(1).squeeze(0),
+            SHP.input_enabled, control_noise_std=lqg.control_noise_std
+        ) for lqg in lqg_list
+    ]
 
     batch_size = 1024
     horizon = 1000
-    ds = lqg.generate_dataset(batch_size, horizon)
-    noisy_ds = noisy_lqg.generate_dataset(batch_size, horizon)
+    datasets = [
+        squeezed_lqg.generate_dataset(batch_size, horizon)
+        for squeezed_lqg in squeezed_lqg_list
+    ]
 
+    # Plot covariances of sampled states
+    from infrastructure.experiment.plotting import COLOR_LIST
+    indices = torch.randint(0, batch_size * horizon, (2000,))
+
+    for idx, (cns, ds_) in enumerate(zip(control_noise_std, datasets)):
+        states = ds_["state"].flatten(0, -2)
+        color = COLOR_LIST[idx]
+
+        plt.scatter(*states[indices].mT, s=3, color=color, alpha=0.15)
+        utils.confidence_ellipse(
+            *states.mT, plt.gca(),
+            n_std=2.0, linewidth=1.5, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{cns}_states", zorder=12
+        )
+
+    plt.xlim(left=-0.5, right=0.5)
+    plt.ylim(bottom=-0.5, top=0.5)
+    plt.title("state_covariance")
+
+    plt.legend()
+    plt.show()
+
+
+    # Plot cumulative loss over horizon
     def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LinearQuadraticGaussianGroup) -> torch.Tensor:
         sl = (ds_["state"].unsqueeze(-2) @ lqg_.Q @ ds_["state"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
         il = (ds_["input"].unsqueeze(-2) @ lqg_.R @ ds_["input"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
         # il = 0
         return sl + il
 
+    for idx, (cns, lqg_, ds_) in enumerate(zip(control_noise_std, squeezed_lqg_list, datasets)):
+        l = loss(ds_, lqg_)
+        plt.plot(torch.cumsum(l, dim=1).median(dim=0).values.detach(), color=COLOR_LIST[idx], label=f"{hp_name}{cns}_regret")
 
-    indices = torch.randint(0, batch_size * horizon, (5000,))
-    plt.scatter(*ds["state"].flatten(0, -2)[indices].mT, s=1, label="optimal_controller_states")
-    plt.scatter(*noisy_ds["state"].flatten(0, -2)[indices].mT, s=1, label="noisy_controller_states")
-    plt.show()
-
-    cov = torch.cov(ds["state"].flatten(0, -2).mT)
-    noisy_cov = torch.cov(noisy_ds["state"].flatten(0, -2).mT)
-    print(cov, noisy_cov)
-
-
-    # plt.plot(noisy_ds["state"].mean(dim=0).norm(dim=-1), label="noisy_controller_mean")
-
-
-
-    l = loss(ds, lqg)
-    noisy_l = loss(noisy_ds, noisy_lqg)
-
-    plt.plot(torch.cumsum(l, dim=1).median(dim=0).values.detach(), label="optimal_controller")
-    plt.plot(torch.cumsum(noisy_l, dim=1).median(dim=0).values.detach(), label="noisy_controller")
-
-    # plt.xscale("log")
     plt.xlabel("horizon")
-    # plt.yscale("log")
+    plt.ylabel("cumulative_loss")
     plt.legend()
     plt.show()
 

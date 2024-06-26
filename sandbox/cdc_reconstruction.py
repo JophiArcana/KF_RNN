@@ -442,7 +442,7 @@ if __name__ == "__main__":
         plt.show()
     
     for sys_idx in range(n_test_systems):
-        plot(sys_idx, False)
+        plot(sys_idx, True)
 
 
 

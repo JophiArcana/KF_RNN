@@ -7,6 +7,8 @@ import os
 import sys
 from argparse import Namespace
 from collections import OrderedDict
+from matplotlib import transforms
+from matplotlib.patches import Ellipse
 from types import MappingProxyType
 from typing import *
 
@@ -270,10 +272,6 @@ class print_disabled:
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
-def color(z: float, scale: float = 120.) -> np.ndarray:
-    k = 2 * np.pi * z / scale
-    return (1 + np.asarray([np.sin(k), np.sin(k + 2 * np.pi / 3), np.sin(k + 4 * np.pi / 3)], dtype=float)) / 2
-
 def toJSON(n: Namespace):
     d = OrderedDict(vars(n))
     for k, v in d.items():
@@ -335,10 +333,67 @@ def model_size(m: nn.Module):
 
 def call_func_with_kwargs(func: Callable, args: Tuple[Any, ...], kwargs: Dict[str, Any]):
     params = inspect.signature(func).parameters
-    return func(*args, **{
+    allow_var_keywords = any(v.kind is inspect.Parameter.VAR_KEYWORD for v in params.values())
+    valid_kwargs = {
         k: v for k, v in kwargs.items()
-        if k in params and params[k].default is not inspect.Parameter.empty
-    })
+        if ((params[k].default is not inspect.Parameter.empty) if k in params else allow_var_keywords)
+    }
+    return func(*args, **valid_kwargs)
+
+
+""" Plotting code """
+def color(z: float, scale: float = 120.) -> np.ndarray:
+    k = 2 * np.pi * z / scale
+    return (1 + np.asarray([np.sin(k), np.sin(k + 2 * np.pi / 3), np.sin(k + 4 * np.pi / 3)], dtype=float)) / 2
+
+def confidence_ellipse(x, y, ax, n_std=1.0, facecolor="none", **kwargs):
+    """
+    Create a plot of the covariance confidence ellipse of *x* and *y*.
+
+    Parameters
+    ----------
+    x, y : array-like, shape (n, )
+        Input data.
+
+    ax : matplotlib.axes.Axes
+        The Axes object to draw the ellipse into.
+
+    n_std : float
+        The number of standard deviations to determine the ellipse's radiuses.
+
+    **kwargs
+        Forwarded to `~matplotlib.patches.Ellipse`
+
+    Returns
+    -------
+    matplotlib.patches.Ellipse
+    """
+    x, y = np.array(x), np.array(y)
+    if x.size != y.size:
+        raise ValueError("x and y must be the same size")
+
+    cov = np.cov(x, y)
+    pearson = cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1])
+    # Using a special case to obtain the eigenvalues of this
+    # two-dimensional dataset.
+    ell_radius_x = np.sqrt(1 + pearson)
+    ell_radius_y = np.sqrt(1 - pearson)
+    ellipse = Ellipse((0, 0), width=ell_radius_x * 2, height=ell_radius_y * 2, facecolor=facecolor, **kwargs)
+
+    # Calculating the standard deviation of x from
+    # the squareroot of the variance and multiplying
+    # with the given number of standard deviations.
+    scale_x = np.sqrt(cov[0, 0]) * n_std
+    mean_x = np.mean(x)
+
+    # calculating the standard deviation of y ...
+    scale_y = np.sqrt(cov[1, 1]) * n_std
+    mean_y = np.mean(y)
+
+    transf = transforms.Affine2D().rotate_deg(45).scale(scale_x, scale_y).translate(mean_x, mean_y)
+
+    ellipse.set_transform(transf + ax.transData)
+    return ax.add_patch(ellipse)
 
 
 

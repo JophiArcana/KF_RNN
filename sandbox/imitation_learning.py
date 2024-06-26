@@ -1,6 +1,7 @@
 import os
 import sys
 from argparse import Namespace
+from matplotlib import pyplot as plt
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -8,6 +9,7 @@ if os.getcwd() not in sys.path:
 
 from infrastructure import loader
 from infrastructure.experiment import *
+from system.linear_time_invariant import LinearSystemGroup
 
 if __name__ == "__main__":
     from transformers import TransfoXLConfig
@@ -29,16 +31,6 @@ if __name__ == "__main__":
 
     args.model.model = RnnController
     args.model.S_D = SHP.S_D
-    # args.model.model = TransformerXLInContextController
-    # args.model.transformerxl = TransfoXLConfig(
-    #     d_model=d_embed,
-    #     d_embed=d_embed,
-    #     n_layer=n_layer,
-    #     n_head=n_head,
-    #     d_head=d_embed // n_head,
-    #     d_inner=d_inner,
-    #     dropout=0.0,
-    # )
     args.dataset.train = Namespace(
         dataset_size=1,
         total_sequence_length=2000,
@@ -80,17 +72,19 @@ if __name__ == "__main__":
     }, save_experiment=True)
 
     # SECTION: Result analysis
-    # identity_training_output, analytical_training_output = map(
-    #     lambda td: td.squeeze(0),
-    #     get_result_attr(result, "output")
-    # )
-    # lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
-    # print(lsg.irreducible_loss, lsg.zero_predictor_loss)
+    identity_training_output, analytical_training_output, detached_training_output = map(
+        lambda td: td.squeeze(0),
+        get_result_attr(result, "output")
+    )
+    lsg = LinearSystemGroup(systems.values[()].td().squeeze(1).squeeze(0), SHP.input_enabled)
+    print(lsg.irreducible_loss, lsg.zero_predictor_loss)
 
-    # plt.plot(identity_training_output["validation_analytical"].median(dim=0).values, label="identity_initialization")
-    # plt.plot(analytical_training_output["validation_analytical"].median(dim=0).values, label="analytical_initialization")
-    # plt.legend()
-    # plt.show()
+    plt.plot(identity_training_output["validation_analytical"].median(dim=0).values, label="identity_initialization")
+    plt.plot(analytical_training_output["validation_analytical"].median(dim=0).values, label="analytical_initialization")
+    plt.plot(detached_training_output["validation_analytical"].median(dim=0).values, label="detached_control")
+
+    plt.legend()
+    plt.show()
 
 
     # def squeeze(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> torch.Tensor | TensorDict[str, torch.Tensor]:

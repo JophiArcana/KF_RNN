@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
+from infrastructure import utils
+
 
 class SystemGroup(nn.Module):
     def __init__(self, input_enabled: bool):
@@ -28,8 +30,14 @@ class SystemDistribution(object):
     def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> Dict[str, torch.Tensor]:
         raise NotImplementedError()
 
-    def sample(self, SHP: Namespace, shape: Tuple[int, ...]) -> SystemGroup:
-        return self.system_type(self.sample_parameters(SHP, shape), SHP.input_enabled)
+    def sample(self,
+               SHP: Namespace,
+               shape: Tuple[int, ...],
+               params: TensorDict[str, torch.Tensor] | Dict[str, torch.Tensor] = None
+    ) -> SystemGroup:
+        if params is None:
+            params = self.sample_parameters(SHP, shape)
+        return utils.call_func_with_kwargs(self.system_type, (params, SHP.input_enabled), vars(SHP))
 
 
 
