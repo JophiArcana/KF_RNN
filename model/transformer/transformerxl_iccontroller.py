@@ -23,9 +23,6 @@ class TransformerXLInContextController(TransformerController):
             embd_dict["input_embd"]
         ], dim=-2).flatten(-3, -2)
 
-        # print("in norms:", self.observation_in.norm().item(), self.input_in.norm().item())
-        # print("out embedding norm:", embds.norm().item())
-
         out = self.core(inputs_embeds=embds).last_hidden_state  # [B x 2L x S_D]
         return self.embedding_to_output({
             "input_embd": out[:, ::2],                          # [B x L x S_D]

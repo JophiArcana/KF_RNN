@@ -24,7 +24,7 @@ if __name__ == "__main__":
     args.dataset.train.system.distribution = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     args.model.model = RnnPredictorPretrainAnalytical
     args.model.S_D = args.system.S_D
-    args.train.sampling.method = "full"
+    args.train.sampling = Namespace(method="full")
 
     args.experiment.exp_name = base_exp_name
     args.experiment.metrics = {"validation_analytical"}

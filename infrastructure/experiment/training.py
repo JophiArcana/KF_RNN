@@ -232,7 +232,7 @@ def _run_training(
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
         checkpoint_frequency: int = 100,
-        print_frequency: int = 1
+        print_frequency: int = 1,
 ) -> TensorDict:
 
     SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
@@ -275,7 +275,7 @@ def _run_training(
     ):
         return _train_default(THP, exclusive_, ensembled_learned_kfs_, cache_)
     training_funcs: List[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
-
+    
     # TODO: Run training functions starting from checkpoint if it exists
     counter = 1
     for idx, training_func in enumerate(training_funcs, start=training_func_idx):
@@ -345,7 +345,7 @@ def _run_training(
                     (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
                     for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics), "learning_rate")
                 ]
-                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>12.8f}' for k, v in mean_losses])}")
+                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
 
             # DONE: Check for divergence
             if "overfit" in metrics:
@@ -405,7 +405,10 @@ def _run_unit_training_experiment(
     )
 
     # Setup result and run training
-    print(f"Mean theoretical irreducible loss " + "-" * 80)
+    print(f"Mean zero predictor loss " + "-" * 80)
+    for ds_type, ds_info in vars(info).items():
+        print(f"\t{ds_type}: {utils.multi_map(lambda sg: sg.zero_predictor_loss.mean(), ds_info.systems, dtype=float)}")
+    print(f"Mean irreducible loss " + "-" * 80)
     for ds_type, ds_info in vars(info).items():
         print(f"\t{ds_type}: {utils.multi_map(lambda sg: sg.irreducible_loss.mean(), ds_info.systems, dtype=float)}")
 
