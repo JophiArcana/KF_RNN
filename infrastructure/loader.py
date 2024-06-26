@@ -88,7 +88,7 @@ def load_system_and_args(folder: str):
     L_V, V_V = torch.linalg.eig(V)
     sqrt_V = torch.real(V_V @ torch.diag(torch.sqrt(L_V)) @ V_V.mT)
 
-    args = copy.deepcopy(Namespace(
+    args = utils.deepcopy_namespace(Namespace(
         system=Namespace(
             S_D=S_D,
             I_D=I_D,
@@ -118,7 +118,7 @@ def load_system_and_args(folder: str):
     return {"train": DimArray(utils.array_of(system_group), dims=[])}, args
 
 def generate_args(shp: Namespace) -> Namespace:
-    return copy.deepcopy(Namespace(
+    return utils.deepcopy_namespace(Namespace(
         system=shp,
         model=Namespace(
             I_D=shp.I_D,

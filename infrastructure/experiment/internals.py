@@ -34,7 +34,7 @@ def _prologue(
 
     # SECTION: Set up the hyperparameters in data structures that make if convenient to perform the iteration
     # DONE: Set up 0d NumPy arrays to preserve objects before adding iterated hyperparameters
-    numpy_HP = copy.deepcopy(HP)
+    numpy_HP = utils.deepcopy_namespace(HP)
     utils.npfy_namespace(numpy_HP)
 
     _iterparams = []
@@ -121,8 +121,7 @@ def _construct_info_dict(
             print(f"Sampling new systems for dataset type {ds_type}")
             systems_arr = utils.dim_array_like(distributions_arr, dtype=SystemGroup)
             for idx, dist in utils.multi_enumerate(distributions_arr):
-
-                SHP_copy = copy.deepcopy(SHP)
+                SHP_copy = utils.deepcopy_namespace(SHP)
                 for k, v in SHP_arrs.items():
                     setattr(SHP_copy, k, utils.take_from_dim_array(v, dict(zip(distributions_arr.dims, idx))))
 

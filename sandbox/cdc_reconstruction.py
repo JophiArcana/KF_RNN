@@ -192,7 +192,7 @@ if __name__ == "__main__":
         ARGS_BASELINE_CNN.experiment.metrics = {"validation_analytical"}
     
         # SECTION: Make a copy for RNN args after setting shared parameters
-        ARGS_BASELINE_RNN = copy.deepcopy(ARGS_BASELINE_CNN)
+        ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
     
         # SECTION: Set CNN exclusive hyperparameters
         ARGS_BASELINE_CNN.model.ridge = 1.0

@@ -272,6 +272,14 @@ class print_disabled:
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
+def deepcopy_namespace(n: Namespace) -> Namespace:
+    def _deepcopy_helper(o: object) -> object:
+        if isinstance(o, Namespace):
+            return Namespace(**{k: _deepcopy_helper(v) for k, v in vars(o).items()})
+        else:
+            return o
+    return _deepcopy_helper(n)
+
 def toJSON(n: Namespace):
     d = OrderedDict(vars(n))
     for k, v in d.items():

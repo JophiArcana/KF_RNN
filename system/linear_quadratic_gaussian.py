@@ -31,7 +31,7 @@ class LinearQuadraticGaussianGroup(LinearSystemGroup):
         self.register_buffer("L", torch.inverse(self.B.mT @ S @ self.B + self.R) @ self.B.mT @ S @ self.F)  # [N... x I_D x S_D]
 
         # SECTION: Set up optional arguments
-        self.control_noise_std = kwargs.get("control_noise_std", 0.0)
+        self.control_noise_std: float = kwargs.get("control_noise_std", 0.0)
 
     def supply_input(self,
                      state_estimation: torch.Tensor                             # [N... x B x S_D]

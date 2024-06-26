@@ -27,7 +27,7 @@ def run_experiments(
         systems: Dict[str, DimArray] = None,
         save_experiment: bool = True
 ) -> Tuple[DimArray, DimArray, DimArray]:
-    HP = copy.deepcopy(HP)
+    HP = utils.deepcopy_namespace(HP)
 
     training_iterparams = []
     for param_group, params in iterparams:
@@ -78,7 +78,7 @@ def run_training_experiments(
         systems: Dict[str, DimArray] = None,
         save_experiment: bool = True
 ) -> Tuple[DimArray, Namespace]:
-    HP = copy.deepcopy(HP)
+    HP = utils.deepcopy_namespace(HP)
 
     # Set up file names
     output_kwargs.setdefault("fname", "result")
@@ -168,7 +168,7 @@ def run_training_experiments(
             print(f'Experiment {done.sum().item()}/{done.size}')
 
             # DONE: Set up experiment hyperparameters
-            EXPERIMENT_HP = copy.deepcopy(HP)
+            EXPERIMENT_HP = utils.deepcopy_namespace(HP)
             _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
 
             INFO = Namespace(**{
@@ -235,7 +235,7 @@ def run_testing_experiments(
         cache: Namespace = None,
         save_experiment: bool = True
 ) -> Tuple[DimArray, DimArray, DimArray]:
-    HP = copy.deepcopy(HP)
+    HP = utils.deepcopy_namespace(HP)
 
     # Set up file names
     output_kwargs.setdefault("fname", "result")
@@ -307,7 +307,7 @@ def run_testing_experiments(
             print(f"Computing metrics for experiment {done.sum().item()}/{done.size}")
 
             # DONE: Set up experiment hyperparameters
-            EXPERIMENT_HP = copy.deepcopy(HP)
+            EXPERIMENT_HP = utils.deepcopy_namespace(HP)
             _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
 
             # DONE: Set up metric information

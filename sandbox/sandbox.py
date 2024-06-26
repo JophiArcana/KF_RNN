@@ -32,6 +32,7 @@ from model.sequential import *
 from model.convolutional import *
 from model.transformer import *
 from model.zero_predictor import ZeroPredictor
+from system.core import SystemGroup
 
 from system.linear_time_invariant import LinearSystemGroup
 
@@ -150,7 +151,7 @@ if __name__ == '__main__':
     # config_ = model_.config
     #
     # D = 1   # Size of the output we want
-    # new_config_params = copy.deepcopy(config_.__dict__)
+    # new_config_params = utils.deepcopy(config_.__dict__)
     # new_config_params.update({
     #     'input_size': D,
     #     "num_static_categorical_features": 0,
@@ -389,7 +390,7 @@ if __name__ == '__main__':
 
     # r_max = 32
     # for r in range(1, r_max + 1):
-    #     modelArgs = copy.deepcopy(_modelArgs)
+    #     modelArgs = utils.deepcopy_namespace(_modelArgs)
     #     modelArgs.ir_length = r
     #
     #     kf = CnnKFAnalytical(modelArgs)
@@ -871,19 +872,23 @@ if __name__ == '__main__':
 
     # SECTION: Run imitation learning experiment across different control noises
     SHP = Namespace(S_D=3, I_D=2, O_D=2, input_enabled=True)
-
     hp_name = "control_noise_std"
-    control_noise_std = [0.0, 0.1, 0.2, 0.3]
 
     dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
-    lqg = dist.sample(SHP, (1, 1))
-    lqg_list = [
-        dist.sample(Namespace(**vars(SHP), **{hp_name: cns}), (), params=lqg.td())
-        for cns in control_noise_std
-    ]
+    lqg = dist.sample(SHP, ())
 
-    from infrastructure.experiment.static import PARAM_GROUP_FORMATTER
-    systems = {"train": DimArray(lqg_list, dims=(PARAM_GROUP_FORMATTER.format(hp_name, -1),))}
+    class ConstantLQGDistribution(LinearQuadraticGaussianGroup.Distribution):
+        def __init__(self, params: TensorDict[str, torch.Tensor], cns: float):
+            LinearQuadraticGaussianGroup.Distribution.__init__(self)
+            self.params = params
+            self.control_noise_std = cns
+
+        def sample(self,
+                   SHP: Namespace,
+                   shape: Tuple[int, ...],
+                   params: TensorDict[str, torch.Tensor] | Dict[str, torch.Tensor] = None
+        ) -> SystemGroup:
+            return LinearQuadraticGaussianGroup(self.params.expand(*shape), SHP.input_enabled, control_noise_std=self.control_noise_std)
 
     # Experiment setup
     exp_name = "ControlNoiseComparison"
@@ -901,6 +906,10 @@ if __name__ == '__main__':
     args.dataset.valid = args.dataset.test = Namespace(
         dataset_size=10,
         total_sequence_length=100000,
+        system=Namespace(
+            n_systems=1,
+            distribution=ConstantLQGDistribution(lqg.td(), 0.0)
+        )
     )
     args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
@@ -919,31 +928,23 @@ if __name__ == '__main__':
     args.experiment.exp_name = exp_name
     args.experiment.metrics = {"validation_analytical"}
 
+    control_noise_std = [0.0, 0.1, 0.2, 0.3]
+    dist_list = [ConstantLQGDistribution(lqg.td(), cns) for cns in control_noise_std]
     configurations = [
-        (hp_name, {"system.control_noise_std": control_noise_std})
+        (hp_name, {"dataset.train.system.distribution": dist_list})
     ]
 
-    result, _, dataset = run_experiments(args, configurations, {
+    result, systems, dataset = run_experiments(args, configurations, {
         "dir": output_dir,
         "fname": output_fname
-    }, systems=systems, save_experiment=True)
-    raise Exception()
+    }, save_experiment=False)
 
 
     # SECTION: LQG system visualization
-    squeezed_lqg_list = [
-        LinearQuadraticGaussianGroup(
-            lqg.td().squeeze(1).squeeze(0),
-            SHP.input_enabled, control_noise_std=lqg.control_noise_std
-        ) for lqg in lqg_list
-    ]
+    lqg_list = [dist_.sample(SHP, ()) for dist_ in dist_list]
 
-    batch_size = 1024
-    horizon = 1000
-    datasets = [
-        squeezed_lqg.generate_dataset(batch_size, horizon)
-        for squeezed_lqg in squeezed_lqg_list
-    ]
+    batch_size, horizon = 1024, 1000
+    datasets = [lqg_.generate_dataset(batch_size, horizon) for lqg_ in lqg_list]
 
     # Plot covariances of sampled states
     from infrastructure.experiment.plotting import COLOR_LIST
@@ -966,7 +967,6 @@ if __name__ == '__main__':
     plt.legend()
     plt.show()
 
-
     # Plot cumulative loss over horizon
     def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LinearQuadraticGaussianGroup) -> torch.Tensor:
         sl = (ds_["state"].unsqueeze(-2) @ lqg_.Q @ ds_["state"].unsqueeze(-1)).squeeze(-2).squeeze(-1)
@@ -974,7 +974,7 @@ if __name__ == '__main__':
         # il = 0
         return sl + il
 
-    for idx, (cns, lqg_, ds_) in enumerate(zip(control_noise_std, squeezed_lqg_list, datasets)):
+    for idx, (cns, lqg_, ds_) in enumerate(zip(control_noise_std, lqg_list, datasets)):
         l = loss(ds_, lqg_)
         plt.plot(torch.cumsum(l, dim=1).median(dim=0).values.detach(), color=COLOR_LIST[idx], label=f"{hp_name}{cns}_regret")
 

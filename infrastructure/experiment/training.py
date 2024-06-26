@@ -283,7 +283,7 @@ def _run_training(
         print("-" * 160)
 
         # Create optimizer
-        THP = copy.deepcopy(_THP)
+        THP = utils.deepcopy_namespace(_THP)
         done = False
         if idx != training_func_idx:
             cache = Namespace(t=0)
