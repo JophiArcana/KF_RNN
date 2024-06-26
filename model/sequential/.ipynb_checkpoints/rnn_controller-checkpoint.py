@@ -25,16 +25,5 @@ class RnnControllerPretrainAnalytical(RnnControllerAnalytical, RnnPredictorPretr
     pass
 
 
-class RnnDetachedController(RnnController):
-    def forward(self, trace: Dict[str, torch.Tensor], mode: str = None) -> Dict[str, torch.Tensor]:
-        state_estimation, inputs, observations = self.extract(trace, self.S_D)
-        result = self.forward_with_initial(state_estimation, inputs, observations, mode)
-        result["input_estimation"] = torch.cat([
-            state_estimation[:, None],
-            result["state_estimation"][:, :-1]
-        ], dim=1).detach() @ -self.L.mT
-        return result
-
-
 
 

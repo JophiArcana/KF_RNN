@@ -56,7 +56,7 @@ BaseTrainArgs = Namespace(
         type="exponential",                 # {"exponential", "cosine"}
         warmup_duration=100,
 
-        epochs=2500, lr_decay=0.997,        # SECTION: Used for exponential scheduler
+        epochs=2500, lr_decay=0.995,        # SECTION: Used for exponential scheduler
         T_0=10, T_mult=2, num_restarts=8,   # SECTION: Used for cosine scheduler
     ),
 

@@ -235,7 +235,7 @@ def _populate_values(
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
     if not hasattr(HP.train, "control_coefficient"):
-        HP.train.control_coefficient = 1.0
+        HP.train.control_coefficient = 0.1
 
     def _rgetattr_default(format_str: str, ds_type: str) -> Any:
         return utils.rgetattr_default(HP.dataset, format_str, ds_type, TRAINING_DATASET_TYPES[0])
