@@ -8,7 +8,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.settings import DEVICE
-from system.linear_time_invariant import LinearSystemGroup
+from system.simple.linear_time_invariant import LTISystem
 
 
 """
@@ -88,19 +88,16 @@ def load_system_and_args(folder: str):
     L_V, V_V = torch.linalg.eig(V)
     sqrt_V = torch.real(V_V @ torch.diag(torch.sqrt(L_V)) @ V_V.mT)
 
+    problem_shape = Namespace(
+        environment=Namespace(observation=O_D),
+        controller=Namespace(input=I_D) if input_enabled else Namespace(),
+    )
     args = utils.deepcopy_namespace(Namespace(
         system=Namespace(
             S_D=S_D,
-            I_D=I_D,
-            O_D=O_D,
-            SNR=None,
-            input_enabled=input_enabled
+            problem_shape=problem_shape
         ),
-        model=Namespace(
-            I_D=I_D,
-            O_D=O_D,
-            input_enabled=input_enabled
-        ),
+        model=Namespace(problem_shape=problem_shape),
         train=BaseTrainArgs,
         dataset=BaseDatasetArgs,
         experiment=BaseExperimentArgs
@@ -109,22 +106,15 @@ def load_system_and_args(folder: str):
     args.dataset.train.system.n_systems = 1
     args.experiment.n_experiments = 1
 
-    system_group = LinearSystemGroup(
-        dict(TensorDict({
-            "F": A, "B": B, "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
-        }, batch_size=()).expand(args.dataset.train.system.n_systems, args.experiment.n_experiments)),
-        input_enabled
-    )
+    system_group = LTISystem(problem_shape, TensorDict({
+        "F": A, "B": TensorDict({"input": B}, batch_size=()), "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
+    }, batch_size=()).expand(args.dataset.train.system.n_systems, args.experiment.n_experiments))
     return {"train": DimArray(utils.array_of(system_group), dims=[])}, args
 
 def generate_args(shp: Namespace) -> Namespace:
     return utils.deepcopy_namespace(Namespace(
         system=shp,
-        model=Namespace(
-            I_D=shp.I_D,
-            O_D=shp.O_D,
-            input_enabled=shp.input_enabled
-        ),
+        model=Namespace(problem_shape=shp.problem_shape),
         train=BaseTrainArgs,
         dataset=BaseDatasetArgs,
         experiment=BaseExperimentArgs

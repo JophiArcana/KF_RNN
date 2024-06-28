@@ -114,7 +114,7 @@ def run_module_arr(
         kwargs: Dict[str, Any] = MappingProxyType(dict())
 ) -> Dict[str, torch.Tensor]:
     if "TensorDict" in type(args).__name__:
-        args = dict(args)
+        args = args.to_dict()
 
     if np.prod(module_td.shape) == 1:
         flat_args, args_spec = tree_flatten(args)
@@ -124,7 +124,7 @@ def run_module_arr(
         ]
         squeezed_args = tree_unflatten(flat_squeezed_args, args_spec)
 
-        squeezed_out = nn.utils.stateless.functional_call(reference_module, dict(module_td.view()), squeezed_args, kwargs)
+        squeezed_out = nn.utils.stateless.functional_call(reference_module, module_td.view().to_dict(), squeezed_args, kwargs)
         flat_squeezed_out, args_spec = tree_flatten(squeezed_out)
         flat_out = [
             t.view(*module_td.shape, *t.shape)
@@ -136,7 +136,7 @@ def run_module_arr(
             return nn.utils.stateless.functional_call(reference_module, module_d, ags, kwargs)
         for _ in range(module_td.ndim):
             vmap_run = torch.func.vmap(vmap_run, randomness="different")
-        return vmap_run(dict(module_td), args)
+        return vmap_run(module_td.to_dict(), args)
 
 def double_vmap(func: Callable) -> Callable:
     return torch.vmap(torch.vmap(func))
@@ -151,11 +151,11 @@ NumPy Array Comprehension Operations
 """
 
 def multi_iter(arr: np.ndarray | DimArray) -> Iterable[Any]:
-    for x in np.nditer(arr, flags=['refs_ok']):
+    for x in np.nditer(arr, flags=["refs_ok"]):
         yield x[()]
 
 def multi_enumerate(arr: np.ndarray | DimArray) -> Iterable[Tuple[Sequence[int], Any]]:
-    it = np.nditer(arr, flags=['multi_index', 'refs_ok'])
+    it = np.nditer(arr, flags=["multi_index", "refs_ok"])
     for x in it:
         yield it.multi_index, x[()]
 
@@ -228,7 +228,7 @@ Recursive attribute functions
 def rgetattr(obj: object, attr: str, *args):
     def _getattr(obj: object, attr: str) -> Any:
         return getattr(obj, attr, *args)
-    return functools.reduce(_getattr, [obj] + attr.split('.'))
+    return functools.reduce(_getattr, [obj] + attr.split("."))
 
 def rsetattr(obj: object, attr: str, value: Any) -> None:
     def _rsetattr(obj: object, attrs: List[str], value: Any) -> None:
@@ -252,6 +252,11 @@ def rgetattr_default(o: object, format_str: str, try_str: str, default_str: str)
     except AttributeError:
         return rgetattr(o, format_str.format(default_str))
 
+def rgetitem(obj: object, item: str):
+    def _getitem(obj: object, item: str) -> Any:
+        return obj[item]
+    return functools.reduce(_getitem, [obj] + item.split("."))
+
 
 """
 Miscellaneous
@@ -266,7 +271,7 @@ class PTR(object):
 class print_disabled:
     def __enter__(self):
         self._original_stdout = sys.stdout
-        sys.stdout = open(os.devnull, 'w')
+        sys.stdout = open(os.devnull, "w")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout.close()
@@ -322,7 +327,7 @@ def nested_type(o: object) -> object:
         return type(o)
 
 def class_name(cls: type) -> str:
-    return str(cls)[8:-2].split('.')[-1]
+    return str(cls)[8:-2].split(".")[-1]
 
 def capitalize(s: str):
     return s[0].upper() + s[1:]
@@ -367,7 +372,7 @@ def confidence_ellipse(x, y, ax, n_std=1.0, facecolor="none", **kwargs):
         The Axes object to draw the ellipse into.
 
     n_std : float
-        The number of standard deviations to determine the ellipse's radiuses.
+        The number of standard deviations to determine the ellipse"s radiuses.
 
     **kwargs
         Forwarded to `~matplotlib.patches.Ellipse`

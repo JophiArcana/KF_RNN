@@ -14,8 +14,8 @@ class TransformerXLInContextController(TransformerController):
 
         self.core = TransfoXLModel(self.config)
 
-    def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        B, L = trace["observation"].shape[:2]
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+        B, L = trace["environment"]["observation"].shape[:2]
 
         embd_dict = self.trace_to_embedding(trace)
         embds = torch.stack([

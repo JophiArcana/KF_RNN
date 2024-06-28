@@ -10,7 +10,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from model.base import Predictor
-from system.core import SystemGroup
+from system.simple.base import SystemGroup
 
 
 MetricVars = Tuple[Namespace, TensorDict[str, torch.Tensor]]
@@ -56,7 +56,7 @@ def add_to_metrics(M: Metric, names: str | Iterable[str]):
 def _unsqueeze_if(t: torch.Tensor, b: bool) -> torch.Tensor:
     return t.unsqueeze(-1) if b else t
 
-def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target) -> Metric:
+def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target: Tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
@@ -73,7 +73,7 @@ def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target) ->
         )
     return Metric(eval_func)
 
-def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: str, target2: str) -> Metric:
+def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: Tuple[str, ...], target2: Tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
@@ -121,7 +121,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
                 dataset_arr, dtype=torch.Tensor
             )
             loss_arr = utils.multi_map(
-                lambda pair: Predictor.evaluate_run(pair[0], pair[1].obj, "observation").mean(dim=-1),
+                lambda pair: Predictor.evaluate_run(pair[0], pair[1].obj, ("environment", "observation")).mean(dim=-1),
                 utils.multi_zip(run_arr, dataset_arr), dtype=torch.Tensor
             )
 
@@ -154,12 +154,14 @@ def _get_irreducible_loss_with_dataset_type(ds_type: str) -> Metric:
 
 
 
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("train", "observation"), names="overfit")
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", "observation"), names="validation")
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", "target"), names="validation_target")
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("test", "observation"), names=["testing", "l"])
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("train", ("environment", "observation")), names="overfit")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", ("environment", "observation")), names="validation")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", ("environment", "target_observation_estimation")), names="validation_target")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("test", ("environment", "observation")), names=["testing", "l"])
 
-add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets("test", "target", "observation"), names=["testing_empirical_irreducible", "eil"])
+add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
+    "test", ("environment", "target_observation_estimation"), ("environment", "observation")
+), names=["testing_empirical_irreducible", "eil"])
 
 add_to_metrics(_get_analytical_error_with_dataset_type("valid"), names="validation_analytical")
 add_to_metrics(_get_analytical_error_with_dataset_type("test"), names=["testing_analytical", "al"])

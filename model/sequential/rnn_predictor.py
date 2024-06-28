@@ -16,10 +16,10 @@ class RnnPredictor(SequentialPredictor):
         self.S_D = modelArgs.S_D
 
         self.F = nn.Parameter(initialization.get("F", (1 - 1e-6) * torch.eye(self.S_D)))
-        if self.input_enabled:
-            self.B = nn.Parameter(initialization.get("B", torch.zeros((self.S_D, self.I_D))))
-        else:
-            self.register_buffer("B", torch.zeros((self.S_D, self.I_D)))
+        self.B = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((self.S_D, d)))
+            for k, d in vars(self.problem_shape.controller).items()
+        })
         self.H = nn.Parameter(initialization.get('H', torch.zeros((self.O_D, self.S_D))))
         self.K = nn.Parameter(initialization.get('K', torch.zeros((self.S_D, self.O_D))))
 
@@ -37,8 +37,8 @@ class RnnPredictorAnalytical(RnnPredictor):
             lambda exclusive_: (
                 exclusive_.train_info.systems.td(),
                 Predictor.evaluate_run(
-                    exclusive_.train_info.dataset.obj["target"],
-                    exclusive_.train_info.dataset.obj, "observation"
+                    exclusive_.train_info.dataset.obj["environment", "target_observation_estimation"],
+                    exclusive_.train_info.dataset.obj, ("environment", "observation")
                 ).squeeze(-1)
             ), cache
         )

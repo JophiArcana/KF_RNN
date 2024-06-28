@@ -19,11 +19,11 @@ class CnnPredictor(ConvolutionalPredictor):
         ConvolutionalPredictor.__init__(self, modelArgs)
         self.ir_length = modelArgs.ir_length
 
-        if self.input_enabled:
-            self.input_IR = nn.Parameter(torch.zeros(modelArgs.I_D, self.ir_length, modelArgs.O_D))     # [I_D x R x O_D]
-        else:
-            self.register_buffer("input_IR", torch.zeros(modelArgs.I_D, self.ir_length, modelArgs.O_D))
-        self.observation_IR = nn.Parameter(torch.zeros(modelArgs.O_D, self.ir_length, modelArgs.O_D))   # [O_D x R x O_D]
+        self.input_IR = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((v, self.ir_length, self.O_D)))                         # [? x R x O_D]
+            for k, v in vars(self.problem_shape.controller).items()
+        })
+        self.observation_IR = nn.Parameter(torch.zeros((self.O_D, self.ir_length, self.O_D)))   # [O_D x R x O_D]
 
 
 class CnnPredictorLeastSquares(CnnPredictor):
@@ -40,7 +40,7 @@ class CnnPredictorLeastSquares(CnnPredictor):
 
     @classmethod
     def vmap_train_least_squares(cls, exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        return utils.double_vmap(exclusive_.reference_module._least_squares_initialization)(dict(*exclusive_.train_info.dataset))
+        return utils.double_vmap(exclusive_.reference_module._least_squares_initialization)(exclusive_.train_info.dataset.obj.to_dict())
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
@@ -48,14 +48,16 @@ class CnnPredictorLeastSquares(CnnPredictor):
 
     """ forward
         :parameter {
-            'input': [B x L x I_D],
-            'observation': [B x L x O_D]
+            "input": [B x L x I_D],
+            "observation": [B x L x O_D]
         }
         :returns None
     """
-    def _least_squares_initialization(self, trace: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        inputs, observations = trace['input'].flatten(0, -3), trace['observation'].flatten(0, -3)
-        B, L = inputs.shape[:2]
+    def _least_squares_initialization(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        trace = self.trace_to_td(trace).flatten(0, -2)
+        actions, observations = trace["controller"], trace["environment"]["observation"]
+
+        B, L = observations.shape[:2]
 
         # DONE: Implement online least squares for memory efficiency
         split = [0]
@@ -67,28 +69,28 @@ class CnnPredictorLeastSquares(CnnPredictor):
             observations[:, :-1],
             torch.zeros((B, 1, self.O_D))
         ], dim=1)
-        padded_inputs = torch.cat([                                                             # [B x L x I_D]
-            inputs,
-            torch.zeros((B, 1, self.I_D))
-        ], dim=1)
+        padded_actions = torch.cat([
+            actions, actions[:, -1:].apply(torch.zeros_like)
+        ], dim=1)                                                                               # [B x L x ...]
 
-        k = self.I_D if self.input_enabled else 0
-        XTX = torch.zeros((r_ := self.ir_length * (k + self.O_D), r_))                          # [R? x R?]
-        XTy = torch.zeros((r_, self.O_D))                                                       # [R? x O_D]
+        ac_names = list(padded_actions.keys())
+        flattened_padded_data = torch.cat([
+            *map(padded_actions.__getitem__, ac_names), padded_observations
+        ], dim=-1)                                                                              # [B x L x F]
+        cum_lengths = [0] + np.cumsum([*map(vars(self.problem_shape.controller).__getitem__, ac_names), self.O_D]).tolist()
+
+        XTX = torch.zeros((r_ := self.ir_length * cum_lengths[-1], r_))                         # [RF x RF]
+        XTy = torch.zeros((r_, self.O_D))                                                       # [RF x O_D]
         yTy = torch.zeros((self.O_D, self.O_D))                                                 # [O_D x O_D]
 
         for i in range(len(split) - 1):
             lo, hi = split[i], split[i + 1]
             l = hi - lo
 
-            indices = (torch.arange(lo, hi)[:, None] - torch.arange(self.ir_length)).clamp_min(-1)
+            indices = (torch.arange(lo, hi)[:, None] - torch.arange(self.ir_length)).clamp_min(-1)  # [l x R]
 
-            X_observation = padded_observations[:, indices]                                     # [B x l x R x O_D]
-            if self.input_enabled:
-                X_input = padded_inputs[:, indices]                                             # [B x l x R x I_D]
-                flattened_X = torch.cat([X_input, X_observation], dim=-1).view((B * l, -1))     # [Bl x R(I_D + O_D)]
-            else:
-                flattened_X = X_observation.view((B * l, -1))                                   # [Bl x RO_D]
+            X = flattened_padded_data[:, indices]                                               # [B x l x R x F]
+            flattened_X = X.view((B * l, self.ir_length * cum_lengths[-1]))                     # [Bl x RF]
             flattened_observations = observations[:, lo:hi].reshape((B * l, self.O_D))          # [Bl x O_D]
 
             XTX = XTX + (flattened_X.mT @ flattened_X)
@@ -97,19 +99,23 @@ class CnnPredictorLeastSquares(CnnPredictor):
 
             torch.cuda.empty_cache()
 
-        XTX_lI_inv = torch.inverse(XTX + self.ridge * torch.eye(r_))                            # [R? x R?]
+        XTX_lI_inv = torch.inverse(XTX + self.ridge * torch.eye(r_))                            # [RF x RF]
         flattened_w = XTX_lI_inv @ XTy
-        w = flattened_w.unflatten(0, (self.ir_length, -1)).transpose(0, 1)                      # [? x R x O_D]
+        w = flattened_w.unflatten(0, (self.ir_length, -1)).transpose(0, 1)                      # [F x R x O_D]
+
 
         error = torch.trace(yTy + XTy.mT @ (XTX_lI_inv @ XTX @ XTX_lI_inv - 2 * XTX_lI_inv) @ XTy) / (B * L)
         return {
-            'input_IR': w[:self.I_D] if self.input_enabled else torch.zeros((self.I_D, self.ir_length, self.O_D)),
-            'observation_IR': w[self.I_D:] if self.input_enabled else w
+            "input_IR": {
+                ac_name: w[cum_lengths[idx]:cum_lengths[idx + 1]]
+                for idx, ac_name in enumerate(ac_names)
+            },
+            "observation_IR": w[-self.O_D:]
         }, error
 
     def __init__(self, modelArgs: Namespace):
         CnnPredictor.__init__(self, modelArgs)
-        self.ridge = getattr(modelArgs, 'ridge', 0.)
+        self.ridge = getattr(modelArgs, "ridge", 0.)
 
 
 class CnnPredictorPretrainLeastSquares(CnnPredictorLeastSquares):
@@ -128,7 +134,7 @@ class CnnPredictorAnalytical(CnnPredictor):
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: utils.double_vmap(exclusive_.reference_module._analytical_initialization)(
-                dict(exclusive_.train_info.systems.td())
+                exclusive_.train_info.systems.td().to_dict()
             ), cache
         )
 
@@ -137,13 +143,13 @@ class CnnPredictorAnalytical(CnnPredictor):
         return CnnPredictorAnalytical.train_analytical,
 
     def _analytical_initialization(self, system_state_dict: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        F, B, H, K = map(system_state_dict.__getitem__, ('F', 'B', 'H', 'K'))
+        F, B, H, K = map(system_state_dict.__getitem__, ("F", "B", "H", "K"))
         S_D = F.shape[0]
 
         powers = utils.pow_series(F @ (torch.eye(S_D) - K @ H), self.ir_length)                 # [R x S_D x S_D]
         return {
-            'input_IR': (H @ powers @ B).permute(2, 0, 1),                                      # [I_D x R x O_D]
-            'observation_IR': (H @ powers @ (F @ K)).permute(2, 0, 1)                           # [O_D x R x O_D]
+            "input_IR": (H @ powers @ B).permute(2, 0, 1),                                      # [I_D x R x O_D]
+            "observation_IR": (H @ powers @ (F @ K)).permute(2, 0, 1)                           # [O_D x R x O_D]
         }, torch.full((), torch.nan)
 
     def __init__(self, modelArgs: Namespace):

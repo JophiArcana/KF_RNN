@@ -37,7 +37,6 @@ def _get_optimizer_and_scheduler(
         (params, optimizer_params.max_lr), vars(optimizer_params)
     )
 
-
     scheduler_params = THP.scheduler
     scheduler_type = scheduler_params.type
     if scheduler_type == "cosine":
@@ -53,7 +52,6 @@ def _get_optimizer_and_scheduler(
         )
     else:
         raise ValueError(scheduler_type)
-
 
     if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
         return optimizer, ignite.handlers.param_scheduler.LRScheduler(scheduler)
@@ -169,13 +167,10 @@ def _train_default(
     # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
     if not hasattr(cache, "optimizer"):
         # TODO: Set up the dataset index sampler
-        dataset = exclusive.train_info.dataset.obj
-        cache.padded_train_dataset = TensorDict({
-            k: torch.cat([
-                v, torch.zeros((*dataset.shape[:-1], 1, *v.shape[dataset.ndim:]))
-            ], dim=dataset.ndim - 1)
-            for k, v in dataset.items()
-        }, batch_size=(*dataset.shape[:-1], dataset.shape[-1] + 1))
+        dataset: TensorDict[str, torch.tensor] = exclusive.train_info.dataset.obj
+        cache.padded_train_dataset = torch.cat([
+            dataset, dataset[..., -1:].apply(torch.zeros_like)
+        ], dim=-1)
 
         # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
         for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
@@ -201,9 +196,9 @@ def _train_default(
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
                     train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
-                    losses = Predictor.evaluate_run(train_result["observation_estimation"], dataset_ss, "observation")
+                    losses = Predictor.evaluate_run(train_result["observation_estimation"], dataset_ss, ("environment", "observation"))
                     if "input_estimation" in train_result.keys():
-                        losses = losses + Predictor.evaluate_run(train_result["input_estimation"], dataset_ss, "input")
+                        losses = losses + Predictor.evaluate_run(train_result["input_estimation"], dataset_ss, ("controller", "input"))
                 return losses
             else:
                 return pre_runs.pop()

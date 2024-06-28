@@ -26,17 +26,15 @@ class SequentialPredictor(Predictor):
     ) -> torch.Tensor:                                          # [B...]
         # Variable definition
         Fh = utils.complex(kfs["F"])                                                            # [B... x S_Dh x S_Dh]
-        Bh = utils.complex(kfs["B"])                                                            # [B... x S_Dh x I_D]
         Hh = utils.complex(kfs["H"])                                                            # [B... x O_D x S_Dh]
         Kh = utils.complex(kfs["K"])                                                            # [B... x S_Dh x O_D]
 
         F = utils.complex(systems["F"])                                                         # [B... x S_D x S_D]
-        B = utils.complex(systems["B"])                                                         # [B... x S_D x I_D]
         H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
         sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
         sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
 
-        S_D, I_D, O_D = F.shape[-1], B.shape[-1], H.shape[-2]
+        S_D, O_D = F.shape[-1], H.shape[-2]
         S_Dh = Fh.shape[-1]
 
         M, Mh = F, Fh @ (torch.eye(S_Dh) - Kh @ Hh)                                             # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
@@ -45,7 +43,6 @@ class SequentialPredictor(Predictor):
         Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                       # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
         
         Hs, Hhs = H @ V, Hh @ Vh                                                                # [B... x O_D x S_D], [B... x O_D x S_Dh]
-        Bs, Bhs = Vinv @ B, Vhinv @ Bh                                                          # [B... x S_D x I_D], [B... x S_Dh x I_D]
         sqrt_S_Ws = Vinv @ sqrt_S_W                                                             # [B... x S_D x S_D]
 
         # Precomputation
@@ -119,16 +116,20 @@ class SequentialPredictor(Predictor):
         err = ws_current_err + ws_geometric_err + v_current_err + v_geometric_err               # [B...]
         return err.real
 
-    @classmethod
-    def to_sequential_batch(cls, kfs: TensorDict[str, torch.Tensor], input_enabled: bool) -> TensorDict[str, torch.Tensor]:
-        return kfs
+    def __init__(self, modelArgs: Namespace):
+        Predictor.__init__(self, modelArgs)
+        self.S_D: int = modelArgs.S_D
 
-    def forward(self, trace: Dict[str, torch.Tensor], mode: str = None) -> Dict[str, torch.Tensor]:
-        return self.forward_with_initial(*self.extract(trace, self.S_D), mode=mode)
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, torch.Tensor]:
+        trace = self.trace_to_td(trace)
+        actions, observations = trace["controller"], trace["environment"]["observation"]
+
+        state_estimation = torch.randn((*observations.shape[:-2], self.S_D))
+        return self.forward_with_initial(state_estimation, actions, observations, mode)
 
     def forward_with_initial(self,
                              state_estimation: torch.Tensor,
-                             inputs: torch.Tensor,
+                             actions: TensorDict[str, torch.Tensor],
                              observations: torch.Tensor,
                              mode: str
     ) -> Dict[str, torch.Tensor]:
@@ -140,12 +141,12 @@ class SequentialPredictor(Predictor):
         if mode == "sequential":
             result = []
             for l in range(L):
-                result.append(r := self._forward(state_estimation, inputs[:, l], observations[:, l]))
+                result.append(r := self._forward(state_estimation, actions[:, l], observations[:, l]))
                 state_estimation = r["state_estimation"]
-            return dict(torch.stack(result, dim=-1))
+            return torch.stack(result, dim=-1).to_dict()
         else:
             state_estimations, observation_estimations = [], []
-            result_generic = self._forward_generic(inputs, observations, mode)
+            result_generic = self._forward_generic(actions, observations, mode)
 
             state_weights, state_biases_list = result_generic["state_form"]                     # [sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]
             observation_weights, observation_biases_list = result_generic["observation_form"]   # [sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D]
@@ -162,14 +163,13 @@ class SequentialPredictor(Predictor):
             }
 
     def _forward(self,
-                 state: torch.Tensor,       # [B x S_D]
-                 input: torch.Tensor,       # [B x I_D]
-                 observation: torch.Tensor, # [B x O_D]
-    ) -> TensorDict[str, torch.Tensor]:     # [B x S_D], [B x O_D]
-
-        state_estimation = state @ self.F.mT + input @ self.B.T
-        observation_estimation = state_estimation @ self.H.T
-        state_estimation = state_estimation + (observation - observation_estimation) @ self.K.T
+                 state: torch.Tensor,                   # [B x S_D]
+                 action: TensorDict[str, torch.Tensor], # [B x I_D]
+                 observation: torch.Tensor,             # [B x O_D]
+    ) -> TensorDict[str, torch.Tensor]:                 # [B x S_D], [B x O_D]
+        state_estimation = state @ self.F.mT + sum(ac @ self.B[ac_name].mT for ac_name, ac in action.items())
+        observation_estimation = state_estimation @ self.H.mT
+        state_estimation = state_estimation + (observation - observation_estimation) @ self.K.mT
 
         return TensorDict({
             "state_estimation": state_estimation,
@@ -187,12 +187,12 @@ class SequentialPredictor(Predictor):
         }
     """
     def _forward_generic(self,
-                         inputs: torch.Tensor,
+                         actions: TensorDict[str, torch.Tensor],
                          observations: torch.Tensor,
                          mode: str
     ) -> Dict[str, Tuple[torch.Tensor, Sequence[torch.Tensor]]]:
         # Precomputation
-        B, L = inputs.shape[:2]
+        B, L = actions.shape
         hsqrtL = int(math.ceil(math.sqrt(L)))
         lsqrtL = int(math.ceil(L / hsqrtL))
 
@@ -220,26 +220,30 @@ class SequentialPredictor(Predictor):
         blocked_lower_triangular_matrix = buffered_state_weights[lower_triangular_indices]                                              # [subL x subL x S_D x S_D]
         lower_triangular_matrix = blocked_lower_triangular_matrix.permute(0, 2, 1, 3).reshape(subL * self.S_D, subL * self.S_D)
 
+        u = torch.zeros((B, L, self.S_D)) + sum(ac @ self.B[ac_name].mT for ac_name, ac in actions.items())                             # [B x L x S_D]
         if mode == "form":
             state_biases = torch.cat([
                 torch.zeros((B, 1, self.S_D)),
-                ((inputs @ (E @ self.B).mT + observations @ self.K.mT).view(B, -1) @ lower_triangular_matrix.mT).view(B, L, self.S_D)
-            ], dim=1)                                                                                                                   # [B x (T + 1) x S_D]
-            observation_biases = (state_biases[:, :-1] @ self.F.mT + inputs @ self.B.T) @ self.H.mT                                     # [B x T x O_D]
+                ((u @ E.mT + observations @ self.K.mT).view(B, -1) @ lower_triangular_matrix.mT).view(B, L, self.S_D)
+            ], dim=1)                                                                                                                   # [B x (L + 1) x S_D]
+            observation_biases = (state_biases[:, :-1] @ self.F.mT + u) @ self.H.mT                                                     # [B x L x O_D]
 
-            state_biases = [state_biases[:, 1:]]                                                                                        # 1 x [B x T x S_D]                                                                                               # sqrtT x [B x ≈sqrtT x S_D]
-            observation_biases = [observation_biases]                                                                                   # 1 x [B x T x O_D]
+            state_biases = [state_biases[:, 1:]]                                                                                        # 1 x [B x L x S_D]                                                                                               # sqrtT x [B x ≈sqrtT x S_D]
+            observation_biases = [observation_biases]                                                                                   # 1 x [B x L x O_D]
 
         else:
             p = hsqrtL * lsqrtL - L
-            reshaped_padded_inputs = torch.constant_pad_nd(inputs, (0, 0, 0, p), 0).reshape(B * lsqrtL, hsqrtL, self.I_D)               # [BsqrtT x sqrtT x I_D]
-            reshaped_padded_observations = torch.constant_pad_nd(observations, (0, 0, 0, p), 0).reshape(B * lsqrtL, hsqrtL, self.O_D)   # [BsqrtT x sqrtT x O_D]
+
+            reshaped_padded_observations = torch.cat([
+                observations, torch.zeros_like(observations[:, :p])
+            ], dim=1).reshape(B * lsqrtL, hsqrtL, self.O_D)                                                                             # [BsqrtL x sqrtL x O_D]
+            u = torch.cat([u, torch.zeros_like(u[:, :p])], dim=1).reshape(B * lsqrtL, hsqrtL, self.S_D)                                 # [BsqrtL x sqrtL x S_D]
 
             reshaped_state_biases = torch.cat([
                 torch.zeros((B * lsqrtL, 1, self.S_D)),
-                ((reshaped_padded_inputs @ (E @ self.B).mT + reshaped_padded_observations @ self.K.mT).view(B * lsqrtL, -1) @ lower_triangular_matrix.T).view(B * lsqrtL, hsqrtL, self.S_D)
+                ((u @ E.mT + reshaped_padded_observations @ self.K.mT).view(B * lsqrtL, -1) @ lower_triangular_matrix.T).view(B * lsqrtL, hsqrtL, self.S_D)
             ], dim=1)                                                                                                                   # [BsqrtT x (sqrtT + 1) x S_D]
-            reshaped_observation_biases = (reshaped_state_biases[:, :-1] @ self.F.mT + reshaped_padded_inputs @ self.B.mT) @ self.H.mT  # [BsqrtT x sqrtT x O_D]
+            reshaped_observation_biases = (reshaped_state_biases[:, :-1] @ self.F.mT + u) @ self.H.mT                                   # [BsqrtT x sqrtT x O_D]
 
             state_biases = list(reshaped_state_biases[:, 1:].view(B, lsqrtL, hsqrtL, self.S_D).transpose(0, 1))                         # sqrtT x [B x sqrtT x S_D]                                                                                               # sqrtT x [B x ≈sqrtT x S_D]
             observation_biases = list(reshaped_observation_biases.view(B, lsqrtL, hsqrtL, self.O_D).transpose(0, 1))                    # sqrtT x [B x sqrtT x O_D]
@@ -258,13 +262,18 @@ class SequentialController(Controller, SequentialPredictor):
         Controller.__init__(self, modelArgs)
         SequentialPredictor.__init__(self, modelArgs)
 
-    def forward(self, trace: Dict[str, torch.Tensor], mode: str = None) -> Dict[str, torch.Tensor]:
-        state_estimation, inputs, observations = self.extract(trace, self.S_D)
-        result = self.forward_with_initial(state_estimation, inputs, observations, mode)
-        result["input_estimation"] = torch.cat([
-            state_estimation[:, None],
-            result["state_estimation"][:, :-1]
-        ], dim=1) @ -self.L.mT
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, torch.Tensor]:
+        trace = self.trace_to_td(trace)
+        actions, observations = trace["controller"], trace["environment"]["observation"]
+
+        state_estimation = torch.randn((*observations.shape[:-2], self.S_D))
+        result = self.forward_with_initial(state_estimation, actions, observations, mode)
+
+        state_estimation_history = torch.cat([state_estimation[:, None], result["state_estimation"][:, :-1]], dim=1)
+        result.update({
+            f"{k}_estimation": state_estimation_history @ -self.L[k].mT
+            for k in vars(self.problem_shape.controller)
+        })
         return result
 
 

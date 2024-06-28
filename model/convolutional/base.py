@@ -1,3 +1,4 @@
+from argparse import Namespace
 from typing import *
 
 import torch
@@ -15,25 +16,20 @@ class ConvolutionalPredictor(Predictor):
                          systems: TensorDict[str, torch.Tensor] # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         # Variable definition
-        P = utils.complex(kfs["input_IR"])                                                      # [B... x I_D x R x O_D]
-        P = P.permute(*range(P.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x I_D]
-
         Q = utils.complex(kfs["observation_IR"])                                                # [B... x O_D x R x O_D]
-        Q = Q.permute(*range(P.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x O_D]
+        Q = Q.permute(*range(Q.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x O_D]
 
         F = utils.complex(systems["F"])                                                         # [B... x S_D x S_D]
-        B = utils.complex(systems["B"])                                                         # [B... x S_D x I_D]
         H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
         sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
         sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
 
-        R = P.shape[-3]
+        R = Q.shape[-3]
 
         L, V = torch.linalg.eig(F)                                                              # [B... x S_D], [B... x S_D x S_D]
         Vinv = torch.inverse(V)                                                                 # [B... x S_D x S_D]
 
         Hs = H @ V                                                                              # [B... x O_D x S_D]
-        Bs = Vinv @ B                                                                           # [B... x S_D x I_D]
         sqrt_S_Ws = Vinv @ sqrt_S_W                                                             # [B... x S_D x S_D]
 
         # State evolution noise error
@@ -69,62 +65,11 @@ class ConvolutionalPredictor(Predictor):
         err = ws_current_err + ws_recent_err + ws_geometric_err + v_current_err + v_recent_err  # [B...]
         return err.real
 
-    @classmethod
-    def to_sequential_batch(cls, kfs: TensorDict[str, torch.Tensor], input_enabled: bool) -> TensorDict[str, torch.Tensor]:
-        input_IR, observation_IR = torch.Tensor(kfs["input_IR"]), torch.Tensor(kfs["observation_IR"])       # [... x I_D x R x O_D], [... x O_D x R x O_D]
-        I_D, R, O_D = input_IR.shape[-3:]
+    def __init__(self, modelArgs: Namespace):
+        Predictor.__init__(self, modelArgs)
+        self.input_IR = None
+        self.observation_IR = None
 
-        S_D = R * ((I_D + O_D) if input_enabled else O_D)
-
-        def expand_right(t: torch.Tensor) -> torch.Tensor:
-            return t.view(*t.shape, *(1 for _ in range(kfs.ndim))).expand(*t.shape, *kfs.shape)
-
-        permuted_input_IR = input_IR.permute(-3, -2, -1, *range(kfs.ndim))                                  # [I_D x R x O_D x ...]
-        permuted_observation_IR = observation_IR.permute(-3, -2, -1, *range(kfs.ndim))                      # [O_D x R x O_D x ...]
-
-        # DONE: Construct F matrix
-        F00 = expand_right(torch.diag_embed(torch.ones(((R - 1) * O_D,)), offset=-O_D)).clone()             # [RO_D x RO_D x ...]
-        F00[:O_D] = permuted_observation_IR.transpose(0, 2).flatten(1, 2)
-
-        if input_enabled:
-            F01 = torch.zeros((R * O_D, R * I_D, *kfs.shape))                                               # [RO_D x RI_D x ...]
-            F01[:O_D, :-I_D] = permuted_input_IR[:, 1:].transpose(0, 2).flatten(1, 2)
-
-            F10 = torch.zeros((R * I_D, R * O_D, *kfs.shape))                                               # [RI_D x RO_D x ...]
-            F11 = expand_right(torch.diag_embed(torch.ones(((R - 1) * I_D,)), offset=-I_D))                 # [RI_D x RI_D x ...]
-
-            F = torch.cat([
-                torch.cat([F00, F01], dim=1),
-                torch.cat([F10, F11], dim=1)
-            ], dim=0).permute(*range(2, kfs.ndim + 2), 0, 1)                                                # [... x R(O_D + I_D) x R(O_D + I_D)]
-        else:
-            F = F00.permute(*range(2, kfs.ndim + 2), 0, 1)                                                  # [... x RO_D x RO_D]
-
-        # DONE: Construct B matrix
-        B0 = torch.cat([
-            permuted_input_IR[:, 0].transpose(0, 1),                                                        # [O_D x I_D x ...]
-            torch.zeros(((R - 1) * O_D, I_D, *kfs.shape)),                                                  # [(R - 1)O_D x I_D x ...]
-        ], dim=0)                                                                                           # [RO_D x I_D x ...]
-
-        if input_enabled:
-            B1 = torch.cat([
-                expand_right(torch.eye(I_D)),                                                               # [I_D x I_D x ...]
-                torch.zeros(((R - 1) * I_D, I_D, *kfs.shape))                                               # [(R - 1)I_D x I_D x ...]
-            ])                                                                                              # [RI_D x I_D x ...]
-            B = torch.cat([B0, B1], dim=0).permute(*range(2, kfs.ndim + 2), 0, 1)                           # [... x R(O_D + I_D) x I_D]
-        else:
-            B = B0.permute(*range(2, kfs.ndim + 2), 0, 1)                                                   # [... x RO_D x I_D]
-
-        # DONE: Construct H matrix
-        H = torch.hstack([
-            torch.eye(O_D),                                                                                 # [O_D x O_D]
-            torch.zeros((O_D, S_D - O_D))                                                                   # [O_D x ((R - 1)O_D + RI_D)] or [O_D x (R - 1)O_D]
-        ]).expand(*kfs.shape, O_D, S_D)                                                                     # [... x O_D x R(O_D + I_D)] or [... x O_D x RO_D]
-
-        # DONE: Construct K matrix
-        K = H.mT                                                                                            # [... x R(O_D + I_D) x O_D] or [... x RO_D x O_D]
-
-        return TensorDict({"F": F, "B": B, "H": H, "K": K}, batch_size=kfs.shape)
 
     """ forward
         :parameter {
@@ -135,20 +80,22 @@ class ConvolutionalPredictor(Predictor):
             "observation_estimation": [B x L x O_D]
         }
     """
-    def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        state, inputs, observations = self.extract(trace, 0)
-        B, L = inputs.shape[:2]
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+        trace = self.trace_to_td(trace)
+        actions, observations = trace["controller"], trace["environment"]["observation"]
 
+        B, L = trace.shape
         result = Fn.conv2d(
             self.observation_IR,
             observations[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),
             padding=(L, 0)
-        )[:, :L] + Fn.conv2d(
-            self.input_IR,
-            inputs[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),
-            padding=(L - 1, 0)
-        )[:, :L]
-
+        )[:, :L] + sum([
+            Fn.conv2d(
+                self.input_IR[k],
+                v[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),
+                padding=(L - 1, 0)
+            )[:, :L] for k, v in actions.items()
+        ])
         return {"observation_estimation": result}
 
 
