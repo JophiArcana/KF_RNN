@@ -24,7 +24,7 @@ from model.convolutional import CnnPredictorLeastSquares
 from model.sequential import RnnPredictorPretrainAnalytical
 from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
 from model.zero_predictor import ZeroPredictor
-from system.linear_time_invariant import LinearSystemGroup, MOPDistribution
+from system.simple.linear_time_invariant import LTISystem
 
 
 if __name__ == "__main__":
@@ -263,11 +263,11 @@ if __name__ == "__main__":
     dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
-        return (dataset["observation"] - observation_estimation).norm(dim=-1) ** 2
+        return (dataset["environment", "observation"] - observation_estimation).norm(dim=-1) ** 2
     
     with torch.set_grad_enabled(False):
         zero_predictor_al = utils.batch_trace(systems.S_observation_inf)
-        zero_predictor_l = loss(torch.zeros_like(dataset["observation"]))
+        zero_predictor_l = loss(torch.zeros_like(dataset["environment", "observation"]))
         il = utils.batch_trace(systems.S_prediction_err_inf)
         eil = loss(dataset["target"])
     
@@ -325,13 +325,13 @@ if __name__ == "__main__":
     # transfoxl_td = transfoxl_td.squeeze(1).squeeze(0)
     #
     # dataset_parameter = TensorDict.from_dict(dataset, batch_size=dataset.shape)
-    # dataset_parameter["observation"] = nn.Parameter(dataset["observation"])
+    # dataset_parameter["environment"]["observation"] = nn.Parameter(dataset["environment"]["observation"])
     #
     # with torch.set_grad_enabled(True):
     #     gpt2_response = Predictor.gradient(gpt2_rm, gpt2_td, dataset_parameter, split_size=1 << 17)
     #     transfoxl_response = Predictor.gradient(transfoxl_rm, transfoxl_td, dataset_parameter, split_size=1 << 17)
     #
-    # gpt2_gn = (gpt2_response["observation"].norm(dim=-1) ** 2).mean(dim=1)
+    # gpt2_gn = (gpt2_response["environment"]["observation"].norm(dim=-1) ** 2).mean(dim=1)
     # for sys_idx in range(n_test_systems):
     #     plt.plot(
     #         cd(torch.arange(1, context_length + 1)),

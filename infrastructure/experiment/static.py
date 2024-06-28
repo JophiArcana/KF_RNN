@@ -4,7 +4,7 @@ import numpy as np
 from tensordict import TensorDict
 
 from infrastructure.utils import PTR
-from system.core import SystemGroup
+from system.simple.base import SystemGroup
 
 PARAM_GROUP_FORMATTER: str = "{0}_d({1})"
 TRAINING_DATASET_TYPES: List[str] = [

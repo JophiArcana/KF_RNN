@@ -22,8 +22,8 @@ class TransformerPredictor(Predictor):
         else:
             self.register_buffer("input_in", torch.zeros((self.S_D, self.I_D)))
 
-    def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
-        B, L = trace["observation"].shape[:2]
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+        B, L = trace["environment"]["observation"].shape[:2]
         # assert L <= self.n_positions, f"Trace length must be at most the context length of the transformer but got {self.n_positions}."
 
         embd_dict = self.trace_to_embedding(trace)
@@ -39,10 +39,10 @@ class TransformerPredictor(Predictor):
             "observation_embd": out                             # [B x L x S_D]
         })                                                      # [B x L x ...]
 
-    def trace_to_embedding(self, trace: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        result = {"observation_embd": trace["observation"] @ self.observation_in.mT}
+    def trace_to_embedding(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        result = {"observation_embd": trace["environment"]["observation"] @ self.observation_in.mT}
         if self.input_enabled:
-            result["input_embd"] = trace["input"] @ self.input_in.mT
+            result["input_embd"] = trace["controller"]["input"] @ self.input_in.mT
         return result
 
     def embedding_to_output(self, embedding: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:

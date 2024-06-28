@@ -69,10 +69,10 @@ class ZeroPredictor(Predictor):
     def train_func_list(cls, default_train_func: Any) -> Sequence[Any]:
         return ()
 
-    def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
         return {
-            "input_estimation": torch.zeros_like(trace["input"]),
-            "observation_estimation": torch.zeros_like(trace["observation"])
+            "input_estimation": torch.zeros_like(trace["controller"]["input"]),
+            "observation_estimation": torch.zeros_like(trace["environment"]["observation"])
         }
 
 

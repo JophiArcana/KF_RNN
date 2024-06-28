@@ -13,8 +13,10 @@ class RnnController(SequentialController, RnnPredictor):
         SequentialController.__init__(self, modelArgs)
         RnnPredictor.__init__(self, modelArgs, **initialization)
 
-        self.L = nn.Parameter(initialization.get("L", torch.zeros((self.I_D, self.S_D))))
-
+        self.L = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((d, self.S_D)))
+            for k, d in vars(self.problem_shape.controller).items()
+        })
 
 class RnnControllerAnalytical(RnnController, RnnPredictorAnalytical):
     def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
@@ -23,17 +25,6 @@ class RnnControllerAnalytical(RnnController, RnnPredictorAnalytical):
 
 class RnnControllerPretrainAnalytical(RnnControllerAnalytical, RnnPredictorPretrainAnalytical):
     pass
-
-
-class RnnDetachedController(RnnController):
-    def forward(self, trace: Dict[str, torch.Tensor], mode: str = None) -> Dict[str, torch.Tensor]:
-        state_estimation, inputs, observations = self.extract(trace, self.S_D)
-        result = self.forward_with_initial(state_estimation, inputs, observations, mode)
-        result["input_estimation"] = torch.cat([
-            state_estimation[:, None],
-            result["state_estimation"][:, :-1]
-        ], dim=1).detach() @ -self.L.mT
-        return result
 
 
 

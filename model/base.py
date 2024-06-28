@@ -94,7 +94,7 @@ class Predictor(nn.Module):
     def evaluate_run(cls,
                      result: torch.Tensor | float,                          # [B... x N x B x L x ...]
                      target_dict: TensorDict[str, torch.Tensor],            # [B... x N x B x L x ...]
-                     target_key: str,
+                     target_key: Tuple[str, ...],
                      batch_mean: bool = True
     ) -> torch.Tensor:
         losses = torch.norm(result - target_dict[target_key], dim=-1) ** 2  # [B... x N x B x L]
@@ -132,9 +132,9 @@ class Predictor(nn.Module):
         if not hasattr(cache, "initialization_error"):
             initialization, error_ = initialization_func(exclusive)
             for k, v in ensembled_learned_kfs.items():
-                ensembled_learned_kfs[k] = initialization[k].expand_as(v)
+                ensembled_learned_kfs[k] = utils.rgetitem(initialization, k).expand_as(v)
             cache.initialization_error = error_.expand(ensembled_learned_kfs.shape)
-            error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj, "observation").mean(dim=-1)
+            error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj, ("environment", "observation")).mean(dim=-1)
         else:
             cache.done = True
             error = cache.initialization_error
@@ -143,15 +143,8 @@ class Predictor(nn.Module):
 
     def __init__(self, modelArgs: Namespace):
         super().__init__()
-        self.I_D: int = modelArgs.I_D
-        self.O_D: int = modelArgs.O_D
-        self.input_enabled: bool = modelArgs.input_enabled
-
-    def extract(self, trace: Dict[str, torch.Tensor], S_D: int) -> Sequence[torch.Tensor]:
-        inputs, observations = trace['input'], trace['observation']
-        B, L = observations.shape[:2]
-        state = (torch.randn if self.training else torch.zeros)((B, S_D))
-        return state, inputs, observations
+        self.problem_shape = modelArgs.problem_shape
+        self.O_D: int = self.problem_shape.environment.observation
 
     """ forward
         :parameter {
@@ -166,8 +159,12 @@ class Predictor(nn.Module):
             'observation_covariance': [B x L x O_D x O_D]   (Optional)
         }
     """
-    def forward(self, trace: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
         raise NotImplementedError()
+
+    @classmethod
+    def trace_to_td(cls, trace: Dict[str, Dict[str, torch.Tensor]]) -> TensorDict[str, torch.Tensor]:
+        return TensorDict.from_dict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
 
     @classmethod
     def train_func_list(cls, default_train_func: Any) -> Sequence[Any]:
@@ -180,15 +177,8 @@ class Predictor(nn.Module):
     ) -> torch.Tensor:                                          # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
-    @classmethod
-    def to_sequential_batch(cls, kfs: TensorDict[str, torch.Tensor], input_enabled: bool) -> TensorDict[str, torch.Tensor]:
-        raise NotImplementedError(f"Model {cls} not convertible to sequential model")
-
-
 class Controller(Predictor):
-    def __init__(self, modelArgs: Namespace):
-        Predictor.__init__(self, modelArgs)
-        assert self.input_enabled, f"Input must be enabled for controller model but got {self.input_enabled}."
+    pass
 
 
 
