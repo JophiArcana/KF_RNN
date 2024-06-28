@@ -21,7 +21,7 @@ if __name__ == "__main__":
     from model.sequential.rnn_controller import RnnController
 
     # SECTION: Run imitation learning experiment across different control noises
-    SHP = Namespace(S_D=3, I_D=2, O_D=2, input_enabled=True)
+    SHP = Namespace(S_D=2, I_D=1, O_D=1, input_enabled=True)
     hp_name = "control_noise_std"
 
     dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
@@ -41,7 +41,7 @@ if __name__ == "__main__":
             return LinearQuadraticGaussianGroup(self.params.expand(*shape), SHP.input_enabled, control_noise_std=self.control_noise_std)
 
     # Experiment setup
-    exp_name = "ControlNoiseComparison"
+    exp_name = "ControlNoiseComparison_small"
     output_dir = "imitation_learning"
     output_fname = "result"
 
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     result, systems, dataset = run_experiments(args, configurations, {
         "dir": output_dir,
         "fname": output_fname
-    }, save_experiment=False)
+    }, save_experiment=True)
 
 
     # SECTION: LQG system visualization

@@ -40,7 +40,7 @@ if __name__ == "__main__":
                     max_lr=1e-2, min_lr=1e-6, momentum=0.9
                 ), Namespace(
                     type="LBFGS",
-                    max_lr=1.0, history_size=10
+                    max_lr=1e-1, history_size=10
                 )
             ],
             "train.scheduler.warmup_duration": [100, 100, 0],
