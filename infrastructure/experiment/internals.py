@@ -134,7 +134,6 @@ def _construct_info_dict(
         systems_arr = systems[ds_type]
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
-    # TODO: Fix this to use the new SystemGroup constructor
     systems_arr = utils.multi_map(
         lambda sg: utils.call_func_with_kwargs(type(sg), (SHP.problem_shape, sg.td()), vars(SHP)),
         systems_arr, dtype=SystemGroup
