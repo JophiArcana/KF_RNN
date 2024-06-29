@@ -111,16 +111,23 @@ if __name__ == "__main__":
         )
     
         # SECTION: Training hyperparameters
-        del ARGS_TRANSFORMER.train.warmup_duration
-        ARGS_TRANSFORMER.train.epochs = 40000
-        ARGS_TRANSFORMER.train.subsequence_length = context_length
-        ARGS_TRANSFORMER.train.batch_size = 32
+        ARGS_TRANSFORMER.train.sampling = Namespace(
+            method="subsequence_padded",
+            subsequence_length=context_length,
+            batch_size=32
+        )
+        ARGS_TRANSFORMER.train.optimizer = Namespace(
+            type="Adam",
+            max_lr=3e-4, min_lr=1e-6,
+            weight_decay=1e-2, momentum=0.9
+        )
+        ARGS_TRANSFORMER.train.scheduler = Namespace(
+            type="exponential",
+            epochs=40000, lr_decay=1.0,
+
+        )
         ARGS_TRANSFORMER.train.iterations_per_epoch = 1
-    
-        ARGS_TRANSFORMER.train.optim_type = "Adam"
-        ARGS_TRANSFORMER.train.max_lr = 3e-4
-        ARGS_TRANSFORMER.train.lr_decay = 1.0
-        ARGS_TRANSFORMER.train.weight_decay = 1e-2
+
     
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
@@ -223,9 +230,9 @@ if __name__ == "__main__":
         """ RNN Experiment """
         # SECTION: Set RNN exclusive hyperparameters
         ARGS_BASELINE_RNN.model.S_D = SHP.S_D
-        ARGS_BASELINE_RNN.train.optim_type = "GD"
-        ARGS_BASELINE_RNN.train.max_lr = 1e-3
-        ARGS_BASELINE_RNN.train.epochs = 1200
+        ARGS_BASELINE_RNN.train.sampling.method = "full"
+        ARGS_BASELINE_RNN.train.optimizer.max_lr = 1e-3
+        ARGS_BASELINE_RNN.train.scheduler.epochs = 1200
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_baseline_rnn
     
         configurations_baseline_rnn = [
