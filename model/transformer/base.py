@@ -16,37 +16,46 @@ class TransformerPredictor(Predictor):
         nn.init.kaiming_normal_(self.observation_in)
         self.observation_out = nn.Parameter(torch.zeros((self.O_D, self.S_D)))      # [O_D x S_D]
         nn.init.kaiming_normal_(self.observation_out)
-        if self.input_enabled:
-            self.input_in = nn.Parameter(torch.zeros((self.S_D, self.I_D)))         # [S_D x I_D]
-            nn.init.kaiming_normal_(self.input_in)
-        else:
-            self.register_buffer("input_in", torch.zeros((self.S_D, self.I_D)))
 
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+        self.input_in = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((self.S_D, d)))
+            for k, d in vars(self.problem_shape.controller).items()
+        })
+        for v in self.input_in.values():
+            nn.init.kaiming_normal_(v)
+
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
         # assert L <= self.n_positions, f"Trace length must be at most the context length of the transformer but got {self.n_positions}."
 
         embd_dict = self.trace_to_embedding(trace)
-        embds = torch.cat([
+
+        observation_embds = torch.cat([
             torch.zeros((B, 1, self.S_D)),                      # [B x 1 x S_D]
-            embd_dict["observation_embd"][:, :-1]               # [B x (L - 1) x S_D]
-        ], dim=1)                                               # [B x L x S_D]
-        if self.input_enabled:
-            embds = embds + embd_dict["input_embd"]             # [B x L x S_D]
+            embd_dict["environment"]["observation"][:, :-1]     # [B x (L - 1) x S_D]
+        ], dim=-2)                                              # [B x L x S_D]
+        action_embds = sum(embd_dict["controller"].values())    # [B x L x S_D]
+        embds = observation_embds + action_embds                # [B x L x S_D]
 
         out = self.core(inputs_embeds=embds).last_hidden_state  # [B x L x S_D]
-        return self.embedding_to_output({
-            "observation_embd": out                             # [B x L x S_D]
-        })                                                      # [B x L x ...]
+        return self.embedding_to_output({"environment": out})
 
-    def trace_to_embedding(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        result = {"observation_embd": trace["environment"]["observation"] @ self.observation_in.mT}
-        if self.input_enabled:
-            result["input_embd"] = trace["controller"]["input"] @ self.input_in.mT
-        return result
+    def trace_to_embedding(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:
+        return {
+            "environment": {
+                "observation": trace["environment"]["observation"] @ self.observation_in.mT
+            },
+            "controller": {
+                k: v @ self.input_in[k].mT
+                for k, v in trace["controller"].items()
+            }
+        }
 
-    def embedding_to_output(self, embedding: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        return {"observation_estimation": embedding["observation_embd"] @ self.observation_out.mT}
+    def embedding_to_output(self, embedding: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
+        return {
+            "environment": {"observation": embedding["environment"] @ self.observation_out.mT},
+            "controller": {}
+        }
 
 
 class TransformerController(Controller, TransformerPredictor):
@@ -54,12 +63,19 @@ class TransformerController(Controller, TransformerPredictor):
         Controller.__init__(self, modelArgs)
         TransformerPredictor.__init__(self, modelArgs, S_D)
 
-        self.input_out = nn.Parameter(torch.zeros((self.I_D, self.S_D)))
-        nn.init.kaiming_normal_(self.input_out)
+        self.input_out = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((d, self.S_D)))
+            for k, d in vars(self.problem_shape.controller).items()
+        })
+        for v in self.input_out.values():
+            nn.init.kaiming_normal_(v)
 
-    def embedding_to_output(self, embedding: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        result = super().embedding_to_output(embedding)
-        result["input_estimation"] = embedding["input_embd"] @ self.input_out.mT
+    def embedding_to_output(self, embedding: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
+        result = TransformerPredictor.embedding_to_output(self, embedding)
+        result["controller"] = {
+            k: embedding["controller"] @ v.mT
+            for k, v in self.input_out.items()
+        }
         return result
 
 

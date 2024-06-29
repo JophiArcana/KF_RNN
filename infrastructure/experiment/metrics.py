@@ -67,7 +67,7 @@ def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target: Tu
 
         return utils.multi_map(
             lambda pair: Predictor.evaluate_run(
-                pair[0]["observation_estimation"], pair[1].obj, target,
+                pair[0]["environment", "observation"], pair[1].obj, target,
                 batch_mean=not with_batch_dim
             ), utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
         )
@@ -109,6 +109,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
+        raise NotImplementedError("This metric is outdated, and we need to derive a new way of determining convergence.")
         exclusive, ensembled_learned_kfs = mv
 
         reset_ensembled_learned_kfs = Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs)
@@ -117,7 +118,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
         dataset_arr = utils.rgetattr(exclusive, f"info.{ds_type}.dataset")
         with torch.set_grad_enabled(True):
             run_arr = utils.multi_map(
-                lambda dataset: Predictor.run(exclusive.reference_module, reset_ensembled_learned_kfs, *dataset)["observation_estimation"],
+                lambda dataset: Predictor.run(exclusive.reference_module, reset_ensembled_learned_kfs, *dataset)["environment", "observation"],
                 dataset_arr, dtype=torch.Tensor
             )
             loss_arr = utils.multi_map(

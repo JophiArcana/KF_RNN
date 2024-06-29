@@ -73,14 +73,23 @@ class ConvolutionalPredictor(Predictor):
 
     """ forward
         :parameter {
-            "input": [B x L x I_D],
-            "observation": [B x L x O_D]
+            "environment": {
+                "observation": [B x L x O_D]
+            },
+            "controller": {
+                "input": [B x L x I_D]
+            }
         }
         :returns {
-            "observation_estimation": [B x L x O_D]
+            "environment": {
+                "observation": [B x L x O_D]
+            },
+            "controller": {
+                "input": [B x L x I_D]
+            }
         }
     """
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         trace = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment"]["observation"]
 
@@ -89,14 +98,15 @@ class ConvolutionalPredictor(Predictor):
             self.observation_IR,
             observations[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),
             padding=(L, 0)
-        )[:, :L] + sum([
-            Fn.conv2d(
-                self.input_IR[k],
-                v[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),
-                padding=(L - 1, 0)
-            )[:, :L] for k, v in actions.items()
-        ])
-        return {"observation_estimation": result}
+        )[:, :L] + sum([Fn.conv2d(
+            self.input_IR[k],
+            v[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),
+            padding=(L - 1, 0)
+        )[:, :L] for k, v in actions.items()])
+        return {
+            "environment": {"observation": result},
+            "controller": {}
+        }
 
 
 

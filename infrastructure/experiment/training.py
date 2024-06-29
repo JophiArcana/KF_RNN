@@ -196,9 +196,15 @@ def _train_default(
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
                     train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
-                    losses = Predictor.evaluate_run(train_result["observation_estimation"], dataset_ss, ("environment", "observation"))
-                    if "input_estimation" in train_result.keys():
-                        losses = losses + Predictor.evaluate_run(train_result["input_estimation"], dataset_ss, ("controller", "input"))
+                    observation_losses = Predictor.evaluate_run(
+                        train_result["environment", "observation"],
+                        dataset_ss, ("environment", "observation")
+                    )
+                    action_losses = sum([
+                        Predictor.evaluate_run(v, dataset_ss, ("controller", k))
+                        for k, v in train_result["controller"].items()
+                    ])
+                    losses = observation_losses + THP.control_coefficient * action_losses
                 return losses
             else:
                 return pre_runs.pop()

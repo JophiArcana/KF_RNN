@@ -3,6 +3,7 @@ import sys
 from argparse import Namespace
 from typing import *
 
+import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
@@ -15,6 +16,8 @@ from infrastructure import loader, utils
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
 from system.simple.base import SystemGroup
+from system.actionable.base import ActionableSystemGroup
+from system.controller import NNControllerGroup
 
 
 if __name__ == "__main__":
@@ -30,8 +33,8 @@ if __name__ == "__main__":
     )
     hp_name = "control_noise_std"
 
-    dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
-    lqg = dist.sample(SHP, ())
+    dist_ = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+    lqg_ = dist_.sample(SHP, ())
 
     class ConstantLQGDistribution(LQGSystem.Distribution):
         def __init__(self, params: TensorDict[str, torch.Tensor], cns: float):
@@ -43,7 +46,7 @@ if __name__ == "__main__":
             return LQGSystem(SHP.problem_shape, self.params.expand(*shape), self.control_noise_std)
 
     # Experiment setup
-    exp_name = "ControlNoiseComparison_small"
+    exp_name = "ControlNoiseComparison"
     output_dir = "imitation_learning"
     output_fname = "result"
 
@@ -60,7 +63,7 @@ if __name__ == "__main__":
         total_sequence_length=100000,
         system=Namespace(
             n_systems=1,
-            distribution=ConstantLQGDistribution(lqg.td(), 0.0)
+            distribution=ConstantLQGDistribution(lqg_.td(), 0.0)
         )
     )
     args.train.sampling = Namespace(method="full")
@@ -81,7 +84,7 @@ if __name__ == "__main__":
     args.experiment.metrics = {"validation_analytical"}
 
     control_noise_std = [0.0, 0.1, 0.2, 0.3]
-    dist_list = [ConstantLQGDistribution(lqg.td(), cns) for cns in control_noise_std]
+    dist_list = [ConstantLQGDistribution(lqg_.td(), cns) for cns in control_noise_std]
     configurations = [
         (hp_name, {"dataset.train.system.distribution": dist_list})
     ]
@@ -94,28 +97,31 @@ if __name__ == "__main__":
     # DONE: After running experiment, refresh LQG because the saved system overrides the one sampled at the start
     lqg = LQGSystem(SHP.problem_shape, systems.values[()].td().squeeze(1).squeeze(0))
     dist_list = [ConstantLQGDistribution(lqg.td(), cns) for cns in control_noise_std]
+    lqg_list = [dist_.sample(SHP, ()) for dist_ in dist_list]
 
+    """
     # Plot the training loss curve
+    ax = plt.gca()
+    ax2 = ax.twinx()
+
     training_outputs = list(get_result_attr(result, "output"))
     for idx, (cns, training_output) in enumerate(zip(control_noise_std, training_outputs)):
         out = training_output.squeeze(0)
         tl = out["training"]
         al = out["validation_analytical"].squeeze(-1)
 
-        plt.plot(tl.median(dim=0).values, color=COLOR_LIST[idx], linestyle="--")
-        plt.plot(al.median(dim=0).values, color=COLOR_LIST[idx], linestyle="-", label=f"{hp_name}{cns}_validation_analytical")
+        ax.plot(tl.median(dim=0).values, color=0.7 * COLOR_LIST[idx], linestyle="--")
+        ax2.plot(al.median(dim=0).values, color=COLOR_LIST[idx], linestyle="-", label=f"{hp_name}{cns}_validation_analytical")
 
     plt.xlabel("epoch")
-    plt.ylabel(r"loss: $\frac{1}{L}|| F_\theta(\tau) - \tau ||^2")
+    ax.set_ylabel(r"loss: $\frac{1}{L}|| F_\theta(\tau) - \tau ||^2$")
     plt.title("training_curve")
 
     plt.legend()
     plt.show()
-
+    """
 
     # SECTION: LQG system visualization
-    lqg_list = [dist_.sample(SHP, ()) for dist_ in dist_list]
-
     batch_size, horizon = 1024, 1000
     datasets = [lqg_.generate_dataset(batch_size, horizon) for lqg_ in lqg_list]
 
@@ -123,8 +129,8 @@ if __name__ == "__main__":
     U, S, Vh = torch.linalg.svd(optimal_states, full_matrices=False)
     s0, s1 = S[:2] * len(optimal_states) ** -0.5
     compression = Vh.H[:, :2]
-    # AV = US
 
+    """
     # Plot covariances of sampled states
     indices = torch.randint(0, batch_size * horizon, (2000,))
 
@@ -146,6 +152,37 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.show()
+    """
+
+    # SECTION: Visualize trajectory generated using the learned controllers
+    learned_controllers = [
+        NNControllerGroup(SHP.problem_shape, reference_module, module_td.squeeze(0))
+        for reference_module, module_td in get_result_attr(result, "learned_kfs")
+    ]
+
+    small_batch_size, small_horizon = 5, 10
+    trace = lqg.generate_dataset_with_controller_arr(np.array([lqg.controller] + learned_controllers), small_batch_size, small_horizon)
+
+    optimal_trajectory = trace[0, 0]["environment", "state"]
+    learned_trajectories = trace[1:]["environment", "state"]
+
+    trace_idx, ensemble_idx = 0, 0
+    for idx, (cns, learned_trajectory) in enumerate(zip(control_noise_std, learned_trajectories)):
+        trajectory = learned_trajectory[ensemble_idx, trace_idx] @ compression
+        plt.plot(*trajectory.mT, color=COLOR_LIST[idx], marker=".", markersize="8", label=f"{hp_name}{cns}_trajectory")
+    plt.plot(*(optimal_trajectory[trace_idx] @ compression).mT, color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
+
+    plt.xlabel("$\\sigma_0$")
+    plt.xlim(left=-3 * s0, right=3 * s0)
+    plt.ylabel("$\\sigma_1$")
+    plt.ylim(bottom=-3 * s0, top=3 * s0)
+    plt.title("trajectory")
+
+    plt.legend()
+    plt.show()
+
+    raise Exception()
+
 
     # Plot cumulative loss over horizon
     def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LQGSystem) -> torch.Tensor:
@@ -170,9 +207,6 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.show()
-
-
-    # SECTION: Generate action trace
 
 
 

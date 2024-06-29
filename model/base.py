@@ -41,7 +41,7 @@ class Predictor(nn.Module):
         _result_list = []
         for lo, hi in zip(splits[:-1], splits[1:]):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
-            _result_list.append(TensorDict(utils.run_module_arr(
+            _result_list.append(TensorDict.from_dict(utils.run_module_arr(
                 reference_module,
                 ensembled_kfs,
                 _dataset_slice,
@@ -77,7 +77,7 @@ class Predictor(nn.Module):
             _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
 
-            out = utils.run_module_arr(reference_module, ensembled_kfs, _dataset_slice, kwargs)["observation_estimation"][:, -1].norm() ** 2
+            out = Predictor.run(reference_module, ensembled_kfs, _dataset_slice)[..., -1]["environment", "observation"].norm() ** 2
             params = OrderedDict({k: v for k, v in _dataset_slice.items() if v.requires_grad}) 
             _result_list.append(TensorDict(dict(zip(
                 params.keys(),
@@ -159,7 +159,7 @@ class Predictor(nn.Module):
             'observation_covariance': [B x L x O_D x O_D]   (Optional)
         }
     """
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         raise NotImplementedError()
 
     @classmethod

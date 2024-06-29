@@ -59,39 +59,39 @@ class LTISystem(SystemGroup):
         return TensorDict({
             "state": state,
             "observation": observation,
-            "w": w, "v": v,
+            # "w": w, "v": v,
             "target_state_estimation": target_state_estimation,
             "target_observation_estimation": target_observation_estimation
         }, batch_size=(*self.group_shape, batch_size))
 
     def step(self,
-             state: TensorDict[str, torch.Tensor],          # [N... x B x ...]
-             action: TensorDict[str, torch.Tensor]          # [N... x B x ...]
-    ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
+             state: TensorDict[str, torch.Tensor],          # [C... x N... x B x ...]
+             action: TensorDict[str, torch.Tensor]          # [C... x N... x B x ...]
+    ) -> TensorDict[str, torch.Tensor]:                     # [C... x N... x B x ...]
         batch_size = state.shape[-1]
 
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
-        x_, target_xh_ = state["state"], state["target_state_estimation"]                                           # [N... x B x S_D]
-        y_, target_yh_ = state["observation"], state["target_observation_estimation"]                               # [N... x B x O_D]
+        x_, target_xh_ = state["state"], state["target_state_estimation"]                                           # [C... x N... x B x S_D]
+        y_, target_yh_ = state["observation"], state["target_observation_estimation"]                               # [C... x N... x B x O_D]
 
         u = sum(ac @ self.B[ac_name].mT for ac_name, ac in action.items())
 
         x = x_ @ self.F.mT + u + w
         y = x @ self.H.mT + v
 
-        target_xh = target_xh_ + u                                                                                  # [N... x B x S_D]
-        target_yh = target_xh @ self.H.mT                                                                           # [N... x B x O_D]
-        target_xh = target_xh + (y_ - target_yh_) @ self.K.mT                                                       # [N... x B x S_D]
+        target_xh = target_xh_ + u                                                                                  # [C... x N... x B x S_D]
+        target_yh = target_xh @ self.H.mT                                                                           # [C... x N... x B x O_D]
+        target_xh = target_xh + (y_ - target_yh_) @ self.K.mT                                                       # [C... x N... x B x S_D]
 
         return TensorDict({
             "state": x,
             "observation": y,
-            "w": w, "v": v,
+            # "w": w, "v": v,
             "target_state_estimation": target_xh,
             "target_observation_estimation": target_yh
-        }, batch_size=(*self.group_shape, batch_size))
+        }, batch_size=x.shape[:-1])
 
 
 class MOPDistribution(LTISystem.Distribution):

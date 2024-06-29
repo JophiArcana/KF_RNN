@@ -70,10 +70,7 @@ class ZeroPredictor(Predictor):
         return ()
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
-        return {
-            "input_estimation": torch.zeros_like(trace["controller"]["input"]),
-            "observation_estimation": torch.zeros_like(trace["environment"]["observation"])
-        }
+        return TensorDict.from_dict(trace, batch_size=()).apply(torch.zeros_like).to_dict()
 
 
 

@@ -120,7 +120,7 @@ class SequentialPredictor(Predictor):
         Predictor.__init__(self, modelArgs)
         self.S_D: int = modelArgs.S_D
 
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, Dict[str, torch.Tensor]]:
         trace = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment"]["observation"]
 
@@ -132,7 +132,7 @@ class SequentialPredictor(Predictor):
                              actions: TensorDict[str, torch.Tensor],
                              observations: torch.Tensor,
                              mode: str
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
         L = observations.shape[1]
 
         if mode is None:
@@ -142,7 +142,7 @@ class SequentialPredictor(Predictor):
             result = []
             for l in range(L):
                 result.append(r := self._forward(state_estimation, actions[:, l], observations[:, l]))
-                state_estimation = r["state_estimation"]
+                state_estimation = r["environment", "state"]
             return torch.stack(result, dim=-1).to_dict()
         else:
             state_estimations, observation_estimations = [], []
@@ -158,8 +158,11 @@ class SequentialPredictor(Predictor):
                 state_estimation = state_estimations[-1][:, -1]
 
             return {
-                "state_estimation": torch.cat(state_estimations, dim=1),
-                "observation_estimation": torch.cat(observation_estimations, dim=1)
+                "environment": {
+                    "state": torch.cat(state_estimations, dim=1),
+                    "observation": torch.cat(observation_estimations, dim=1)
+                },
+                "controller": {}
             }
 
     def _forward(self,
@@ -171,9 +174,12 @@ class SequentialPredictor(Predictor):
         observation_estimation = state_estimation @ self.H.mT
         state_estimation = state_estimation + (observation - observation_estimation) @ self.K.mT
 
-        return TensorDict({
-            "state_estimation": state_estimation,
-            "observation_estimation": observation_estimation
+        return TensorDict.from_dict({
+            "environment": {
+                "state": state_estimation,
+                "observation": observation_estimation
+            },
+            "controller": {}
         }, batch_size=state.shape[:-1])
 
     """ forward
@@ -269,11 +275,14 @@ class SequentialController(Controller, SequentialPredictor):
         state_estimation = torch.randn((*observations.shape[:-2], self.S_D))
         result = self.forward_with_initial(state_estimation, actions, observations, mode)
 
-        state_estimation_history = torch.cat([state_estimation[:, None], result["state_estimation"][:, :-1]], dim=1)
-        result.update({
-            f"{k}_estimation": state_estimation_history @ -self.L[k].mT
+        state_estimation_history = torch.cat([
+            state_estimation.unsqueeze(-2),
+            result["environment"]["state"][..., :-1, :]
+        ], dim=1)
+        result["controller"] = {
+            k: state_estimation_history @ -self.L[k].mT
             for k in vars(self.problem_shape.controller)
-        })
+        }
         return result
 
 

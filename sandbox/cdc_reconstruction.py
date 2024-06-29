@@ -24,14 +24,17 @@ from model.convolutional import CnnPredictorLeastSquares
 from model.sequential import RnnPredictorPretrainAnalytical
 from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
 from model.zero_predictor import ZeroPredictor
-from system.simple.linear_time_invariant import LTISystem
+from system.simple.linear_time_invariant import LTISystem, MOPDistribution
 
 
 if __name__ == "__main__":
     output_dir = "in_context"
     output_fname = "result"
     
-    SHP = Namespace(S_D=10, I_D=1, O_D=5, input_enabled=False)
+    SHP = Namespace(S_D=10, problem_shape=Namespace(
+        environment=Namespace(observation=5),
+        controller=Namespace()
+    ))
     
     context_length = 250
     n_train_systems = 40000
@@ -151,7 +154,10 @@ if __name__ == "__main__":
                 f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt",
                 f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt"
             ))):
-                baseline_systems = utils.multi_map(lambda lsg: LinearSystemGroup(lsg.td().permute(1, 0), SHP.input_enabled), systems, dtype=LinearSystemGroup)
+                baseline_systems = utils.multi_map(
+                    lambda lsg: LTISystem(SHP.problem_shape, lsg.td().permute(1, 0)),
+                    systems, dtype=LTISystem
+                )
                 torch.save({
                     "train": baseline_systems
                 }, f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt")
@@ -179,10 +185,7 @@ if __name__ == "__main__":
         ARGS_BASELINE_CNN = loader.generate_args(SHP)
         ARGS_BASELINE_CNN.dataset.train = Namespace(
             dataset_size=1,
-            system=Namespace(
-                n_systems=1,
-                distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-            )
+            system=Namespace(n_systems=1)
         )
         ARGS_BASELINE_CNN.dataset.valid = ARGS_BASELINE_CNN.dataset.test = Namespace(
             total_sequence_length=context_length
@@ -259,7 +262,7 @@ if __name__ == "__main__":
     
     """ Result processing """
     print("Result processing" + "\n" + "-" * 120)
-    systems = LinearSystemGroup(systems.values[()].td().squeeze(0), SHP.input_enabled)
+    systems = LTISystem(SHP.problem_shape, systems.values[()].td().squeeze(0))
     dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
