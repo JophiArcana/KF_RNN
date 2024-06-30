@@ -1,7 +1,6 @@
-import copy
+import collections
 import json
 from argparse import Namespace
-from collections import OrderedDict
 from inspect import signature
 from typing import *
 
@@ -20,7 +19,7 @@ from model.base import Predictor
 
 
 # Optimizer configuration
-OptimDict: OrderedDict[str, type] = OrderedDict([
+OptimDict: OrderedDict[str, type] = collections.OrderedDict([
     ("SGD", optim.SGD),
     ("Adam", optim.AdamW),
     ("LBFGS", optim.LBFGS),
@@ -373,7 +372,8 @@ def _run_training(
 def _run_unit_training_experiment(
         HP: Namespace,
         info: Namespace,
-        checkpoint_paths: List[str]
+        checkpoint_paths: List[str],
+        initialization: TensorDict[str, torch.Tensor]
 ) -> Dict[str, TensorDict]:
 
     SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
@@ -388,6 +388,11 @@ def _run_unit_training_experiment(
         np.empty(EHP.model_shape), dtype=nn.Module
     )
     reference_module, ensembled_learned_kfs = utils.stack_module_arr(learned_kfs)
+
+    # TODO: Load the initialization
+    for k, v in initialization.items(include_nested=True, leaves_only=True):
+        if k in ensembled_learned_kfs.keys(include_nested=True, leaves_only=True):
+            ensembled_learned_kfs[k].data = v.expand_as(ensembled_learned_kfs[k])
 
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(

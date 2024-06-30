@@ -25,6 +25,7 @@ from tensordict import TensorDict
 from transformers import GPT2Config, GPT2Model
 
 from infrastructure import utils, loader
+from infrastructure.utils import PTR
 from infrastructure.experiment import *
 from infrastructure.settings import DTYPE, DEVICE
 from infrastructure.discrete_are import Riccati, solve_discrete_are
@@ -34,7 +35,7 @@ from model.transformer import *
 from model.zero_predictor import ZeroPredictor
 
 from system.simple.linear_time_invariant import LTISystem
-from system.actionable.linear_quadratic_gaussian import NoisyLQGSystem, LQGDistribution
+from system.actionable.linear_quadratic_gaussian import LQGDistribution
 
 
 
@@ -868,30 +869,9 @@ if __name__ == '__main__':
 
     """ Sandbox 18 """
 
-    # td = TensorDict({
-    #     ("a", "b"): torch.randn((5, 3, 7)),
-    #     ("a", "c"): torch.randn((5, 3, 9)),
-    #     "k": TensorDict({}, batch_size=(5, 3))
-    # }, batch_size=(5, 3))
-    # l = nn.Linear(2, 2)
-    # m = nn.Module()
-    # m.register_buffer("a", torch.randn((2, 7)))
-    # m.register_buffer("b", torch.randn((12, 5)))
-    # l.register_module("m", m)
-    # print(dict(l.named_buffers()))
-    # print(l.get_parameter("m"))
-    SHP = Namespace(
-        S_D=2, problem_shape=Namespace(
-            environment=Namespace(observation=1),
-            controller=Namespace(input=1),
-        ),
-        control_noise_std=0.2,
-    )
-    dist = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
-    sys = dist.sample(SHP, ())
-    ds = sys.generate_dataset(5, 12)
-    print(sys.td())
-    print(ds)
+    d = DimArray(np.recarray((), dtype=[("x", int), ("y", float)]))
+    print(d)
+    # print(d.take(indices={}).values[()].obj)
     # print(ds["environment", "observation"])
     # list(map(print, dir(TensorDict)))
     # list(map(print, dir(tensordict)))

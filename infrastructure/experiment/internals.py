@@ -141,10 +141,7 @@ def _construct_info_dict(
     result["systems"] = systems_arr
 
     # DONE: Check for saved dataset, otherwise sample and save datasets
-    if "dataset" in save_dict:
-        print(f"Dataset found for dataset type {ds_type}")
-        dataset_arr = save_dict["dataset"][ds_type]
-    else:
+    if "dataset" not in save_dict or ds_type not in save_dict["dataset"]:
         if hasattr(DHP, ds_type):
             print(f"Generating new dataset for dataset type {ds_type}")
             dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
@@ -178,6 +175,9 @@ def _construct_info_dict(
         else:
             print(f"Defaulting to train dataset for dataset type {ds_type}")
             dataset_arr = info_dict[TRAINING_DATASET_TYPES[0]]["dataset"]
+    else:
+        print(f"Dataset found for dataset type {ds_type}")
+        dataset_arr = save_dict["dataset"][ds_type]
     result["dataset"] = dataset_arr
     return result
 
