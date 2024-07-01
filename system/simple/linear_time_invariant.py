@@ -93,6 +93,16 @@ class LTISystem(SystemGroup):
             "target_observation_estimation": target_yh
         }, batch_size=x.shape[:-1])
 
+    @classmethod
+    def F_effective(cls, systems: TensorDict[str, torch.Tensor]) -> torch.Tensor:
+        if "B" in systems.keys() and "L" in systems.keys():
+            return systems["F"] - sum(
+                utils.complex(systems["B", k] @ systems["L", k])
+                for k in systems["B"].keys()
+            )
+        else:
+            return systems["F"]
+
 
 class MOPDistribution(LTISystem.Distribution):
     def __init__(self, F_mode: str, H_mode: str, W_std: float, V_std: float) -> None:

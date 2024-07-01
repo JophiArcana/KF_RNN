@@ -12,7 +12,14 @@ from tensordict import TensorDict
 from infrastructure import utils
 
 
-class Predictor(nn.Module):
+class Observer(nn.Module):
+    def __init__(self, modelArgs: Namespace):
+        super().__init__()
+        self.problem_shape = modelArgs.problem_shape
+        self.O_D: int = self.problem_shape.environment.observation
+
+
+class Predictor(Observer):
     @classmethod
     def impulse(cls,
                 kf_arr: np.ndarray[nn.Module],
@@ -141,11 +148,6 @@ class Predictor(nn.Module):
         cache.t += 1
         return error[None], terminate_condition()
 
-    def __init__(self, modelArgs: Namespace):
-        super().__init__()
-        self.problem_shape = modelArgs.problem_shape
-        self.O_D: int = self.problem_shape.environment.observation
-
     """ forward
         :parameter {
             'state': [B x S_D],
@@ -177,7 +179,9 @@ class Predictor(nn.Module):
     ) -> torch.Tensor:                                          # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
-class Controller(Predictor):
+class Controller(Observer):
+    def act(self):
+        pass
     pass
 
 

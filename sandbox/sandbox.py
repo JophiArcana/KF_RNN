@@ -34,7 +34,7 @@ from model.convolutional import *
 from model.transformer import *
 from model.zero_predictor import ZeroPredictor
 
-from system.simple.linear_time_invariant import LTISystem
+from system.simple.linear_time_invariant import LTISystem, MOPDistribution
 from system.actionable.linear_quadratic_gaussian import LQGDistribution
 
 
@@ -868,13 +868,14 @@ if __name__ == '__main__':
     # result, dataset = run_experiments(args, [], {}, save_experiment=False)
 
     """ Sandbox 18 """
-
-    d = DimArray(np.recarray((), dtype=[("x", int), ("y", float)]))
-    print(d)
-    # print(d.take(indices={}).values[()].obj)
-    # print(ds["environment", "observation"])
-    # list(map(print, dir(TensorDict)))
-    # list(map(print, dir(tensordict)))
+    SHP = Namespace(S_D=3, problem_shape=Namespace(
+        environment=Namespace(observation=2),
+        controller=Namespace(input=1, input2=3)
+    ))
+    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    systems = dist.sample(SHP, ())
+    print("B" in systems.td().keys())
+    print(LTISystem.F_effective(systems.td()))
 
 
 

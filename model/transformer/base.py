@@ -60,7 +60,6 @@ class TransformerPredictor(Predictor):
 
 class TransformerController(Controller, TransformerPredictor):
     def __init__(self, modelArgs: Namespace, S_D: int):
-        Controller.__init__(self, modelArgs)
         TransformerPredictor.__init__(self, modelArgs, S_D)
 
         self.input_out = nn.ParameterDict({

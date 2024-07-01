@@ -284,7 +284,7 @@ if __name__ == "__main__":
     
         # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_test_systems x test_dataset_size x context_length x O_D]
-        gpt2_output, transfoxl_output = M_transformer.output.observation_estimation.squeeze(2).squeeze(1)
+        gpt2_output, transfoxl_output = M_transformer.output.environment.observation.squeeze(2).squeeze(1)
         # -> [n_test_systems x test_dataset_size x context_length]
         gpt2_l, transfoxl_l = loss(gpt2_output), loss(transfoxl_output)
     
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]
         # -> [n_firs x n_test_systems x test_dataset_size x context_length x O_D]
-        cnn_output = torch.diagonal(M_baseline_cnn.output.observation_estimation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
+        cnn_output = torch.diagonal(M_baseline_cnn.output.environment.observation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
         cnn_l = loss(cnn_output)
         # [n_firs x context_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
@@ -307,7 +307,7 @@ if __name__ == "__main__":
         # -> [train.sequence_length x n_test_systems x test_dataset_size x O_D]
         # -> [n_test_systems x test_dataset_size x train.sequence_length x O_D]
         rnn_sequence_lengths = [*range(0, context_length, rnn_increment),]
-        rnn_output = M_baseline_rnn.output.observation_estimation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
+        rnn_output = M_baseline_rnn.output.environment.observation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
         # -> [train.sequence_length x n_test_systems x test_dataset_size]
         # -> [n_test_systems x test_dataset_size x train.sequence_length]

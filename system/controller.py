@@ -7,6 +7,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from system.module_group import ModuleGroup
+from model.base import Controller
 
 
 class ControllerGroup(ModuleGroup):
@@ -51,7 +52,7 @@ class LinearControllerGroup(ControllerGroup):
 class NNControllerGroup(ControllerGroup):
     def __init__(self,
                  problem_shape: Namespace,
-                 reference_module: nn.Module,
+                 reference_module: Controller,
                  ensembled_learned_controllers: TensorDict[str, torch.Tensor]
     ):
         ControllerGroup.__init__(self, problem_shape, ensembled_learned_controllers.shape)

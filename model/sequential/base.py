@@ -7,6 +7,7 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
+from system.simple.linear_time_invariant import LTISystem
 from model.base import Predictor, Controller
 
 
@@ -25,19 +26,19 @@ class SequentialPredictor(Predictor):
                          systems: TensorDict[str, torch.Tensor] # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         # Variable definition
-        Fh = utils.complex(kfs["F"])                                                            # [B... x S_Dh x S_Dh]
+        Fh_effective = utils.complex(LTISystem.F_effective(kfs))                                # [B... x S_Dh x S_Dh]
         Hh = utils.complex(kfs["H"])                                                            # [B... x O_D x S_Dh]
         Kh = utils.complex(kfs["K"])                                                            # [B... x S_Dh x O_D]
 
-        F = utils.complex(systems["F"])                                                         # [B... x S_D x S_D]
+        F_effective = utils.complex(LTISystem.F_effective(systems))                             # [B... x S_D x S_D]
         H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
         sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
         sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
 
-        S_D, O_D = F.shape[-1], H.shape[-2]
-        S_Dh = Fh.shape[-1]
+        S_D, O_D = F_effective.shape[-1], H.shape[-2]
+        S_Dh = Fh_effective.shape[-1]
 
-        M, Mh = F, Fh @ (torch.eye(S_Dh) - Kh @ Hh)                                             # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
+        M, Mh = F_effective, Fh_effective @ (torch.eye(S_Dh) - Kh @ Hh)                         # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
         L, V = torch.linalg.eig(M)                                                              # [B... x S_D], [B... x S_D x S_D]
         Lh, Vh = torch.linalg.eig(Mh)                                                           # [B... x S_Dh], [B... x S_Dh x S_Dh]
         Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                       # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
@@ -46,7 +47,7 @@ class SequentialPredictor(Predictor):
         sqrt_S_Ws = Vinv @ sqrt_S_W                                                             # [B... x S_D x S_D]
 
         # Precomputation
-        VhinvFhKh = Vhinv @ Fh @ Kh                                                             # [B... x S_Dh x O_D]
+        VhinvFhKh = Vhinv @ Fh_effective @ Kh                                                   # [B... x S_Dh x O_D]
         VhinvFhKhHs = VhinvFhKh @ Hs                                                            # [B... x S_Dh x S_D]
 
         # State evolution noise error
@@ -265,10 +266,9 @@ class SequentialPredictor(Predictor):
 
 class SequentialController(Controller, SequentialPredictor):
     def __init__(self, modelArgs: Namespace):
-        Controller.__init__(self, modelArgs)
         SequentialPredictor.__init__(self, modelArgs)
 
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, Dict[str, torch.Tensor]]:
         trace = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment"]["observation"]
 
