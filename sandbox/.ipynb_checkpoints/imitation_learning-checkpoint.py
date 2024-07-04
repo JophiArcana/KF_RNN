@@ -14,7 +14,7 @@ if os.getcwd() not in sys.path:
 from infrastructure import loader, utils
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
-from system.simple.base import SystemGroup
+from system.base import SystemGroup
 
 
 if __name__ == "__main__":

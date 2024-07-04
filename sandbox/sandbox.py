@@ -34,10 +34,7 @@ from model.convolutional import *
 from model.transformer import *
 from model.zero_predictor import ZeroPredictor
 
-from system.simple.linear_time_invariant import LTISystem, MOPDistribution
-from system.actionable.linear_quadratic_gaussian import LQGDistribution
-
-
+from system.linear_time_invariant import LTISystem, MOPDistribution
 
 
 if __name__ == '__main__':
@@ -870,12 +867,40 @@ if __name__ == '__main__':
     """ Sandbox 18 """
     SHP = Namespace(S_D=3, problem_shape=Namespace(
         environment=Namespace(observation=2),
-        controller=Namespace(input=1, input2=3)
+        controller=Namespace(input=2)
     ))
-    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    SHP2 = Namespace(S_D=3, problem_shape=Namespace(
+        environment=Namespace(observation=2),
+        controller=Namespace()
+    ))
+    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1, Q_scale=0.01, R_scale=1.0)
     systems = dist.sample(SHP, ())
-    print("B" in systems.td().keys())
-    print(LTISystem.F_effective(systems.td()))
+
+
+    sys_td = systems.td()
+    kf_td = TensorDict.from_dict({
+        **sys_td.get("environment", {}),
+        **sys_td.get("controller", {})
+    }, batch_size=sys_td.shape)
+
+    systems2 = LTISystem(SHP2.problem_shape, systems.td())
+    sys2_td = systems2.td()
+    kf2_td = TensorDict.from_dict({
+        **sys2_td.get("environment", {}),
+        **sys2_td.get("controller", {})
+    }, batch_size=sys2_td.shape)
+
+    print(sys_td["environment", "irreducible_loss"])
+    print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="imitation"))
+    print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="offline_reinforcement"))
+    print()
+    print(sys2_td["environment", "irreducible_loss"])
+    print(SequentialPredictor.analytical_error(kf2_td, sys2_td, mode="imitation"))
+    print(SequentialPredictor.analytical_error(kf2_td, sys2_td, mode="offline_reinforcement"))
+    raise Exception()
+    sys_td2 = TensorDict.from_dict(sys_td.to_dict())
+    del sys_td2["B"], sys_td2["controller", "L"]
+    print(SequentialPredictor.analytical_error(sys_td2, sys_td2))
 
 
 

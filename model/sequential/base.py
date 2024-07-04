@@ -7,7 +7,7 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from system.simple.linear_time_invariant import LTISystem
+from system.linear_time_invariant import LTISystem
 from model.base import Predictor, Controller
 
 
@@ -22,25 +22,42 @@ class SequentialPredictor(Predictor):
 
     @classmethod
     def analytical_error(cls,
-                         kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
-                         systems: TensorDict[str, torch.Tensor] # [B... x ...]
-    ) -> torch.Tensor:                                          # [B...]
+                         kfs: TensorDict[str, torch.Tensor],        # [B... x ...]
+                         systems: TensorDict[str, torch.Tensor],    # [B... x ...]
+                         mode: str = "imitation"                    # {"imitation", "offline_reinforcement"}
+    ) -> torch.Tensor:                                              # [B...]
         # Variable definition
-        Fh_effective = utils.complex(LTISystem.F_effective(kfs))                                # [B... x S_Dh x S_Dh]
+        controller_keys = kfs.get("B", {}).keys()
+        if mode == "imitation":                                     # [B... x S_Dh x S_Dh]
+            # TODO: Need to do the derivation where u is fixed but B is learned, which is much harder than the case where u is learned as a result of L
+            Fh_effective = utils.complex(kfs["F"])
+        elif mode == "offline_reinforcement":
+            Fh_effective = utils.complex(kfs["F"] - sum(kfs["B", k] @ kfs["L", k] for k in controller_keys))
+        else:
+            raise ValueError(mode)
+
         Hh = utils.complex(kfs["H"])                                                            # [B... x O_D x S_Dh]
         Kh = utils.complex(kfs["K"])                                                            # [B... x S_Dh x O_D]
 
-        F_effective = utils.complex(LTISystem.F_effective(systems))                             # [B... x S_D x S_D]
-        H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
-        sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
+        F_effective = utils.complex(systems["F_effective"])                                     # [B... x S_D x S_D]
+        H = utils.complex(systems["environment", "H"])                                          # [B... x O_D x S_D]
+        sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                            # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                            # [B... x O_D x O_D]
+
+        # print("Fh_effective:", Fh_effective.norm().item())
+        # print("Hh:", Hh.norm().item())
+        # print("Kh:", Kh.norm().item())
+        # print("F_effective:", F_effective.norm().item())
+        # print("H:", H.norm().item())
+        # print("sqrt_S_W:", sqrt_S_W.norm().item())
+        # print("sqrt_S_V:", sqrt_S_V.norm().item())
 
         S_D, O_D = F_effective.shape[-1], H.shape[-2]
         S_Dh = Fh_effective.shape[-1]
 
         M, Mh = F_effective, Fh_effective @ (torch.eye(S_Dh) - Kh @ Hh)                         # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
-        L, V = torch.linalg.eig(M)                                                              # [B... x S_D], [B... x S_D x S_D]
-        Lh, Vh = torch.linalg.eig(Mh)                                                           # [B... x S_Dh], [B... x S_Dh x S_Dh]
+        D, V = torch.linalg.eig(M)                                                              # [B... x S_D], [B... x S_D x S_D]
+        Dh, Vh = torch.linalg.eig(Mh)                                                           # [B... x S_Dh], [B... x S_Dh x S_Dh]
         Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                       # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
         
         Hs, Hhs = H @ V, Hh @ Vh                                                                # [B... x O_D x S_D], [B... x O_D x S_Dh]
@@ -48,22 +65,29 @@ class SequentialPredictor(Predictor):
 
         # Precomputation
         VhinvFhKh = Vhinv @ Fh_effective @ Kh                                                   # [B... x S_Dh x O_D]
-        VhinvFhKhHs = VhinvFhKh @ Hs                                                            # [B... x S_Dh x S_D]
+
+        if mode == "imitation":                                                                 # [B... x S_Dh x S_D]
+            VhinvFhKhHs_effective = Vhinv @ (Fh_effective @ Kh @ H - sum(
+                kfs["B", k] @ systems["controller", "L", k]
+                for k in controller_keys
+            )) @ V
+        elif mode == "offline_reinforcement":
+            VhinvFhKhHs_effective = VhinvFhKh @ Hs
 
         # State evolution noise error
         # Highlight
         ws_current_err = (Hs @ sqrt_S_Ws).norm(dim=(-2, -1)) ** 2                               # [B...]
 
-        cll = L.unsqueeze(-1) * L.unsqueeze(-2)                                                 # [B... x S_D x S_D]
+        cll = D.unsqueeze(-1) * D.unsqueeze(-2)                                                 # [B... x S_D x S_D]
         # DONE: t1 x t1
         # Highlight
         t1t1_w = (Hs.mT @ Hs) * (cll / (1 - cll))                                               # [B... x S_D x S_D]
 
         # DONE: t1 x t2, t2 x t1
-        t1_w_M = L.unsqueeze(-2)                                                                # [B... x 1 x S_D]
+        t1_w_M = D.unsqueeze(-2)                                                                # [B... x 1 x S_D]
         t1_w_A = Hhs.mT @ Hs                                                                    # [B... x S_Dh x S_D]
-        t2_w_N1, t2_w_N2 = Lh.unsqueeze(-1), L.unsqueeze(-2)                                    # [B... x S_Dh x 1], [B... x 1 x S_D]
-        t2_w_B = VhinvFhKhHs / (t2_w_N1 - t2_w_N2)                                              # [B... x S_Dh x S_D]
+        t2_w_N1, t2_w_N2 = Dh.unsqueeze(-1), D.unsqueeze(-2)                                    # [B... x S_Dh x 1], [B... x 1 x S_D]
+        t2_w_B = VhinvFhKhHs_effective / (t2_w_N1 - t2_w_N2)                                    # [B... x S_Dh x S_D]
 
         _t1_w_A, _t1_w_M = t1_w_A.unsqueeze(-1), t1_w_M.unsqueeze(-1)                           # [... x S_Dh x S_D x 1], [... x 1 x S_D x 1]
         _t2_w_B = t2_w_B.unsqueeze(-2)                                                          # [... x S_Dh x 1 x S_D]
@@ -107,7 +131,7 @@ class SequentialPredictor(Predictor):
         v_current_err = sqrt_S_V.norm(dim=(-2, -1)) ** 2                                        # [B...]
 
         v_C = t2t2_w_C                                                                          # [B... x S_Dh x S_Dh]
-        v_K = 1 / (1 - Lh.unsqueeze(-1) * Lh.unsqueeze(-2))                                     # [B... x S_Dh x S_Dh]
+        v_K = 1 / (1 - Dh.unsqueeze(-1) * Dh.unsqueeze(-2))                                     # [B... x S_Dh x S_Dh]
 
         # Highlight
         _sqrt_S_V = VhinvFhKh @ sqrt_S_V                                                        # [B... x S_Dh x O_D]

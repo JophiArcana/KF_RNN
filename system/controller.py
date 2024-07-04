@@ -15,9 +15,9 @@ class ControllerGroup(ModuleGroup):
         ModuleGroup.__init__(self, group_shape)
         self.problem_shape = problem_shape
 
-    def forward(self,
-                history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:                 # [N... x B x ...]
+    def act(self,
+            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
         raise NotImplementedError()
 
     def get_zero_knowledge_action(self, batch_size) -> TensorDict[str, torch.Tensor]:
@@ -27,11 +27,11 @@ class ControllerGroup(ModuleGroup):
         }, batch_size=(*self.group_shape, batch_size))  # [N... x B x ...]
 
 
-class DefaultControllerGroup(ControllerGroup):
-    def forward(self,
-                history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:                 # [N... x B x ...]
-        return TensorDict({}, batch_size=history.shape[:-1])
+class ZeroControllerGroup(ControllerGroup):
+    def act(self,
+            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+        return history["controller"][..., -1].apply(torch.zeros_like)
 
 
 class LinearControllerGroup(ControllerGroup):
@@ -39,9 +39,9 @@ class LinearControllerGroup(ControllerGroup):
         ControllerGroup.__init__(self, problem_shape, group_shape)
         self.L = nn.Module()
 
-    def forward(self,
-                history: TensorDict[str, torch.Tensor]      # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
+    def act(self,
+            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
         state = history[..., -1]["environment", "state"]    # [N... x B x S_D]
         return TensorDict({
             k: state @ -getattr(self.L, k).mT
@@ -59,9 +59,9 @@ class NNControllerGroup(ControllerGroup):
         self.reference_module = reference_module
         self.ensembled_learned_controllers = ensembled_learned_controllers
 
-    def forward(self,
-                history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:                 # [N... x B x ...]
+    def act(self,
+            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
         return TensorDict(utils.run_module_arr(
             self.reference_module,
             self.ensembled_learned_controllers,

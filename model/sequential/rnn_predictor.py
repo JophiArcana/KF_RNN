@@ -34,13 +34,13 @@ class RnnPredictorAnalytical(RnnPredictor):
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs,
-            lambda exclusive_: (
-                exclusive_.train_info.systems.td(),
-                Predictor.evaluate_run(
-                    exclusive_.train_info.dataset.obj["environment", "target_observation_estimation"],
-                    exclusive_.train_info.dataset.obj, ("environment", "observation")
-                ).squeeze(-1)
-            ), cache
+            lambda exclusive_: ({
+                **exclusive_.train_info.systems.td()["environment"],
+                **exclusive_.train_info.systems.td()["controller"]
+            }, Predictor.evaluate_run(
+                exclusive_.train_info.dataset.obj["environment", "target_observation_estimation"],
+                exclusive_.train_info.dataset.obj, ("environment", "observation")
+            ).squeeze(-1)), cache
         )
 
     @classmethod

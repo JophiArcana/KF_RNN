@@ -10,7 +10,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from model.base import Predictor
-from system.simple.base import SystemGroup
+from system.base import SystemGroup
 
 
 MetricVars = Tuple[Namespace, TensorDict[str, torch.Tensor]]

@@ -6,28 +6,38 @@ import torch.nn.functional as Fn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from system.simple.linear_time_invariant import LTISystem
+from system.linear_time_invariant import LTISystem
 from model.base import Predictor
 
 
 class ConvolutionalPredictor(Predictor):
     @classmethod
     def analytical_error(cls,
-                         kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
-                         systems: TensorDict[str, torch.Tensor] # [B... x ...]
-    ) -> torch.Tensor:                                          # [B...]
+                         kfs: TensorDict[str, torch.Tensor],        # [B... x ...]
+                         systems: TensorDict[str, torch.Tensor],    # [B... x ...]
+                         mode: str = "imitation"                    # {"imitation", "offline_reinforcement"}
+    ) -> torch.Tensor:                                              # [B...]
         # Variable definition
+        controller_keys = kfs.get("B", {}).keys()
+        if mode == "imitation":                                                                 # [B... x S_Dh x S_Dh]
+            # TODO: Need to do the derivation where u is fixed but B is learned, which is much harder than the case where u is learned as a result of L
+            Fh_effective = utils.complex(kfs["F"])
+        elif mode == "offline_reinforcement":
+            Fh_effective = utils.complex(kfs["F"] - sum(kfs["B", k] @ kfs["L", k] for k in controller_keys))
+        else:
+            raise ValueError(mode)
+
         Q = utils.complex(kfs["observation_IR"])                                                # [B... x O_D x R x O_D]
         Q = Q.permute(*range(Q.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x O_D]
 
-        F_effective = utils.complex(LTISystem.F_effective(systems))                             # [B... x S_D x S_D]
+        F_effective = utils.complex(systems["F_effective"])                                     # [B... x S_D x S_D]
         H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
         sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
         sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
 
         R = Q.shape[-3]
 
-        L, V = torch.linalg.eig(F_effective)                                                    # [B... x S_D], [B... x S_D x S_D]
+        D, V = torch.linalg.eig(F_effective)                                                    # [B... x S_D], [B... x S_D x S_D]
         Vinv = torch.inverse(V)                                                                 # [B... x S_D x S_D]
 
         Hs = H @ V                                                                              # [B... x O_D x S_D]
@@ -37,21 +47,21 @@ class ConvolutionalPredictor(Predictor):
         # Highlight
         ws_current_err = (Hs @ sqrt_S_Ws).norm(dim=(-2, -1)) ** 2                               # [B...]
 
-        L_pow_series = L.unsqueeze(-2) ** torch.arange(1, R + 1)[:, None]                       # [B... x R x S_D]
-        L_pow_series_inv = 1. / L_pow_series                                                    # [B... x R x S_D]
+        D_pow_series = D.unsqueeze(-2) ** torch.arange(1, R + 1)[:, None]                       # [B... x R x S_D]
+        D_pow_series_inv = 1. / D_pow_series                                                    # [B... x R x S_D]
 
-        QlHsLl = (Q @ Hs.unsqueeze(-3)) * L_pow_series_inv.unsqueeze(-2)                        # [B... x R x O_D x S_D]
-        Hs_cumQlHsLl = Hs.unsqueeze(-3) - torch.cumsum(QlHsLl, dim=-3)                          # [B... x R x O_D x S_D]
-        Hs_cumQlHsLl_Lk = Hs_cumQlHsLl * L_pow_series.unsqueeze(-2)                             # [B... x R x O_D x S_D]
-
-        # Highlight
-        ws_recent_err = (Hs_cumQlHsLl_Lk @ sqrt_S_Ws.unsqueeze(-3)).flatten(-3, -1).norm(dim=-1) ** 2   # [B...]
-
-        Hs_cumQlHsLl_R = Hs_cumQlHsLl[..., -1, :, :]                                            # [B... x O_D x S_D]
-        cll = L.unsqueeze(-1) * L.unsqueeze(-2)                                                 # [B... x S_D x S_D]
+        QlHsDl = (Q @ Hs.unsqueeze(-3)) * D_pow_series_inv.unsqueeze(-2)                        # [B... x R x O_D x S_D]
+        Hs_cumQlHsDl = Hs.unsqueeze(-3) - torch.cumsum(QlHsDl, dim=-3)                          # [B... x R x O_D x S_D]
+        Hs_cumQlHsDl_Dk = Hs_cumQlHsDl * D_pow_series.unsqueeze(-2)                             # [B... x R x O_D x S_D]
 
         # Highlight
-        _ws_geometric = (Hs_cumQlHsLl_R.mT @ Hs_cumQlHsLl_R) * ((cll ** (R + 1)) / (1 - cll))   # [B... x S_D x S_D]
+        ws_recent_err = (Hs_cumQlHsDl_Dk @ sqrt_S_Ws.unsqueeze(-3)).flatten(-3, -1).norm(dim=-1) ** 2   # [B...]
+
+        Hs_cumQlHsDl_R = Hs_cumQlHsDl[..., -1, :, :]                                            # [B... x O_D x S_D]
+        cll = D.unsqueeze(-1) * D.unsqueeze(-2)                                                 # [B... x S_D x S_D]
+
+        # Highlight
+        _ws_geometric = (Hs_cumQlHsDl_R.mT @ Hs_cumQlHsDl_R) * ((cll ** (R + 1)) / (1 - cll))   # [B... x S_D x S_D]
         ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ _ws_geometric @ sqrt_S_Ws)          # [B...]
 
         # Observation noise error

@@ -143,12 +143,15 @@ class CnnPredictorAnalytical(CnnPredictor):
         return CnnPredictorAnalytical.train_analytical,
 
     def _analytical_initialization(self, system_state_dict: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        F, B, H, K = map(system_state_dict.__getitem__, ("F", "B", "H", "K"))
+        F, B, H, K = map(system_state_dict["environment"].__getitem__, ("F", "B", "H", "K"))
         S_D = F.shape[0]
 
         powers = utils.pow_series(F @ (torch.eye(S_D) - K @ H), self.ir_length)                 # [R x S_D x S_D]
         return {
-            "input_IR": (H @ powers @ B).permute(2, 0, 1),                                      # [I_D x R x O_D]
+            "input_IR": {
+                k: (H @ powers @ B[k]).permute(2, 0, 1)                                         # [I_D x R x O_D]
+                for k in vars(self.problem_shape.controller)
+            },
             "observation_IR": (H @ powers @ (F @ K)).permute(2, 0, 1)                           # [O_D x R x O_D]
         }, torch.full((), torch.nan)
 

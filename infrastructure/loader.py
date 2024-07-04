@@ -1,4 +1,3 @@
-import copy
 from argparse import Namespace
 
 import numpy as np
@@ -8,7 +7,7 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.settings import DEVICE
-from system.simple.linear_time_invariant import LTISystem
+from system.linear_time_invariant import LTISystem
 
 
 """

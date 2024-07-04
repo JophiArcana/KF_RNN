@@ -12,11 +12,10 @@ from tensordict import TensorDict
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
-from infrastructure import loader, utils
+from infrastructure import loader
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
-from system.simple.base import SystemGroup
-from system.actionable.base import ActionableSystemGroup
+from system.base import SystemGroup
 from system.controller import NNControllerGroup
 
 

@@ -8,7 +8,7 @@ from dimarray import DimArray, Dataset
 from infrastructure import utils
 from infrastructure.experiment.static import *
 from infrastructure.settings import DEVICE
-from system.simple.base import SystemGroup
+from system.base import SystemGroup
 
 
 def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str], bool]:

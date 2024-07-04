@@ -310,13 +310,15 @@ def hash_namespace(n: Namespace) -> str:
 def batch_trace(x: torch.Tensor) -> torch.Tensor:
     return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
 
-def array_of(o: object) -> np.ndarray:
+T = TypeVar("T")
+def array_of(o: T) -> np.ndarray[T]:
     M = np.array(None, dtype=object)
     M[()] = o
     return M
 
-def complex(t: torch.Tensor) -> torch.Tensor:
-    return torch.complex(t, torch.zeros_like(t))
+def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
+    fn = lambda t_: torch.complex(t_, torch.zeros_like(t_))
+    return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
 
 def nested_type(o: object) -> object:
     if type(o) in [list, tuple]:

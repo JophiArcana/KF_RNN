@@ -1,4 +1,3 @@
-import copy
 import os
 import sys
 from argparse import Namespace
@@ -24,7 +23,7 @@ from model.convolutional import CnnPredictorLeastSquares
 from model.sequential import RnnPredictorPretrainAnalytical
 from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
 from model.zero_predictor import ZeroPredictor
-from system.simple.linear_time_invariant import LTISystem, MOPDistribution
+from system.linear_time_invariant import LTISystem, MOPDistribution
 
 
 if __name__ == "__main__":

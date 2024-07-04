@@ -14,7 +14,7 @@ from infrastructure import loader, utils
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from infrastructure.experiment import *
-from system.simple.linear_time_invariant import LTISystem, MOPDistribution
+from system.linear_time_invariant import LTISystem, MOPDistribution
 from model.zero_predictor import ZeroPredictor
 from model.sequential import RnnPredictor, RnnPredictorPretrainAnalytical
 
