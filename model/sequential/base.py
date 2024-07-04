@@ -35,14 +35,13 @@ class SequentialPredictor(Predictor):
             Fh_effective = utils.complex(kfs["F"] - sum(kfs["B", k] @ kfs["L", k] for k in controller_keys))
         else:
             raise ValueError(mode)
-
         Hh = utils.complex(kfs["H"])                                                            # [B... x O_D x S_Dh]
         Kh = utils.complex(kfs["K"])                                                            # [B... x S_Dh x O_D]
 
-        F_effective = utils.complex(systems["F_effective"])                                     # [B... x S_D x S_D]
-        H = utils.complex(systems["environment", "H"])                                          # [B... x O_D x S_D]
-        sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                            # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                            # [B... x O_D x O_D]
+        F = utils.complex(systems["effective", "F"])                                            # [B... x S_D x S_D]
+        H = utils.complex(systems["effective", "H"])                                            # [B... x O_D x S_D]
+        sqrt_S_W = utils.complex(systems["effective", "sqrt_S_W"])                              # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["effective", "sqrt_S_V"])                              # [B... x O_D x O_D]
 
         # print("Fh_effective:", Fh_effective.norm().item())
         # print("Hh:", Hh.norm().item())
@@ -52,10 +51,10 @@ class SequentialPredictor(Predictor):
         # print("sqrt_S_W:", sqrt_S_W.norm().item())
         # print("sqrt_S_V:", sqrt_S_V.norm().item())
 
-        S_D, O_D = F_effective.shape[-1], H.shape[-2]
+        S_D, O_D = F.shape[-1], H.shape[-2]
         S_Dh = Fh_effective.shape[-1]
 
-        M, Mh = F_effective, Fh_effective @ (torch.eye(S_Dh) - Kh @ Hh)                         # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
+        M, Mh = F, Fh_effective @ (torch.eye(S_Dh) - Kh @ Hh)                                   # [B... x S_D x S_D], [B... x S_Dh x S_Dh]
         D, V = torch.linalg.eig(M)                                                              # [B... x S_D], [B... x S_D x S_D]
         Dh, Vh = torch.linalg.eig(Mh)                                                           # [B... x S_Dh], [B... x S_Dh x S_Dh]
         Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                       # [B... x S_D x S_D], [B... x S_Dh x S_Dh]

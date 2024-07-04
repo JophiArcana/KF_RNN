@@ -8,7 +8,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 from infrastructure.discrete_are import solve_discrete_are
 from system.base import SystemGroup, SystemDistribution
-from system.controller import LinearControllerGroup
+from system.controller import ControllerGroup, LinearControllerGroup
 from system.environment import LTIEnvironment
 
 
@@ -53,9 +53,37 @@ class LTISystem(SystemGroup):
                              LQGController(problem_shape, params, control_noise_std)
         )
 
-        self.register_buffer("F_effective", self.environment.F - sum(
+        # SECTION: Set up the effective system that produces the same distribution of data, but without controls.
+        F = self.environment.F
+        H, K = self.environment.H, self.environment.K
+        KH = self.environment.K @ H
+
+        zeros = torch.zeros((*self.group_shape, self.environment.S_D, self.environment.S_D))
+        BL = zeros + sum(
             self.environment.B[k] @ getattr(self.controller.L, k)
             for k in vars(self.problem_shape.controller)
+        )
+
+        self.effective = LTIEnvironment(Namespace(
+                environment=self.problem_shape.environment,
+                controller=Namespace()
+            ), TensorDict({
+                "F": torch.cat([
+                    torch.cat([F, -BL], dim=-1),
+                    torch.cat([KH, (torch.eye(self.environment.S_D) - KH) @ (F - BL)], dim=-1)
+                ], dim=-2),
+                "H": torch.cat([H, torch.zeros_like(H)], dim=-1),
+                "sqrt_S_W": utils.sqrtm(torch.cat([
+                    torch.cat([self.environment.S_W, zeros], dim=-1),
+                    torch.cat([zeros, K @ self.environment.S_V @ K.mT], dim=-1)
+                ], dim=-2)),
+                "sqrt_S_V": self.environment.sqrt_S_V
+            }, batch_size=self.group_shape)
+        )
+
+        self.register_buffer("irreducible_loss", self.environment.irreducible_loss)
+        self.register_buffer("zero_predictor_loss", utils.batch_trace(
+            self.effective.H @ self.effective.S_state_inf @ self.effective.H.mT + self.effective.S_V
         ))
 
 
@@ -65,7 +93,8 @@ class MOPDistribution(LTISystem.Distribution):
                  H_mode: str,
                  W_std: float,
                  V_std: float,
-                 Q_scale: float = 1.0,
+                 B_scale: float = 0.1,
+                 Q_scale: float = 0.1,
                  R_scale: float = 1.0
     ) -> None:
         LTISystem.Distribution.__init__(self)
@@ -76,7 +105,7 @@ class MOPDistribution(LTISystem.Distribution):
         self.H_mode = H_mode
 
         self.W_std, self.V_std = W_std, V_std
-        self.Q_scale, self.R_scale = Q_scale, R_scale
+        self.B_scale, self.Q_scale, self.R_scale = B_scale, Q_scale, R_scale
 
     def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
@@ -87,7 +116,7 @@ class MOPDistribution(LTISystem.Distribution):
         F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values.unsqueeze(-1).unsqueeze(-2))
 
         B = TensorDict({
-            k: torch.randn((*shape, S_D, I_D)) / (3 ** 0.5)
+            k: self.B_scale * torch.randn((*shape, S_D, I_D)) / (3 ** 0.5)
             for k, I_D in vars(SHP.problem_shape.controller).items()
         }, batch_size=(*shape, S_D))
 

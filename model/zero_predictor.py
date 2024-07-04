@@ -14,10 +14,10 @@ class ZeroPredictor(Predictor):
                          systems: TensorDict[str, torch.Tensor] # [B... x ...]
     ) -> torch.Tensor:                                          # [B...]
         # Variable definition
-        F = utils.complex(systems["F"])                                                         # [B... x S_D x S_D]
-        H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
-        sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
+        F = utils.complex(systems["effective", "F"])                                            # [B... x S_D x S_D]
+        H = utils.complex(systems["effective", "H"])                                            # [B... x O_D x S_D]
+        sqrt_S_W = utils.complex(systems["effective", "sqrt_S_W"])                              # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["effective", "sqrt_S_V"])                              # [B... x O_D x O_D]
 
         M = F                                                                                   # [B... x S_D x S_D]
         L, V = torch.linalg.eig(M)                                                              # [B... x S_D], [B... x S_D x S_D]

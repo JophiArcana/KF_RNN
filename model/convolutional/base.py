@@ -30,14 +30,14 @@ class ConvolutionalPredictor(Predictor):
         Q = utils.complex(kfs["observation_IR"])                                                # [B... x O_D x R x O_D]
         Q = Q.permute(*range(Q.ndim - 3), -2, -1, -3)                                           # [B... x R x O_D x O_D]
 
-        F_effective = utils.complex(systems["F_effective"])                                     # [B... x S_D x S_D]
-        H = utils.complex(systems["H"])                                                         # [B... x O_D x S_D]
-        sqrt_S_W = utils.complex(systems["sqrt_S_W"])                                           # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["sqrt_S_V"])                                           # [B... x O_D x O_D]
+        F = utils.complex(systems["effective", "F"])                                            # [B... x S_D x S_D]
+        H = utils.complex(systems["effective", "H"])                                            # [B... x O_D x S_D]
+        sqrt_S_W = utils.complex(systems["effective", "sqrt_S_W"])                              # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["effective", "sqrt_S_V"])                              # [B... x O_D x O_D]
 
         R = Q.shape[-3]
 
-        D, V = torch.linalg.eig(F_effective)                                                    # [B... x S_D], [B... x S_D x S_D]
+        D, V = torch.linalg.eig(F)                                                              # [B... x S_D], [B... x S_D x S_D]
         Vinv = torch.inverse(V)                                                                 # [B... x S_D x S_D]
 
         Hs = H @ V                                                                              # [B... x O_D x S_D]

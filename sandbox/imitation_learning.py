@@ -20,7 +20,7 @@ from system.controller import NNControllerGroup
 
 
 if __name__ == "__main__":
-    from system.actionable.linear_quadratic_gaussian import LQGSystem, LQGDistribution
+    from system.linear_time_invariant import LTISystem, MOPDistribution
     from model.sequential.rnn_controller import RnnController
 
     # SECTION: Run imitation learning experiment across different control noises
@@ -32,17 +32,17 @@ if __name__ == "__main__":
     )
     hp_name = "control_noise_std"
 
-    dist_ = LQGDistribution("gaussian", "gaussian", 0.1, 0.1, 1.0, 1.0)
+    dist_ = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     lqg_ = dist_.sample(SHP, ())
 
-    class ConstantLQGDistribution(LQGSystem.Distribution):
+    class ConstantLQGDistribution(LTISystem.Distribution):
         def __init__(self, params: TensorDict[str, torch.Tensor], cns: float):
-            LQGSystem.Distribution.__init__(self)
+            LTISystem.Distribution.__init__(self)
             self.params = params
             self.control_noise_std = cns
 
         def sample(self, SHP: Namespace, shape: Tuple[int, ...]) -> SystemGroup:
-            return LQGSystem(SHP.problem_shape, self.params.expand(*shape), self.control_noise_std)
+            return LTISystem(SHP.problem_shape, self.params.expand(*shape), self.control_noise_std)
 
     # Experiment setup
     exp_name = "ControlNoiseComparison"
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     }, save_experiment=True)
 
     # DONE: After running experiment, refresh LQG because the saved system overrides the one sampled at the start
-    lqg = LQGSystem(SHP.problem_shape, systems.values[()].td().squeeze(1).squeeze(0))
+    lqg = LTISystem(SHP.problem_shape, systems.values[()].td().squeeze(1).squeeze(0))
     dist_list = [ConstantLQGDistribution(lqg.td(), cns) for cns in control_noise_std]
     lqg_list = [dist_.sample(SHP, ()) for dist_ in dist_list]
 

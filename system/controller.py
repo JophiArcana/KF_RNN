@@ -42,7 +42,7 @@ class LinearControllerGroup(ControllerGroup):
     def act(self,
             history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
     ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
-        state = history[..., -1]["environment", "state"]    # [N... x B x S_D]
+        state = history[..., -1]["environment", "target_state_estimation"]  # [N... x B x S_D]
         return TensorDict({
             k: state @ -getattr(self.L, k).mT
             for k in vars(self.problem_shape.controller)

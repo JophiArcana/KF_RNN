@@ -54,8 +54,6 @@ class LTIEnvironment(EnvironmentGroup):
         self.register_buffer("S_state_inf", (V @ (
             (Vinv @ torch.complex(self.S_W, torch.zeros_like(self.S_W)) @ Vinv.mT) / (1 - L.unsqueeze(-1) * L.unsqueeze(-2))
         ) @ V.mT).real)                                                                                             # [N... x S_D x S_D]
-        self.register_buffer("S_observation_inf", self.H @ self.S_state_inf @ self.H.mT + self.S_V)                 # [N... x S_D x S_D]
-        self.register_buffer("zero_predictor_loss", utils.batch_trace(self.S_observation_inf))                      # [N...]
 
         S_state_inf_intermediate = solve_discrete_are(self.F.mT, self.H.mT, self.S_W, self.S_V)                     # [N... x S_D x S_D]
         self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
