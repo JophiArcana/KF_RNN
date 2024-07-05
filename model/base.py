@@ -115,8 +115,8 @@ class Predictor(Observer):
                               ensembled_learned_kfs: TensorDict[str, torch.Tensor]
     ) -> TensorDict[str, torch.Tensor]:
         reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
-        for k, v in ensembled_learned_kfs.items():
-            t = utils.rgetattr(reference_module, k)
+        for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
+            t = utils.rgetattr(reference_module, k if isinstance(k, str) else ".".join(k))
             if isinstance(t, nn.Parameter):
                 reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
             else:

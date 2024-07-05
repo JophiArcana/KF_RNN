@@ -869,10 +869,6 @@ if __name__ == '__main__':
         environment=Namespace(observation=2),
         controller=Namespace(input=2)
     ))
-    SHP2 = Namespace(S_D=3, problem_shape=Namespace(
-        environment=Namespace(observation=2),
-        controller=Namespace()
-    ))
     # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
     # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
 
@@ -884,8 +880,8 @@ if __name__ == '__main__':
     kf_td = TensorDict.from_dict({
         **sys_td.get("environment", {}),
         **sys_td.get("controller", {})
-    }, batch_size=sys_td.shape).apply(torch.zeros_like)
-    kf_td["F"] = 0.9 * torch.eye(kf_td["F"].shape[-1])
+    }, batch_size=sys_td.shape) # .apply(torch.zeros_like)
+    # kf_td["F"] = 0.9 * torch.eye(kf_td["F"].shape[-1])
 
     # systems2 = LTISystem(SHP2.problem_shape, systems.td())
     # sys2_td = systems2.td()
@@ -894,11 +890,11 @@ if __name__ == '__main__':
     #     **sys2_td.get("controller", {})
     # }, batch_size=sys2_td.shape)
 
-    print(sys_td["irreducible_loss"])
-    print(sys_td["zero_predictor_loss"])
-    # SequentialPredictor.analytical_error(kf_td, sys_td, mode="imitation")
-    # ZeroPredictor.analytical_error(None, sys_td)
-    # print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="offline_reinforcement"))
+    print(sys_td["environment", "irreducible_loss"])
+    # print(sys_td["zero_predictor_loss"])
+    print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="imitation"))
+    # print(ZeroPredictor.analytical_error(None, sys_td))
+    print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="offline_reinforcement"))
     # print()
     # print(sys2_td["environment", "irreducible_loss"])
     # print(SequentialPredictor.analytical_error(kf2_td, sys2_td, mode="imitation"))

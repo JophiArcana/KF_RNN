@@ -90,9 +90,9 @@ def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, Tens
             return t.unflatten(dim, shape)
 
     for k, v in params.items():
-        td[k] = nn.Parameter(_unflatten(v, 0, module_arr.shape), requires_grad=v.requires_grad)
+        td[(*k.split("."),)] = nn.Parameter(_unflatten(v, 0, module_arr.shape), requires_grad=v.requires_grad)
     for k, v in buffers.items():
-        td[k] = _unflatten(v, 0, module_arr.shape)
+        td[(*k.split("."),)] = _unflatten(v, 0, module_arr.shape)
 
     return module_arr.ravel()[0].to(DEVICE), td.to(DEVICE)
 
@@ -115,6 +115,11 @@ def run_module_arr(
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     if "TensorDict" in type(args).__name__:
         args = args.to_dict()
+
+    module_td = TensorDict({
+        k if isinstance(k, str) else ".".join(k): v
+        for k, v in module_td.items(include_nested=True, leaves_only=True)
+    }, batch_size=module_td.shape)
 
     if np.prod(module_td.shape) == 1:
         flat_args, args_spec = tree_flatten(args)

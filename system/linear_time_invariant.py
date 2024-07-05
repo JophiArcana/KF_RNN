@@ -56,32 +56,48 @@ class LTISystem(SystemGroup):
         # SECTION: Set up the effective system that produces the same distribution of data, but without controls.
         F = self.environment.F
         H, K = self.environment.H, self.environment.K
-        KH = self.environment.K @ H
 
+        I = torch.eye(self.environment.S_D)
         zeros = torch.zeros((*self.group_shape, self.environment.S_D, self.environment.S_D))
+
+        KH = self.environment.K @ H
         BL = zeros + sum(
             self.environment.B[k] @ getattr(self.controller.L, k)
             for k in vars(self.problem_shape.controller)
         )
 
-        self.effective = LTIEnvironment(Namespace(
+        self.effective = LTIEnvironment(
+            Namespace(
                 environment=self.problem_shape.environment,
                 controller=Namespace()
             ), TensorDict({
+                # "F": torch.cat([
+                #     torch.cat([F, -BL], dim=-1),
+                #     torch.cat([KH, (torch.eye(self.environment.S_D) - KH) @ (F - BL)], dim=-1)
+                # ], dim=-2),
                 "F": torch.cat([
                     torch.cat([F, -BL], dim=-1),
-                    torch.cat([KH, (torch.eye(self.environment.S_D) - KH) @ (F - BL)], dim=-1)
+                    torch.cat([KH @ F, F - KH @ F - BL], dim=-1)
                 ], dim=-2),
                 "H": torch.cat([H, torch.zeros_like(H)], dim=-1),
+                # "sqrt_S_W": utils.sqrtm(torch.cat([
+                #     torch.cat([self.environment.S_W, zeros], dim=-1),
+                #     torch.cat([zeros, K @ self.environment.S_V @ K.mT], dim=-1)
+                # ], dim=-2)),
                 "sqrt_S_W": utils.sqrtm(torch.cat([
-                    torch.cat([self.environment.S_W, zeros], dim=-1),
-                    torch.cat([zeros, K @ self.environment.S_V @ K.mT], dim=-1)
+                    torch.cat([self.environment.S_W, self.environment.S_W @ KH.mT], dim=-1),
+                    torch.cat([KH @ self.environment.S_W, K @ (H @ self.environment.S_W @ H.mT + self.environment.S_V) @ K.mT], dim=-1)
                 ], dim=-2)),
                 "sqrt_S_V": self.environment.sqrt_S_V
             }, batch_size=self.group_shape)
         )
+        effective_L = nn.Module()
+        for k in vars(self.problem_shape.controller):
+            L = getattr(self.controller.L, k)
+            effective_L.register_buffer(k, torch.cat([torch.zeros_like(L), L], dim=-1))
+        self.effective.register_module("L", effective_L)
 
-        self.register_buffer("irreducible_loss", self.environment.irreducible_loss)
+        self.register_buffer("irreducible_loss", self.environment.irreducible_loss.clone())
         self.register_buffer("zero_predictor_loss", utils.batch_trace(
             self.effective.H @ self.effective.S_state_inf @ self.effective.H.mT + self.effective.S_V
         ))

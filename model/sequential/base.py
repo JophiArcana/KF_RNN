@@ -38,18 +38,10 @@ class SequentialPredictor(Predictor):
         Hh = utils.complex(kfs["H"])                                                            # [B... x O_D x S_Dh]
         Kh = utils.complex(kfs["K"])                                                            # [B... x S_Dh x O_D]
 
-        F = utils.complex(systems["effective", "F"])                                            # [B... x S_D x S_D]
-        H = utils.complex(systems["effective", "H"])                                            # [B... x O_D x S_D]
-        sqrt_S_W = utils.complex(systems["effective", "sqrt_S_W"])                              # [B... x S_D x S_D]
+        F = utils.complex(systems["effective", "F"])                                            # [B... x 2S_D x 2S_D]
+        H = utils.complex(systems["effective", "H"])                                            # [B... x O_D x 2S_D]
+        sqrt_S_W = utils.complex(systems["effective", "sqrt_S_W"])                              # [B... x 2S_D x 2S_D]
         sqrt_S_V = utils.complex(systems["effective", "sqrt_S_V"])                              # [B... x O_D x O_D]
-
-        # print("Fh_effective:", Fh_effective.norm().item())
-        # print("Hh:", Hh.norm().item())
-        # print("Kh:", Kh.norm().item())
-        # print("F_effective:", F_effective.norm().item())
-        # print("H:", H.norm().item())
-        # print("sqrt_S_W:", sqrt_S_W.norm().item())
-        # print("sqrt_S_V:", sqrt_S_V.norm().item())
 
         S_D, O_D = F.shape[-1], H.shape[-2]
         S_Dh = Fh_effective.shape[-1]
@@ -67,7 +59,7 @@ class SequentialPredictor(Predictor):
 
         if mode == "imitation":                                                                 # [B... x S_Dh x S_D]
             VhinvFhKhHs_effective = Vhinv @ (Fh_effective @ Kh @ H - sum(
-                kfs["B", k] @ systems["controller", "L", k]
+                kfs["B", k] @ systems["effective", "L", k]
                 for k in controller_keys
             )) @ V
         elif mode == "offline_reinforcement":
