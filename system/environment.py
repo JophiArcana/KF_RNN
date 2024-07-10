@@ -32,7 +32,11 @@ class LTIEnvironment(EnvironmentGroup):
         EnvironmentGroup.__init__(self, problem_shape, params.shape)
 
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V"):
-            self.register_parameter(param_name, nn.Parameter(params[param_name]))
+            if isinstance(param := params[param_name], nn.Parameter):
+                self.register_parameter(param_name, param)
+            else:
+                self.register_buffer(param_name, param)
+
         self.B = nn.ParameterDict({
             k: params["B", k]
             for k in vars(self.problem_shape.controller)
@@ -63,13 +67,13 @@ class LTIEnvironment(EnvironmentGroup):
     def sample_initial_state(self,
                              batch_size: int                # B
     ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
-        state = torch.randn((*self.group_shape, batch_size, self.S_D)) @ utils.sqrtm(self.S_state_inf).mT           # [N... x B x S_D]
+        state = torch.randn((*self.group_shape, batch_size, self.S_D), requires_grad=True) @ utils.sqrtm(self.S_state_inf).mT           # [N... x B x S_D]
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
         observation = state @ self.H.mT + v                                                                         # [N... x B x O_D]
 
-        target_state_estimation = torch.zeros_like(state)                                                           # [N... x B x S_D]
         target_observation_estimation = torch.zeros_like(observation)                                               # [N... x B x O_D]
+        target_state_estimation = observation @ self.K.mT
 
         return TensorDict({
             "state": state,
@@ -89,16 +93,15 @@ class LTIEnvironment(EnvironmentGroup):
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
         x_, target_xh_ = state["state"], state["target_state_estimation"]                                           # [C... x N... x B x S_D]
-        y_, target_yh_ = state["observation"], state["target_observation_estimation"]                               # [C... x N... x B x O_D]
 
         u = sum(action[ac_name] @ self.B[ac_name].mT for ac_name in vars(self.problem_shape.controller))            # [C... x N... x B x S_D]
 
         x = x_ @ self.F.mT + u + w
         y = x @ self.H.mT + v
 
-        target_xh = target_xh_ + u                                                                                  # [C... x N... x B x S_D]
+        target_xh = target_xh_ @ self.F.mT + u                                                                      # [C... x N... x B x S_D]
         target_yh = target_xh @ self.H.mT                                                                           # [C... x N... x B x O_D]
-        target_xh = target_xh + (y_ - target_yh_) @ self.K.mT                                                       # [C... x N... x B x S_D]
+        target_xh = target_xh + (y - target_yh) @ self.K.mT                                                       # [C... x N... x B x S_D]
 
         return TensorDict({
             "state": x,

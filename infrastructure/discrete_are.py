@@ -180,21 +180,14 @@ def solve_discrete_are(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R: tor
     I = torch.eye(m).expand(*batch_shape, m, m)
     zeros = torch.zeros((*batch_shape, m, m))
 
-    try:
-        Z = torch.cat([
-            torch.cat([A, zeros], dim=-1),
-            torch.cat([zeros, zeros], dim=-1)
-        ], dim=-2) + torch.cat([
-            -B @ torch.inverse(R) @ B.mT, I
-        ], dim=-2) @ torch.inverse(A.mT) @ torch.cat([
-            -Q, I
-        ], dim=-1)
-    except RuntimeError:
-        Z = torch.cat([
-            -B @ B.mT, zeros
-        ], dim=-2) @ torch.inverse(A.mT) @ torch.cat([
-            -Q, I
-        ], dim=-1)
+    Z = torch.cat([
+        torch.cat([A, zeros], dim=-1),
+        torch.cat([zeros, zeros], dim=-1)
+    ], dim=-2) + torch.cat([
+        -B @ torch.inverse(R) @ B.mT, I
+    ], dim=-2) @ torch.inverse(A.mT) @ torch.cat([
+        -Q, I
+    ], dim=-1)
 
     T, U = _torch_schur(Z)
     U_1 = U[..., :m]

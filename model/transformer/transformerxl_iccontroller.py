@@ -2,6 +2,7 @@ from argparse import Namespace
 from typing import *
 
 import torch
+import torch.nn as nn
 from transformers import TransfoXLModel
 
 from model.transformer.base import TransformerController
@@ -14,6 +15,9 @@ class TransformerXLInContextController(TransformerController):
 
         self.core = TransfoXLModel(self.config)
 
+        self.input_bias = nn.Parameter(torch.randn((self.S_D,)) / (self.S_D ** 0.5))
+        self.observation_bias = nn.Parameter(torch.randn((self.S_D,)) / (self.S_D ** 0.5))
+
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
 
@@ -22,8 +26,8 @@ class TransformerXLInContextController(TransformerController):
             torch.cat([
                 torch.zeros((B, 1, self.S_D)),
                 embd_dict["environment"]["observation"][:, :-1]
-            ], dim=-2),
-            sum(embd_dict["controller"].values())
+            ], dim=-2) + self.observation_bias,
+            sum(embd_dict["controller"].values()) + self.input_bias
         ], dim=-2).flatten(-3, -2)
 
         out = self.core(inputs_embeds=embds).last_hidden_state  # [B x 2L x S_D]

@@ -867,7 +867,8 @@ if __name__ == '__main__':
     """ Sandbox 18 """
     SHP = Namespace(S_D=3, problem_shape=Namespace(
         environment=Namespace(observation=2),
-        controller=Namespace(input=2)
+        # controller=Namespace(),
+        controller=Namespace(input=2),
     ))
     # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
     # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
@@ -875,35 +876,38 @@ if __name__ == '__main__':
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     systems = dist.sample(SHP, ())
 
+    # ds = systems.generate_dataset(1, 12)["environment"].squeeze(0)
+    # print(ds)
+    #
+    # x, xh, y, w, v = map(ds.__getitem__, ("state", "target_state_estimation", "observation", "w", "v"))
+    #
+    # augmented_x0 = torch.cat([x[0], xh[0]], dim=0)
+    #
+    # augmented_x1 = systems.effective.F @ augmented_x0 + torch.cat([
+    #     w[1], systems.environment.K @ (systems.environment.H @ w[1] + v[1])
+    # ], dim=0)
+    # print("a0", augmented_x0)
+    # print("b0", torch.cat([x[0], xh[0]], dim=0))
+    #
+    # print("a1", augmented_x1)
+    # print("b1", torch.cat([x[1], xh[1]], dim=0))
 
     sys_td = systems.td()
     kf_td = TensorDict.from_dict({
         **sys_td.get("environment", {}),
         **sys_td.get("controller", {})
     }, batch_size=sys_td.shape) # .apply(torch.zeros_like)
-    # kf_td["F"] = 0.9 * torch.eye(kf_td["F"].shape[-1])
-
-    # systems2 = LTISystem(SHP2.problem_shape, systems.td())
-    # sys2_td = systems2.td()
-    # kf2_td = TensorDict.from_dict({
-    #     **sys2_td.get("environment", {}),
-    #     **sys2_td.get("controller", {})
-    # }, batch_size=sys2_td.shape)
 
     print(sys_td["environment", "irreducible_loss"])
-    # print(sys_td["zero_predictor_loss"])
-    print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="imitation"))
-    # print(ZeroPredictor.analytical_error(None, sys_td))
-    print(SequentialPredictor.analytical_error(kf_td, sys_td, mode="offline_reinforcement"))
-    # print()
-    # print(sys2_td["environment", "irreducible_loss"])
-    # print(SequentialPredictor.analytical_error(kf2_td, sys2_td, mode="imitation"))
-    # print(SequentialPredictor.analytical_error(kf2_td, sys2_td, mode="offline_reinforcement"))
-    raise Exception()
-    sys_td2 = TensorDict.from_dict(sys_td.to_dict())
-    del sys_td2["B"], sys_td2["controller", "L"]
-    print(SequentialPredictor.analytical_error(sys_td2, sys_td2))
+    # print(sys_td["effective", "irreducible_loss"])
+    print(SequentialPredictor.analytical_error(kf_td, sys_td))
 
+
+    print(torch.autograd.grad(
+        # sys_td["effective", "L", "input"].norm(),
+        SequentialPredictor.analytical_error(kf_td, sys_td),
+        sys_td["environment", "B", "input"]
+    ))
 
 
 

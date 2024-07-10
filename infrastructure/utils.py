@@ -312,6 +312,17 @@ def print_namespace(n: Namespace) -> None:
 def hash_namespace(n: Namespace) -> str:
     return hashlib.sha256(str_namespace(n).encode("utf-8")).hexdigest()[:8]
 
+def nested_vars(n: Namespace) -> Dict[str, Any]:
+    result = {}
+    def _nested_vars(s: Tuple[str, ...], n: Namespace) -> None:
+        for k, v in vars(n).items():
+            if isinstance(v, Namespace):
+                _nested_vars((*s, k), v)
+            else:
+                result[(*s, k)] = v
+    _nested_vars((), n)
+    return {".".join(k): v for k, v in result.items()}
+
 def batch_trace(x: torch.Tensor) -> torch.Tensor:
     return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
 

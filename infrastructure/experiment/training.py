@@ -174,7 +174,10 @@ def _train_default(
         # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
         for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
             ensembled_learned_kfs[k] = v
-        cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((v for v in ensembled_learned_kfs.values() if isinstance(v, nn.Parameter)), THP)
+        cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((
+            v for v in ensembled_learned_kfs.values(include_nested=True, leaves_only=True)
+            if isinstance(v, nn.Parameter)
+        ), THP)
 
     cache.scheduler(None)
 

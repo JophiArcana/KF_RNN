@@ -108,24 +108,24 @@ def _construct_info_dict(
             result["distributions"] = distributions_arr
 
             # DONE: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
-            # SHP_arrs = OrderedDict(vars(SHP))
+            SHP_arrs = OrderedDict(utils.nested_vars(SHP))
             broadcasted_arrs = utils.broadcast_dim_arrays(
                 distributions_arr,
                 _rgetattr_default("{0}.system.n_systems"),
-                # *SHP_arrs.values()
+                *SHP_arrs.values()
             )
             distributions_arr, n_systems_arr = next(broadcasted_arrs), next(broadcasted_arrs)
-            # SHP_arrs = OrderedDict(zip(SHP_arrs.keys(), broadcasted_arrs))
+            SHP_arrs = OrderedDict(zip(SHP_arrs.keys(), broadcasted_arrs))
 
             print(f"Sampling new systems for dataset type {ds_type}")
             systems_arr = utils.dim_array_like(distributions_arr, dtype=SystemGroup)
             for idx, dist in utils.multi_enumerate(distributions_arr):
-                # SHP_copy = utils.deepcopy_namespace(SHP)
-                # for k, v in SHP_arrs.items():
-                #     setattr(SHP_copy, k, utils.take_from_dim_array(v, dict(zip(distributions_arr.dims, idx))))
+                SHP_copy = utils.deepcopy_namespace(SHP)
+                for k, v in SHP_arrs.items():
+                    utils.rsetattr(SHP_copy, k, utils.take_from_dim_array(v, dict(zip(distributions_arr.dims, idx))))
 
-                # systems_arr[idx] = dist.sample(SHP_copy, (EHP.n_experiments, n_systems_arr[idx]))
-                systems_arr[idx] = dist.sample(SHP, (EHP.n_experiments, n_systems_arr[idx]))
+                systems_arr[idx] = dist.sample(SHP_copy, (EHP.n_experiments, n_systems_arr[idx]))
+                # systems_arr[idx] = dist.sample(SHP, (EHP.n_experiments, n_systems_arr[idx]))
         else:
             print(f"Defaulting to train systems for dataset type {ds_type}")
             systems_arr = info_dict[TRAINING_DATASET_TYPES[0]]["systems"]
@@ -135,7 +135,7 @@ def _construct_info_dict(
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
     systems_arr = utils.multi_map(
-        lambda sg: utils.call_func_with_kwargs(type(sg), (SHP.problem_shape, sg.td()), vars(SHP)),
+        lambda sg: utils.call_func_with_kwargs(type(sg), (SHP.problem_shape, sg.td()), vars(sg)),
         systems_arr, dtype=SystemGroup
     )
     result["systems"] = systems_arr
@@ -234,7 +234,7 @@ def _populate_values(
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
     if not hasattr(HP.train, "control_coefficient"):
-        HP.train.control_coefficient = 0.1
+        HP.train.control_coefficient = 1.0
 
     def _rgetattr_default(format_str: str, ds_type: str) -> Any:
         return utils.rgetattr_default(HP.dataset, format_str, ds_type, TRAINING_DATASET_TYPES[0])

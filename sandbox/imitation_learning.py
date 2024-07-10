@@ -1,10 +1,10 @@
 import os
 import sys
 from argparse import Namespace
-from typing import *
 
 import numpy as np
 import torch
+from dimarray import DimArray
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
 
@@ -12,16 +12,22 @@ from tensordict import TensorDict
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
-from infrastructure import loader
+from infrastructure import loader, utils
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
-from system.base import SystemGroup
+from infrastructure.experiment.static import PARAM_GROUP_FORMATTER
+from infrastructure.settings import DEVICE
 from system.controller import NNControllerGroup
 
 
 if __name__ == "__main__":
     from system.linear_time_invariant import LTISystem, MOPDistribution
     from model.sequential.rnn_controller import RnnController
+
+    # Experiment setup
+    exp_name = "ControlNoiseComparison"
+    output_dir = "imitation_learning"
+    output_fname = "result"
 
     # SECTION: Run imitation learning experiment across different control noises
     SHP = Namespace(
@@ -32,22 +38,30 @@ if __name__ == "__main__":
     )
     hp_name = "control_noise_std"
 
-    dist_ = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    lqg_ = dist_.sample(SHP, ())
 
-    class ConstantLQGDistribution(LTISystem.Distribution):
-        def __init__(self, params: TensorDict[str, torch.Tensor], cns: float):
-            LTISystem.Distribution.__init__(self)
-            self.params = params
-            self.control_noise_std = cns
+    os.makedirs(f"output/{output_dir}", exist_ok=True)
+    lqg_fname = f"output/{output_dir}/systems.pt"
+    if not os.path.exists(lqg_fname):
+        dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+        lqg = dist.sample(SHP, ())
+        torch.save(lqg, lqg_fname)
+    else:
+        lqg = torch.load(lqg_fname, map_location=DEVICE)
 
-        def sample(self, SHP: Namespace, shape: Tuple[int, ...]) -> SystemGroup:
-            return LTISystem(SHP.problem_shape, self.params.expand(*shape), self.control_noise_std)
+    control_noise_std = [0.0, 0.5, 1.5, 2.0]
+    lqg_list = [LTISystem(SHP.problem_shape, lqg.td(), cns) for cns in control_noise_std]
 
-    # Experiment setup
-    exp_name = "ControlNoiseComparison"
-    output_dir = "imitation_learning"
-    output_fname = "result"
+    train_systems = DimArray([
+        LTISystem(SHP.problem_shape, lqg.td().expand(1, 1), cns)
+        for cns in control_noise_std
+    ], dims=(PARAM_GROUP_FORMATTER.format(hp_name, -1),))
+    test_systems = DimArray(LTISystem(SHP.problem_shape, lqg.td().expand(1, 1)), dims=())
+    if not os.path.exists(train_dir := f"output/{output_dir}/{exp_name}/training"):
+        os.makedirs(train_dir)
+        torch.save({"train": train_systems, "valid": test_systems}, f"{train_dir}/systems.pt")
+    if not os.path.exists(test_dir := f"output/{output_dir}/{exp_name}/testing"):
+        os.makedirs(test_dir)
+        torch.save({"test": test_systems}, f"{test_dir}/systems.pt")
 
     args = loader.generate_args(SHP)
     args.model.model = RnnController
@@ -60,10 +74,7 @@ if __name__ == "__main__":
     args.dataset.valid = args.dataset.test = Namespace(
         dataset_size=10,
         total_sequence_length=100000,
-        system=Namespace(
-            n_systems=1,
-            distribution=ConstantLQGDistribution(lqg_.td(), 0.0)
-        )
+        system=Namespace(n_systems=1)
     )
     args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
@@ -82,46 +93,40 @@ if __name__ == "__main__":
     args.experiment.exp_name = exp_name
     args.experiment.metrics = {"validation_analytical"}
 
-    control_noise_std = [0.0, 0.1, 0.2, 0.3]
-    dist_list = [ConstantLQGDistribution(lqg_.td(), cns) for cns in control_noise_std]
     configurations = [
-        (hp_name, {"dataset.train.system.distribution": dist_list})
+        (hp_name, {"system.control_noise_std": control_noise_std})
     ]
 
-    result, systems, dataset = run_experiments(args, configurations, {
+    result, _, _ = run_experiments(args, configurations, {
         "dir": output_dir,
         "fname": output_fname
     }, save_experiment=True)
 
     # DONE: After running experiment, refresh LQG because the saved system overrides the one sampled at the start
-    lqg = LTISystem(SHP.problem_shape, systems.values[()].td().squeeze(1).squeeze(0))
-    dist_list = [ConstantLQGDistribution(lqg.td(), cns) for cns in control_noise_std]
-    lqg_list = [dist_.sample(SHP, ()) for dist_ in dist_list]
+    il = lqg.irreducible_loss
 
-    """
-    # Plot the training loss curve
-    ax = plt.gca()
-    ax2 = ax.twinx()
-
+    # """
+    # SECTION: Plot the training loss curve
     training_outputs = list(get_result_attr(result, "output"))
-    for idx, (cns, training_output) in enumerate(zip(control_noise_std, training_outputs)):
+    for cns, training_output, color in zip(control_noise_std, training_outputs, COLOR_LIST):
         out = training_output.squeeze(0)
         tl = out["training"]
         al = out["validation_analytical"].squeeze(-1)
 
-        ax.plot(tl.median(dim=0).values, color=0.7 * COLOR_LIST[idx], linestyle="--")
-        ax2.plot(al.median(dim=0).values, color=COLOR_LIST[idx], linestyle="-", label=f"{hp_name}{cns}_validation_analytical")
+        plt.plot((tl.median(dim=0).values - il).detach(), color=0.7 * color, linestyle="--")
+        plt.plot((al.median(dim=0).values - il).detach(), color=color, linestyle="-", label=f"{hp_name}{cns}_validation_analytical")
 
     plt.xlabel("epoch")
-    ax.set_ylabel(r"loss: $\frac{1}{L}|| F_\theta(\tau) - \tau ||^2$")
+    plt.yscale("log")
+    plt.ylabel(r"loss: $\frac{1}{L}|| F_\theta(\tau) - \tau ||^2 - || KF(\tau) - \tau ||^2$")
     plt.title("training_curve")
 
     plt.legend()
     plt.show()
-    """
+    # """
 
-    # SECTION: LQG system visualization
-    batch_size, horizon = 1024, 1000
+    # LQG system visualization
+    batch_size, horizon = 128, 200
     datasets = [lqg_.generate_dataset(batch_size, horizon) for lqg_ in lqg_list]
 
     optimal_states = datasets[0]["environment", "state"].flatten(0, -2)
@@ -129,47 +134,28 @@ if __name__ == "__main__":
     s0, s1 = S[:2] * len(optimal_states) ** -0.5
     compression = Vh.H[:, :2]
 
-    """
-    # Plot covariances of sampled states
-    indices = torch.randint(0, batch_size * horizon, (2000,))
-
-    for idx, (cns, ds_) in enumerate(zip(control_noise_std, datasets)):
-        compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
-        color = COLOR_LIST[idx]
-
-        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
-        utils.confidence_ellipse(
-            *compressed_states.mT, plt.gca(),
-            n_std=2.0, linewidth=1.5, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{cns}_states", zorder=12
-        )
-
-    plt.xlabel("$\\sigma_0$")
-    plt.xlim(left=-3 * s0, right=3 * s0)
-    plt.ylabel("$\\sigma_1$")
-    plt.ylim(bottom=-3 * s0, top=3 * s0)
-    plt.title("state_covariance")
-
-    plt.legend()
-    plt.show()
-    """
-
+    # """
     # SECTION: Visualize trajectory generated using the learned controllers
     learned_controllers = [
         NNControllerGroup(SHP.problem_shape, reference_module, module_td.squeeze(0))
         for reference_module, module_td in get_result_attr(result, "learned_kfs")
     ]
 
-    small_batch_size, small_horizon = 5, 10
-    trace = lqg.generate_dataset_with_controller_arr(np.array([lqg.controller] + learned_controllers), small_batch_size, small_horizon)
-
-    optimal_trajectory = trace[0, 0]["environment", "state"]
-    learned_trajectories = trace[1:]["environment", "state"]
-
+    small_horizon = 10
     trace_idx, ensemble_idx = 0, 0
-    for idx, (cns, learned_trajectory) in enumerate(zip(control_noise_std, learned_trajectories)):
-        trajectory = learned_trajectory[ensemble_idx, trace_idx] @ compression
-        plt.plot(*trajectory.mT, color=COLOR_LIST[idx], marker=".", markersize="8", label=f"{hp_name}{cns}_trajectory")
-    plt.plot(*(optimal_trajectory[trace_idx] @ compression).mT, color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
+
+    trace = lqg.generate_dataset_with_controller_arr(
+        np.array([lqg.controller] + learned_controllers),
+        batch_size, horizon
+    )
+
+    optimal_trajectory = trace[0]
+    learned_trajectories = trace[1:]
+
+    for cns, learned_trajectory, color in zip(control_noise_std, learned_trajectories, COLOR_LIST):
+        trajectory = learned_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression
+        plt.plot(*trajectory.mT, color=color, marker=".", markersize="8", label=f"{hp_name}{cns}_learned_trajectory")
+    plt.plot(*(optimal_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression).mT, color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
 
     plt.xlabel("$\\sigma_0$")
     plt.xlim(left=-3 * s0, right=3 * s0)
@@ -179,12 +165,58 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.show()
+    # """
 
-    raise Exception()
+    # """
+    # SECTION: Plot covariances of sampled states
+    indices = torch.randint(0, batch_size * horizon, (2000,))
+
+    for cns, ds_, color in zip(control_noise_std, datasets, COLOR_LIST):
+        compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
+        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
+        utils.confidence_ellipse(
+            *compressed_states.mT, plt.gca(),
+            n_std=2.0, linewidth=2, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{cns}_states", zorder=12
+        )
+
+    plt.xlabel("$\\sigma_0$")
+    # plt.xlim(left=-3 * s0, right=3 * s0)
+    plt.ylabel("$\\sigma_1$")
+    # plt.ylim(bottom=-3 * s0, top=3 * s0)
+    plt.title("state_covariance")
+
+    plt.legend()
+    plt.show()
 
 
-    # Plot cumulative loss over horizon
-    def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LQGSystem) -> torch.Tensor:
+    for cns, ds_, color in zip(control_noise_std, learned_trajectories, COLOR_LIST):
+        compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
+        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
+        utils.confidence_ellipse(
+            *compressed_states.mT, plt.gca(),
+            n_std=2.0, linewidth=2, linestyle='-', edgecolor=0.7 * color, label=f"{hp_name}{cns}_learned_states", zorder=12
+        )
+
+    # compressed_optimal_states = optimal_trajectory["environment", "state"].flatten(0, -2) @ compression
+    # plt.scatter(*compressed_optimal_states[indices].mT, s=3, color="black", alpha=0.15)
+    # utils.confidence_ellipse(
+    #     *compressed_optimal_states.mT, plt.gca(),
+    #     n_std=2.0, linewidth=2, linestyle='-', edgecolor="black", label=f"optimal_states", zorder=12
+    # )
+
+    plt.xlabel("$\\sigma_0$")
+    # plt.xlim(left=-3 * s0, right=3 * s0)
+    plt.ylabel("$\\sigma_1$")
+    # plt.ylim(bottom=-3 * s0, top=3 * s0)
+    plt.title("learned_state_covariance")
+
+    plt.legend()
+    plt.show()
+    # """
+
+    # """
+    # SECTION: Plot cumulative loss over horizon
+    def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LTISystem) -> torch.Tensor:
         state_loss = (
                 ds_["environment", "state"].unsqueeze(-2) @
                 sum(lqg_.controller.Q.values()) @
@@ -196,9 +228,9 @@ if __name__ == "__main__":
         )
         return state_loss + control_loss
 
-    for idx, (cns, lqg_, ds_) in enumerate(zip(control_noise_std, lqg_list, datasets)):
+    for cns, lqg_, ds_, color in zip(control_noise_std, lqg_list, datasets, COLOR_LIST):
         l = loss(ds_, lqg_)
-        plt.plot(torch.cumsum(l, dim=1).median(dim=0).values.detach(), color=COLOR_LIST[idx], label=f"{hp_name}{cns}_regret")
+        plt.plot(torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=f"{hp_name}{cns}_regret")
 
     plt.xlabel("horizon")
     plt.ylabel("cumulative_loss")
@@ -206,7 +238,7 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.show()
-
+    # """
 
 
 
