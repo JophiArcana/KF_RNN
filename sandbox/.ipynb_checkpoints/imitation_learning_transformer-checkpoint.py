@@ -93,11 +93,7 @@ if __name__ == "__main__":
         system=Namespace(n_systems=1)
     )
     
-    args.train.sampling = Namespace(
-        method="subsequence_padded",
-        subsequence_length=200,
-        batch_size=32
-    )
+    args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
         type="Adam",
         max_lr=3e-5, min_lr=1e-6,
