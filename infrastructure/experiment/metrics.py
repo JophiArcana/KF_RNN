@@ -161,6 +161,9 @@ add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", ("en
 add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("test", ("environment", "observation")), names=["testing", "l"])
 
 add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
+    "valid", ("controller", "input"), ("controller", "input")
+), names="validation_controller")
+add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
     "test", ("environment", "target_observation_estimation"), ("environment", "observation")
 ), names=["testing_empirical_irreducible", "eil"])
 
