@@ -10,7 +10,7 @@ from infrastructure.discrete_are import solve_discrete_are
 from system.base import SystemGroup, SystemDistribution
 from system.controller import LinearControllerGroup
 from system.environment import LTIEnvironment
-from model.sequential import SequentialPredictor
+from model.sequential.base import SequentialController
 
 
 class LQGController(LinearControllerGroup):
@@ -65,41 +65,30 @@ class LTISystem(SystemGroup):
             for k in vars(self.problem_shape.controller)
         )
         F_BL, I_KH = F - BL, I - KH
-        conj_S_V = K @ self.environment.S_V @ K.mT
 
-        self.effective = LTIEnvironment(
-            Namespace(
-                environment=self.problem_shape.environment,
-                controller=Namespace()
-            ), TensorDict({
-                "F": torch.cat([
-                    torch.cat([F_BL + BL @ I_KH, -BL @ I_KH], dim=-1),
-                    F_BL @ torch.cat([KH, I_KH], dim=-1)
-                ], dim=-2),
-                "H": torch.cat([H, torch.zeros_like(H)], dim=-1),
-                "sqrt_S_W": utils.sqrtm(torch.cat([
-                    torch.cat([self.environment.S_W + BL @ conj_S_V @ BL.mT, -BL @ conj_S_V @ F_BL.mT], dim=-1),
-                    torch.cat([F_BL @ conj_S_V @ -BL.mT, F_BL @ conj_S_V @ F_BL.mT], dim=-1)
-                ], dim=-2)),
-                "sqrt_S_V": self.environment.sqrt_S_V.clone()
-            }, batch_size=self.group_shape)
-        )
-        effective_L = nn.Module()
+        # SECTION: Compute effective transition, observation, and control matrices of LQG system
+        self.register_buffer("F_augmented", torch.cat([
+            torch.cat([F_BL + BL @ I_KH, -BL @ I_KH], dim=-1),
+            F_BL @ torch.cat([KH, I_KH], dim=-1)
+        ], dim=-2))
+        self.register_buffer("H_augmented", torch.cat([H, torch.zeros_like(H)], dim=-1))
+        L_augmented = nn.Module()
         for k in vars(self.problem_shape.controller):
             L = getattr(self.controller.L, k)
-            effective_L.register_buffer(k, L @ torch.cat([KH, I_KH], dim=-1))
-        self.effective.register_module("L", effective_L)
+            L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH], dim=-1))
+        self.register_module("L_augmented", L_augmented)
 
-        self.register_buffer("irreducible_loss", SequentialPredictor.analytical_error(
-            TensorDict.from_dict({
-                **self.environment.td(),
-                **self.controller.td(),
-            }, batch_size=self.group_shape),
-            self.td()
-        ))
-        self.register_buffer("zero_predictor_loss", utils.batch_trace(
-            self.effective.H @ self.effective.S_state_inf @ self.effective.H.mT + self.effective.S_V
-        ))
+        # SECTION: Register irreducible loss
+        kalman_filter = TensorDict.from_dict({
+            **self.environment.td(),
+            **self.controller.td(),
+        }, batch_size=self.group_shape)
+        self.register_module("irreducible_loss", utils.buffer_dict(SequentialController.analytical_error(
+            kalman_filter, self.td()
+        )))
+        self.register_module("zero_predictor_loss", utils.buffer_dict(SequentialController.analytical_error(
+            kalman_filter.apply(torch.zeros_like), self.td()
+        )))
 
 
 class MOPDistribution(LTISystem.Distribution):

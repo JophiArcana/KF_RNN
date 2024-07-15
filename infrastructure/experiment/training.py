@@ -1,4 +1,5 @@
 import collections
+import copy
 import json
 from argparse import Namespace
 from inspect import signature
@@ -251,7 +252,8 @@ def _run_training(
                 pass
 
     if checkpoint is not None:
-        training_func_idx, cache, exclusive.reference_module, results = map(checkpoint.__getitem__, (
+        THP, training_func_idx, cache, exclusive.reference_module, results = map(checkpoint.__getitem__, (
+            "THP",
             "training_func_idx",
             "cache",
             "reference_module",
@@ -263,9 +265,10 @@ def _run_training(
         # TODO: Otherwise, copying the values stored by the checkpointed ensembled_learned_kfs is sufficient
         else:
             checkpoint_params = checkpoint["ensembled_learned_kfs"].values()
-        for checkpoint_v, (k, v) in zip(checkpoint_params, ensembled_learned_kfs.items()):
+        for checkpoint_v, (k, v) in zip(checkpoint_params, ensembled_learned_kfs.items(include_nested=True, leaves_only=True)):
             ensembled_learned_kfs[k] = checkpoint_v
     else:
+        THP = None
         training_func_idx = 0
         cache = Namespace(t=0)
         results = []
@@ -286,14 +289,16 @@ def _run_training(
         print("-" * 160)
 
         # Create optimizer
-        THP = utils.deepcopy_namespace(_THP)
         done = False
+        if THP is None:
+            THP = copy.deepcopy(_THP)
         if idx != training_func_idx:
             cache = Namespace(t=0)
 
         while not done:
             # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
             checkpoint = {
+                "THP": THP,
                 "training_func_idx": idx,
                 "cache": cache,
                 "reference_module": exclusive.reference_module,
@@ -414,13 +419,14 @@ def _run_unit_training_experiment(
     )
 
     # Setup result and run training
-    print(f"Mean zero predictor loss " + "-" * 80)
-    for ds_type, ds_info in vars(info).items():
-        print(f"\t{ds_type}: {utils.multi_map(lambda sg: sg.zero_predictor_loss.mean(), ds_info.systems, dtype=float)}")
-    print(f"Mean irreducible loss " + "-" * 80)
-    for ds_type, ds_info in vars(info).items():
-        print(f"\t{ds_type}: {utils.multi_map(lambda sg: sg.irreducible_loss.mean(), ds_info.systems, dtype=float)}")
-
+    avg = lambda t: t.mean().item()
+    for loss_type in ("zero_predictor_loss", "irreducible_loss"):
+        print(f"Mean {loss_type.replace('_', ' ')} {'-' * 80}")
+        for ds_type, ds_info in vars(info).items():
+            print(f"\t{ds_type}:", utils.multi_map(
+                lambda sg: utils.map_dict(sg.td()[loss_type], avg),
+                ds_info.systems, dtype=dict
+            ))
     return {
         "output": _run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach(),
         "learned_kfs": (reference_module, ensembled_learned_kfs),

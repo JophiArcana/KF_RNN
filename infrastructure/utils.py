@@ -143,12 +143,64 @@ def run_module_arr(
             vmap_run = torch.func.vmap(vmap_run, randomness="different")
         return vmap_run(module_td.to_dict(), args)
 
+def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
+    def _buffer_dict(parent_module: nn.Module, td: TensorDict[str, torch.Tensor]) -> nn.Module:
+        for k, v in td.items(include_nested=False):
+            if isinstance(v, torch.Tensor):
+                parent_module.register_buffer(k, v)
+            else:
+                parent_module.register_module(k, _buffer_dict(nn.Module(), v))
+        return parent_module
+    return _buffer_dict(nn.Module(), td)
+
 def double_vmap(func: Callable) -> Callable:
     return torch.vmap(torch.vmap(func))
 
 def sqrtm(t: torch.Tensor) -> torch.Tensor:
     L, V = torch.linalg.eig(t)
     return (V @ torch.diag_embed(L ** 0.5) @ torch.inverse(V)).real
+
+def hadamard_conjugation(
+        A: torch.Tensor,        # [B... x m x n]
+        B: torch.Tensor,        # [B... x p x q]
+        alpha: torch.Tensor,    # [B... x m x n]
+        beta: torch.Tensor,     # [B... x p x q]
+        C: torch.Tensor         # [B... x m x p]
+) -> torch.Tensor:              # [B... x n x q]
+    P = A[..., :, None, :, None] * B[..., None, :, None, :]                     # [B... x m x p x n x q]
+    _coeff = alpha[..., :, None, :, None] * beta[..., None, :, None, :]         # [B... x m x p x n x q]
+    return torch.sum(P * (_coeff / (1 - _coeff)) * C[..., None, None], dim=[-3, -4])
+
+def hadamard_conjugation_diff_order1(
+        A: torch.Tensor,        # [B... x m x n]
+        B: torch.Tensor,        # [B... x p x q]
+        alpha: torch.Tensor,    # [B... x m x n]
+        beta1: torch.Tensor,    # [B... x p x q]
+        beta2: torch.Tensor,    # [B... x p x q]
+        C: torch.Tensor         # [B... x m x p]
+) -> torch.Tensor:              # [B... x n x q]
+    P = A[..., :, None, :, None] * B[..., None, :, None, :]
+    alpha_ = alpha[..., :, None, :, None]
+    _beta1, _beta2 = beta1[..., None, :, None, :], beta2[..., None, :, None, :]
+    coeff = alpha_ / ((1 - alpha_ * _beta1) * (1 - alpha_ * _beta2))
+    return torch.sum(P * coeff * C[..., None, None], dim=[-3, -4])
+
+def hadamard_conjugation_diff_order2(
+        B: torch.Tensor,        # [B... x p x q]
+        beta1: torch.Tensor,    # [B... x p x q]
+        beta2: torch.Tensor,    # [B... x p x q]
+        C: torch.Tensor         # [B... x p x p]
+) -> torch.Tensor:              # [B... x q x q]
+    P = B[..., :, None, :, None] * B[..., None, :, None, :]
+    beta1_, _beta1 = beta1[..., :, None, :, None], beta1[..., None, :, None, :]
+    beta2_, _beta2 = beta2[..., :, None, :, None], beta2[..., None, :, None, :]
+    coeff = (1 - beta1_ * beta2_ * _beta1 * _beta2) / (
+        (1 - beta1_ * _beta1)
+        * (1 - beta1_ * _beta2)
+        * (1 - beta2_ * _beta1)
+        * (1 - beta2_ * _beta2)
+    )
+    return torch.sum(P * coeff * C[..., None, None], dim=[-3, -4])
 
 
 """
@@ -323,6 +375,20 @@ def nested_vars(n: Namespace) -> Dict[str, Any]:
     _nested_vars((), n)
     return {".".join(k): v for k, v in result.items()}
 
+def nested_type(o: object) -> object:
+    if type(o) in [list, tuple]:
+        return type(o)(map(nested_type, o))
+    elif type(o) == dict:
+        return {k: nested_type(v) for k, v in o.items()}
+    else:
+        return type(o)
+
+def map_dict(d: Dict[str, Any], func: Callable[[Any], Any]) -> Dict[str, Any]:
+    return {
+        k: map_dict(v, func) if hasattr(v, "items") else func(v)
+        for k, v in d.items()
+    }
+
 def batch_trace(x: torch.Tensor) -> torch.Tensor:
     return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
 
@@ -335,14 +401,6 @@ def array_of(o: T) -> np.ndarray[T]:
 def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
     fn = lambda t_: torch.complex(t_, torch.zeros_like(t_))
     return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
-
-def nested_type(o: object) -> object:
-    if type(o) in [list, tuple]:
-        return type(o)(map(nested_type, o))
-    elif type(o) == dict:
-        return {k: nested_type(v) for k, v in o.items()}
-    else:
-        return type(o)
 
 def class_name(cls: type) -> str:
     return str(cls)[8:-2].split(".")[-1]

@@ -86,7 +86,7 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
         )
     return Metric(eval_func)
 
-def _get_analytical_error_with_dataset_type(ds_type: str) -> Metric:
+def _get_analytical_error_with_dataset_type_and_target(ds_type: str, target: Tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
@@ -97,7 +97,7 @@ def _get_analytical_error_with_dataset_type(ds_type: str) -> Metric:
             return _unsqueeze_if(exclusive.reference_module.analytical_error(
                 ensembled_learned_kfs[:, :, None],
                 sg.td()[:, None, :]
-            ), with_batch_dim)
+            )[target], with_batch_dim)
 
         with torch.set_grad_enabled(False):
             return utils.multi_map(AE, utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
@@ -139,7 +139,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
         )
     return Metric(eval_func)
 
-def _get_irreducible_loss_with_dataset_type(ds_type: str) -> Metric:
+def _get_irreducible_loss_with_dataset_type_and_target(ds_type: str, target: Tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
@@ -147,7 +147,7 @@ def _get_irreducible_loss_with_dataset_type(ds_type: str) -> Metric:
     ) -> np.ndarray[torch.Tensor]:
         exclusive, ensembled_learned_kfs = mv
         return utils.multi_map(
-            lambda sg: _unsqueeze_if(sg.irreducible_loss[:, None], with_batch_dim),
+            lambda sg: _unsqueeze_if(sg.td()["irreducible_loss", *target][:, None], with_batch_dim),
             utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor
         )
     return Metric(eval_func)
@@ -164,12 +164,13 @@ add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
     "test", ("environment", "target_observation_estimation"), ("environment", "observation")
 ), names=["testing_empirical_irreducible", "eil"])
 
-add_to_metrics(_get_analytical_error_with_dataset_type("valid"), names="validation_analytical")
-add_to_metrics(_get_analytical_error_with_dataset_type("test"), names=["testing_analytical", "al"])
+add_to_metrics(_get_analytical_error_with_dataset_type_and_target("valid", ("environment", "observation")), names="validation_analytical")
+add_to_metrics(_get_analytical_error_with_dataset_type_and_target("valid", ("controller", "input")), names="validation_controller_analytical")
+add_to_metrics(_get_analytical_error_with_dataset_type_and_target("test", ("environment", "observation")), names=["testing_analytical", "al"])
 
 add_to_metrics(_get_gradient_norm_with_dataset_type("train"), names="overfit_gradient_norm")
 
-add_to_metrics(_get_irreducible_loss_with_dataset_type("test"), names=["testing_irreducible", "il"])
+add_to_metrics(_get_irreducible_loss_with_dataset_type_and_target("test", ("environment", "observation")), names=["testing_irreducible", "il"])
 
 
 

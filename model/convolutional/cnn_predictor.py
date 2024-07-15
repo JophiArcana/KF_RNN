@@ -179,7 +179,7 @@ class CnnPredictorAnalyticalLeastSquares(CnnPredictor):
                 optimizer.zero_grad()
             zero_grad_kf_dict()
 
-            L = ConvolutionalPredictor.analytical_error(ensembled_learned_kfs, exclusive_.train_info.systems.td())         # [N x E]
+            L = ConvolutionalPredictor.analytical_error(ensembled_learned_kfs, exclusive_.train_info.systems.td())["environment", "observation"]    # [N x E]
             L.sum().backward(create_graph=True, retain_graph=True)
             _flattened_kf_grad_dict = torch.cat([v.grad.flatten(2, -1) for v in _kf_dict.values()], dim=-1)         # [N x E x F]
             zero_grad_kf_dict()

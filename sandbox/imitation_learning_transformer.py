@@ -7,6 +7,7 @@ import torch
 from dimarray import DimArray
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
+from transformers import TransfoXLConfig
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -22,11 +23,11 @@ from system.controller import NNControllerGroup
 
 if __name__ == "__main__":
     from system.linear_time_invariant import LTISystem, MOPDistribution
-    from model.sequential.rnn_controller import RnnController
+    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
     # Experiment setup
     exp_name = "ControlNoiseComparison"
-    output_dir = "imitation_learning"
+    output_dir = "imitation_learning_transformer"
     output_fname = "result"
 
     # SECTION: Run imitation learning experiment across different control noises
@@ -64,8 +65,23 @@ if __name__ == "__main__":
         torch.save({"test": test_systems}, f"{test_dir}/systems.pt")
 
     args = loader.generate_args(SHP)
-    args.model.model = RnnController
-    args.model.S_D = SHP.S_D
+
+    d_embed = 256
+    n_layer = 12
+    n_head = 8
+    d_inner = 4 * d_embed
+
+    args.model.model = TransformerXLInContextController
+    args.model.transformerxl = TransfoXLConfig(
+        d_model=d_embed,
+        d_embed=d_embed,
+        n_layer=n_layer,
+        n_head=n_head,
+        d_head=d_embed // n_head,
+        d_inner=d_inner,
+        dropout=0.0,
+    )
+
     args.dataset.train = Namespace(
         dataset_size=1,
         total_sequence_length=2000,
@@ -79,19 +95,20 @@ if __name__ == "__main__":
     args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
         type="Adam",
-        max_lr=1e-2, min_lr=1e-9,
-        weight_decay=0.0
+        max_lr=3e-4, min_lr=1e-6,
+        weight_decay=1e-2, momentum=0.9
     )
     args.train.scheduler = Namespace(
         type="exponential",
-        warmup_duration=100,
-        epochs=2000, lr_decay=0.995,
+        epochs=40000, lr_decay=1.0,
+
     )
+    args.train.iterations_per_epoch = 1
 
     args.experiment.n_experiments = 1
-    args.experiment.ensemble_size = 32
+    args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = {"validation_analytical", "validation_controller_analytical"}
+    args.experiment.metrics = {"validation"}
 
     configurations = [
         (hp_name, {"system.control_noise_std": control_noise_std})

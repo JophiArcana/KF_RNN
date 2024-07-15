@@ -174,9 +174,16 @@ class Predictor(Observer):
 
     @classmethod
     def analytical_error(cls,
-                         kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
-                         sg_td: TensorDict[str, torch.Tensor]   # [B... x ...]
-    ) -> torch.Tensor:                                          # [B...]
+                         kfs: TensorDict[str, torch.Tensor],                # [B... x ...]
+                         sg_td: TensorDict[str, torch.Tensor]               # [B... x ...]
+    ) -> TensorDict[str, torch.Tensor]:                                     # [B... x ...]
+        return cls._analytical_error_and_cache(kfs, sg_td)[0]
+
+    @classmethod
+    def _analytical_error_and_cache(cls,
+                                    kfs: TensorDict[str, torch.Tensor],     # [B... x ...]
+                                    sg_td: TensorDict[str, torch.Tensor]    # [B... x ...]
+    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
 class Controller(Observer):
