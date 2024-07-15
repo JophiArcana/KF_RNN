@@ -56,7 +56,7 @@ def add_to_metrics(M: Metric, names: str | Iterable[str]):
 def _unsqueeze_if(t: torch.Tensor, b: bool) -> torch.Tensor:
     return t.unsqueeze(-1) if b else t
 
-def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target: Tuple[str, ...]) -> Metric:
+def _get_evaluation_metric_with_dataset_type_and_targets(ds_type: str, key: Tuple[str, ...], target: Tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
@@ -67,7 +67,7 @@ def _get_evaluation_metric_with_dataset_type_and_target(ds_type: str, target: Tu
 
         return utils.multi_map(
             lambda pair: Predictor.evaluate_run(
-                pair[0]["environment", "observation"], pair[1].obj, target,
+                pair[0][key], pair[1].obj, target,
                 batch_mean=not with_batch_dim
             ), utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
         )
@@ -155,14 +155,22 @@ def _get_irreducible_loss_with_dataset_type_and_target(ds_type: str, target: Tup
 
 
 
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("train", ("environment", "observation")), names="overfit")
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", ("environment", "observation")), names="validation")
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("valid", ("environment", "target_observation_estimation")), names="validation_target")
-add_to_metrics(_get_evaluation_metric_with_dataset_type_and_target("test", ("environment", "observation")), names=["testing", "l"])
-
-add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "train", ("environment", "observation"), ("environment", "observation")
+), names="overfit")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "valid", ("environment", "observation"), ("environment", "observation")
+), names="validation")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "valid", ("environment", "observation"), ("environment", "target_observation_estimation")
+), names="validation_target")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "test", ("environment", "observation"), ("environment", "observation")
+), names=["testing", "l"])
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "valid", ("controller", "input"), ("controller", "input")
 ), names="validation_controller")
+
 add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
     "test", ("environment", "target_observation_estimation"), ("environment", "observation")
 ), names=["testing_empirical_irreducible", "eil"])

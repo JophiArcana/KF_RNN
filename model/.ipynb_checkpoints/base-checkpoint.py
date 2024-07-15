@@ -12,7 +12,14 @@ from tensordict import TensorDict
 from infrastructure import utils
 
 
-class Predictor(nn.Module):
+class Observer(nn.Module):
+    def __init__(self, modelArgs: Namespace):
+        super().__init__()
+        self.problem_shape = modelArgs.problem_shape
+        self.O_D: int = self.problem_shape.environment.observation
+
+
+class Predictor(Observer):
     @classmethod
     def impulse(cls,
                 kf_arr: np.ndarray[nn.Module],
@@ -108,8 +115,8 @@ class Predictor(nn.Module):
                               ensembled_learned_kfs: TensorDict[str, torch.Tensor]
     ) -> TensorDict[str, torch.Tensor]:
         reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
-        for k, v in ensembled_learned_kfs.items():
-            t = utils.rgetattr(reference_module, k)
+        for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
+            t = utils.rgetattr(reference_module, k if isinstance(k, str) else ".".join(k))
             if isinstance(t, nn.Parameter):
                 reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
             else:
@@ -141,11 +148,6 @@ class Predictor(nn.Module):
         cache.t += 1
         return error[None], terminate_condition()
 
-    def __init__(self, modelArgs: Namespace):
-        super().__init__()
-        self.problem_shape = modelArgs.problem_shape
-        self.O_D: int = self.problem_shape.environment.observation
-
     """ forward
         :parameter {
             'state': [B x S_D],
@@ -172,12 +174,21 @@ class Predictor(nn.Module):
 
     @classmethod
     def analytical_error(cls,
-                         kfs: TensorDict[str, torch.Tensor],    # [B... x ...]
-                         sg_td: TensorDict[str, torch.Tensor]   # [B... x ...]
-    ) -> torch.Tensor:                                          # [B...]
+                         kfs: TensorDict[str, torch.Tensor],                # [B... x ...]
+                         sg_td: TensorDict[str, torch.Tensor]               # [B... x ...]
+    ) -> TensorDict[str, torch.Tensor]:                                     # [B... x ...]
+        return cls._analytical_error_and_cache(kfs, sg_td)[0]
+
+    @classmethod
+    def _analytical_error_and_cache(cls,
+                                    kfs: TensorDict[str, torch.Tensor],     # [B... x ...]
+                                    sg_td: TensorDict[str, torch.Tensor]    # [B... x ...]
+    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
-class Controller(Predictor):
+class Controller(Observer):
+    def act(self):
+        pass
     pass
 
 

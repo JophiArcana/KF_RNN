@@ -92,10 +92,15 @@ if __name__ == "__main__":
         total_sequence_length=20000,
         system=Namespace(n_systems=1)
     )
-    args.train.sampling = Namespace(method="full")
+    
+    args.train.sampling = Namespace(
+        method="subsequence_padded",
+        subsequence_length=200,
+        batch_size=32
+    )
     args.train.optimizer = Namespace(
         type="Adam",
-        max_lr=3e-4, min_lr=1e-6,
+        max_lr=3e-5, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9
     )
     args.train.scheduler = Namespace(
@@ -108,7 +113,7 @@ if __name__ == "__main__":
     args.experiment.n_experiments = 1
     args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = {"validation"}
+    args.experiment.metrics = {"validation", "validation_controller"}
 
     configurations = [
         (hp_name, {"system.control_noise_std": control_noise_std})

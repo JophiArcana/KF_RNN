@@ -37,8 +37,6 @@ class TransformerPredictor(Predictor):
         action_embds = sum(embd_dict["controller"].values())    # [B x L x S_D]
         embds = observation_embds + action_embds                # [B x L x S_D]
 
-        print(embds.shape, torch.is_grad_enabled())
-        
         out = self.core(inputs_embeds=embds).last_hidden_state  # [B x L x S_D]
         return self.embedding_to_output({"environment": out})
 
@@ -62,7 +60,6 @@ class TransformerPredictor(Predictor):
 
 class TransformerController(Controller, TransformerPredictor):
     def __init__(self, modelArgs: Namespace, S_D: int):
-        Controller.__init__(self, modelArgs)
         TransformerPredictor.__init__(self, modelArgs, S_D)
 
         self.input_out = nn.ParameterDict({
