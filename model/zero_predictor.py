@@ -11,7 +11,7 @@ from model.base import Predictor
 class ZeroPredictor(Predictor):
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    # kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
+                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
                                     systems: TensorDict[str, torch.Tensor],     # [B... x ...]
     ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
         # Variable definition
@@ -50,23 +50,20 @@ class ZeroPredictor(Predictor):
 
         # State evolution noise error
         # Highlight
-        ws_current_err = torch.norm(Has @ sqrt_S_Ws, dim=[-2, -1]) ** 2                                 # [B...]
-
-        # Highlight
         ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ (
             utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
         ) @ sqrt_S_Ws)                                                                                  # [B...]
 
         # Observation noise error
         # Highlight
-        v_current_err = torch.norm(sqrt_S_V, dim=[-2, -1]) ** 2 + torch.norm(Has @ Vinv_BL_F_BLK @ sqrt_S_V, dim=[-2, -1]) ** 2 # [B...]
+        v_current_err = torch.norm(sqrt_S_V, dim=[-2, -1]) ** 2                                         # [B...]
 
         # Highlight
         v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ Vinv_BL_F_BLK.mT @ (
             utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
         ) @ Vinv_BL_F_BLK @ sqrt_S_V)
 
-        err = torch.real(ws_current_err + ws_geometric_err + v_current_err + v_geometric_err)           # [B...]
+        err = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                            # [B...]
         cache = Namespace(
             controller_keys=controller_keys,
             shape=shape, default_td=default_td,

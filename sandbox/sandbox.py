@@ -870,8 +870,8 @@ if __name__ == '__main__':
     torch.set_printoptions(precision=12, sci_mode=False)
     # SHP = Namespace(S_D=10, problem_shape=Namespace(
     #     environment=Namespace(observation=5),
-    #     controller=Namespace(),
-    #     # controller=Namespace(input=2),
+    #     # controller=Namespace(),
+    #     controller=Namespace(input=2),
     # ))
     # # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
     # # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
@@ -1030,7 +1030,7 @@ if __name__ == '__main__':
     t = torch.load("data/observation_IR_2.pt", map_location=DEVICE).to(DTYPE)
     kf_td = TensorDict.from_dict({"observation_IR": t}, batch_size=())
 
-    print(analytical_error(kf_td, sys_td))
+    print(ConvolutionalPredictor.analytical_error(kf_td, sys_td)["environment", "observation"])
 
 
 

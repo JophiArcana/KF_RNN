@@ -322,7 +322,9 @@ def run_testing_experiments(
 
             # DONE: Compute testing metrics
             metric_cache = {}
-            metrics = ("l", "al", "il", "eil")
+            metrics: set = getattr(HP.experiment, "test_metrics", {
+                "l", "al", "il", "eil"
+            } - getattr(HP.experiment, "ignore_test_metrics", set()))
 
             metric_result, metric_shape = {}, (
                 *INFO.dataset.shape,
@@ -338,8 +340,12 @@ def run_testing_experiments(
                     metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
                 except NotImplementedError:
                     pass
+            try:
+                metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
+            except KeyError:
+                pass
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
-            metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
+
             experiment_record.metrics = PTR(metric_result)
 
             if save_experiment:

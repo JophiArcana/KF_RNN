@@ -142,8 +142,9 @@ class CnnPredictorAnalytical(CnnPredictor):
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return CnnPredictorAnalytical.train_analytical,
 
-    def _analytical_initialization(self, system_state_dict: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        F, B, H, K = map(system_state_dict["environment"].__getitem__, ("F", "B", "H", "K"))
+    def _analytical_initialization(self, system_state_dict: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, Dict[str, torch.Tensor]], torch.Tensor]:
+        F, H, K = map(system_state_dict["environment"].__getitem__, ("F", "H", "K"))
+        B = system_state_dict["environment"].get("B", {})
         S_D = F.shape[0]
 
         powers = utils.pow_series(F @ (torch.eye(S_D) - K @ H), self.ir_length)                 # [R x S_D x S_D]
@@ -168,7 +169,7 @@ class CnnPredictorAnalyticalLeastSquares(CnnPredictor):
                                               cache: Namespace
     ) -> Tuple[torch.Tensor, bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
-        def newton_analytical(exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        def newton_analytical(exclusive_: Namespace) -> Tuple[Dict[str, Dict[str, torch.Tensor]], torch.Tensor]:
             # DONE: Remove parameters that do not require gradients before flattening
             _kf_dict = OrderedDict([(k, v) for k, v in ensembled_learned_kfs.items() if v.requires_grad])           # [N x E x F...]
             _flattened_kf_dict = torch.cat([v.flatten(2, -1) for v in _kf_dict.values()], dim=-1)                   # [N x E x F]
@@ -198,10 +199,10 @@ class CnnPredictorAnalyticalLeastSquares(CnnPredictor):
                 for i, (k, v) in enumerate(_kf_dict.items())
             }
 
-            return {
-                k: v - _newton_step.get(k, 0.)
-                for k, v in ensembled_learned_kfs.items()
-            }, torch.full((), torch.nan)
+            return TensorDict.from_dict({
+                (*k.split("."),): v - _newton_step.get(k, 0.)
+                for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True)
+            }, batch_size=ensembled_learned_kfs.shape), torch.full((), torch.nan)
 
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, newton_analytical, cache

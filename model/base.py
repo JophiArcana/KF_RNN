@@ -138,8 +138,8 @@ class Predictor(Observer):
 
         if not hasattr(cache, "initialization_error"):
             initialization, error_ = initialization_func(exclusive)
-            for k, v in ensembled_learned_kfs.items():
-                ensembled_learned_kfs[k] = utils.rgetitem(initialization, k).expand_as(v)
+            for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
+                ensembled_learned_kfs[k] = utils.rgetitem(initialization, k if isinstance(k, str) else ".".join(k)).expand_as(v)
             cache.initialization_error = error_.expand(ensembled_learned_kfs.shape)
             error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj, ("environment", "observation")).mean(dim=-1)
         else:

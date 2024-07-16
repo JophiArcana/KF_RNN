@@ -34,6 +34,7 @@ class SequentialPredictor(Predictor):
         Kh = utils.complex(kfs["K"])                                                                    # [B... x S_Dh x O_D]
         Bh = utils.complex(kfs["B"]) if len(controller_keys) > 0 else default_td                        # [B... x S_Dh x I_D?]
 
+        F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
         K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
         L = utils.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
         sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
@@ -56,14 +57,13 @@ class SequentialPredictor(Predictor):
         sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
 
         # Precomputation
-        Dj = D.unsqueeze(-2)                                                                            # [B... x 1 x 2S_D]
-        Dhi, Dhj = Dh.unsqueeze(-1), Dh.unsqueeze(-2)                                                   # [B... x S_Dh x 1], [B... x 1 x S_Dh]
+        Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
+        Dhi, Dhj = Dh[..., :, None], Dh[..., None, :]                                                   # [B... x S_Dh x 1], [B... x 1 x S_Dh]
 
         HhstHhs = Hhs.mT @ Hhs                                                                          # [B... x S_Dh x S_Dh]
         HhstHas = Hhs.mT @ Has
 
-        F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
-        BL = utils.complex(torch.zeros((S_D, S_D)) + sum(
+        BL = utils.complex(torch.zeros((*shape, S_D, S_D)) + sum(
             systems["environment", "B", k] @ systems["controller", "L", k]
             for k in controller_keys
         ))                                                                                              # [B... x S_D x S_D]
@@ -74,9 +74,6 @@ class SequentialPredictor(Predictor):
 
         # State evolution noise error
         # Highlight
-        ws_current_err = torch.norm(Has @ sqrt_S_Ws, dim=[-2, -1]) ** 2                                 # [B...]
-
-        # Highlight
         ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ (
             utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
             - 2 * utils.hadamard_conjugation_diff_order1(HhstHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
@@ -85,9 +82,7 @@ class SequentialPredictor(Predictor):
 
         # Observation noise error
         # Highlight
-        v_current_err = torch.norm(sqrt_S_V, dim=[-2, -1]) ** 2 + torch.norm(
-            (Has @ Vinv_BL_F_BLK - Hhs @ VhinvFhKh_BhLK) @ sqrt_S_V, dim=[-2, -1]
-        ) ** 2                                                                                          # [B...]
+        v_current_err = torch.norm(sqrt_S_V, dim=[-2, -1]) ** 2                                         # [B...]
 
         # Highlight
         v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
@@ -105,7 +100,7 @@ class SequentialPredictor(Predictor):
             ) @ VhinvFhKh_BhLK
         ) @ sqrt_S_V)
 
-        err = torch.real(ws_current_err + ws_geometric_err + v_current_err + v_geometric_err)           # [B...]
+        err = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                            # [B...]
         cache = Namespace(
             controller_keys=controller_keys,
             shape=shape, default_td=default_td,
@@ -308,9 +303,6 @@ class SequentialController(Controller, SequentialPredictor):
 
             # State evolution noise error
             # Highlight
-            ws_current_err = torch.norm(Las_LhKhHas @ sqrt_S_Ws, dim=[-2, -1]) ** 2                     # [B...]
-
-            # Highlight
             ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ (
                 utils.hadamard_conjugation(Las_LhKhHas, Las_LhKhHas, Dj, Dj, torch.eye(I_D))
                 - 2 * utils.hadamard_conjugation_diff_order1(LhVh_KhHhs.mT @ Las_LhKhHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
@@ -319,9 +311,7 @@ class SequentialController(Controller, SequentialPredictor):
 
             # Observation noise error
             # Highlight
-            v_current_err = torch.norm((L @ K - Lh @ Kh) @ sqrt_S_V, dim=[-1, -2]) ** 2 + torch.norm(
-                (Las_LhKhHas @ Vinv_BL_F_BLK - LhVh_KhHhs @ VhinvFhKh_BhLK) @ sqrt_S_V, dim=[-2, -1]
-            ) ** 2
+            v_current_err = torch.norm((L @ K - Lh @ Kh) @ sqrt_S_V, dim=[-1, -2]) ** 2                 # [B...]
 
             # Highlight
             v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
@@ -339,7 +329,7 @@ class SequentialController(Controller, SequentialPredictor):
                 ) @ VhinvFhKh_BhLK
             ) @ sqrt_S_V)
 
-            r[k] = torch.real(ws_current_err + ws_geometric_err + v_current_err + v_geometric_err)      # [B...]
+            r[k] = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                       # [B...]
 
         result["controller"] = TensorDict.from_dict(r, batch_size=shape)
         return result, cache

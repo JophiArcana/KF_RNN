@@ -92,7 +92,7 @@ if __name__ == "__main__":
         total_sequence_length=20000,
         system=Namespace(n_systems=1)
     )
-    
+
     # args.train.sampling = Namespace(
     #     method="subsequence_padded",
     #     subsequence_length=200,
@@ -143,7 +143,7 @@ if __name__ == "__main__":
         vcl = out["validation_controller"].squeeze(-1)
 
         def plot_with_clip(ax, y, **kwargs):
-            return ax.plot(torch.arange(clip, len(y)), y[clip:], **kwargs)
+            return ax.plot(torch.arange(clip, len(y)).cpu(), y[clip:].cpu(), **kwargs)
 
         # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
         plot_with_clip(ax_observation, (vl.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{cns}_validation")
@@ -178,7 +178,7 @@ if __name__ == "__main__":
         for reference_module, module_td in get_result_attr(result, "learned_kfs")
     ]
 
-    small_horizon = 20
+    small_horizon = 12
     trace_idx, ensemble_idx = 0, 0
 
     trace = lqg.generate_dataset_with_controller_arr(
@@ -191,8 +191,8 @@ if __name__ == "__main__":
 
     for cns, learned_trajectory, color in zip(control_noise_std, learned_trajectories, COLOR_LIST):
         trajectory = learned_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression
-        plt.plot(*trajectory.mT, color=color, marker=".", markersize="8", label=f"{hp_name}{cns}_learned_trajectory")
-    plt.plot(*(optimal_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression).mT, color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
+        plt.plot(*trajectory.mT.cpu(), color=color, marker=".", markersize="8", label=f"{hp_name}{cns}_learned_trajectory")
+    plt.plot(*(optimal_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression).mT.cpu(), color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
 
     plt.xlabel("$\\sigma_0$")
     # plt.xlim(left=-3 * s0, right=3 * s0)
@@ -200,7 +200,7 @@ if __name__ == "__main__":
     # plt.ylim(bottom=-3 * s0, top=3 * s0)
     plt.title("trajectory")
 
-    plt.legend()
+    plt.legend(fontsize=6)
     plt.show()
     # """
 
@@ -210,9 +210,9 @@ if __name__ == "__main__":
 
     for cns, ds_, color in zip(control_noise_std, datasets, COLOR_LIST):
         compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
-        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
+        plt.scatter(*compressed_states[indices].mT.cpu(), s=3, color=color, alpha=0.15)
         utils.confidence_ellipse(
-            *compressed_states.mT, plt.gca(),
+            *compressed_states.mT.cpu(), plt.gca(),
             n_std=2.0, linewidth=2, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{cns}_states", zorder=12
         )
 
@@ -228,16 +228,16 @@ if __name__ == "__main__":
 
     for cns, ds_, color in zip(control_noise_std, learned_trajectories, COLOR_LIST):
         compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
-        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
+        plt.scatter(*compressed_states[indices].mT.cpu(), s=3, color=color, alpha=0.15)
         utils.confidence_ellipse(
-            *compressed_states.mT, plt.gca(),
+            *compressed_states.mT.cpu(), plt.gca(),
             n_std=2.0, linewidth=2, linestyle='-', edgecolor=0.7 * color, label=f"{hp_name}{cns}_learned_states", zorder=12
         )
 
     compressed_optimal_states = optimal_trajectory["environment", "state"].flatten(0, -2) @ compression
-    plt.scatter(*compressed_optimal_states[indices].mT, s=3, color="black", alpha=0.15)
+    plt.scatter(*compressed_optimal_states[indices].mT.cpu(), s=3, color="black", alpha=0.15)
     utils.confidence_ellipse(
-        *compressed_optimal_states.mT, plt.gca(),
+        *compressed_optimal_states.mT.cpu(), plt.gca(),
         n_std=2.0, linewidth=2, linestyle='-', edgecolor="black", label=f"optimal_states", zorder=12
     )
 
@@ -267,7 +267,7 @@ if __name__ == "__main__":
 
     for cns, lqg_, ds_, color in zip(control_noise_std, lqg_list, datasets, COLOR_LIST):
         l = loss(ds_, lqg_)
-        plt.plot(torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=f"{hp_name}{cns}_regret")
+        plt.plot(torch.cumsum(l, dim=-1).median(dim=-2).values.detach().cpu(), color=color, label=f"{hp_name}{cns}_regret")
 
     plt.xlabel("horizon")
     plt.ylabel("loss")

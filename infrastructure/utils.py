@@ -167,9 +167,9 @@ def hadamard_conjugation(
         beta: torch.Tensor,     # [B... x p x q]
         C: torch.Tensor         # [B... x m x p]
 ) -> torch.Tensor:              # [B... x n x q]
-    P = A[..., :, None, :, None] * B[..., None, :, None, :]                     # [B... x m x p x n x q]
-    _coeff = alpha[..., :, None, :, None] * beta[..., None, :, None, :]         # [B... x m x p x n x q]
-    return torch.sum(P * (_coeff / (1 - _coeff)) * C[..., None, None], dim=[-3, -4])
+    P = A[..., :, None, :, None] * B[..., None, :, None, :]                         # [B... x m x p x n x q]
+    coeff = 1 / (1 - alpha[..., :, None, :, None] * beta[..., None, :, None, :])    # [B... x m x p x n x q]
+    return torch.sum(P * coeff * C[..., None, None], dim=[-3, -4])
 
 def hadamard_conjugation_diff_order1(
         A: torch.Tensor,        # [B... x m x n]
