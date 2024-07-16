@@ -66,10 +66,10 @@ if __name__ == "__main__":
 
     args = loader.generate_args(SHP)
 
-    d_embed = 256
-    n_layer = 12
-    n_head = 8
-    d_inner = 4 * d_embed
+    d_embed = 8
+    n_layer = 3
+    n_head = 2
+    d_inner = 2 * d_embed
 
     args.model.model = TransformerXLInContextController
     args.model.transformerxl = TransfoXLConfig(
@@ -93,15 +93,20 @@ if __name__ == "__main__":
         system=Namespace(n_systems=1)
     )
     
+    # args.train.sampling = Namespace(
+    #     method="subsequence_padded",
+    #     subsequence_length=200,
+    #     batch_size=32
+    # )
     args.train.sampling = Namespace(method="full")
     args.train.optimizer = Namespace(
         type="Adam",
-        max_lr=3e-5, min_lr=1e-6,
+        max_lr=3e-4, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9
     )
     args.train.scheduler = Namespace(
         type="exponential",
-        epochs=40000, lr_decay=1.0,
+        epochs=10000, lr_decay=0.9998,
 
     )
     args.train.iterations_per_epoch = 1
