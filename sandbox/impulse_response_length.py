@@ -8,7 +8,7 @@ from model.convolutional import CnnPredictorLeastSquares, CnnPredictorAnalytical
 if __name__ == "__main__":
     base_exp_name = "ImpulseResponseLengthAnalytical"
     output_dir = "system2_CNN"
-    output_fname = "result"
+    output_fname = "result2"
 
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
 
@@ -17,8 +17,10 @@ if __name__ == "__main__":
         dataset_size=1,
         total_sequence_length=10000
     )
-    args.experiment.metrics = {"validation_analytical"}
-    args.experiment.test_metrics = {"al", "il"}
+    args.experiment.metrics = Namespace(
+        training={"validation_analytical"},
+        testing={"al", "il"}
+    )
     args.experiment.exp_name = base_exp_name
 
     configurations = [

@@ -56,7 +56,7 @@ def plot_experiment(
         snvl_median = snvl.median(-1).values.mean(-1).median(-1).values
         # Take the median over validation traces, mean over validation systems, and quartiles over training resampling
         snvl_train_quantiles = torch.quantile(snvl.median(-1).values.mean(-1), quantiles, dim=-1)
-        # Take the median over validation traces, mean over validation systems, and quartiles over training resampling
+        # Take the median over training traces, mean over validation systems, and quartiles over validation resampling
         snvl_valid_quantiles = torch.quantile(snvl, quantiles, dim=-1).mean(-1).median(-1).values
 
         # Generate the plots
@@ -94,51 +94,6 @@ def plot_experiment(
     plt.title(plot_name)
     plt.legend(fontsize=6)
     plt.show()
-
-# def plot_comparison(
-#         args: Namespace,
-#         configurations: OrderedDict,
-#         systems: List[LinearSystem],
-#         learned_kf_arr: np.ndarray[TensorDict],
-#         base_exp_name: str,
-#         output_dir: str,
-#         log_xscale: bool
-# ):
-#     plt.rcParams["figure.figsize"] = (8.0, 6.0)
-#     exp_name = f"{output_dir}/{base_exp_name}"
-#
-#     outer_hp_name, _ = configurations[0]
-#     outer_hp_values = _.get("name", list(_.values())[0])
-#
-#     inner_hp_name, _ = configurations[1]
-#     inner_hp_values = _.get("name", list(_.values())[0])
-#
-#     learned_kf_arr = result["learned_kf"]
-#     M = result["metric"]
-#     # snvl_ = (M.l - M.eil).cpu()
-#     # snvl_median = snvl_.median(-1).values.median(-1).values.permute(-1, *range(snvl_.ndim - 3))[n_idx]
-#
-#     snvl_ = (M.al - M.il).squeeze(-1).cpu()
-#     snvl_median = snvl_.median(-1).values.permute(-1, *range(snvl_.ndim - 2))[n_idx]
-#
-#     c = plt.cm.pink(np.linspace(0, 0.8, len(outer_hp_values)))
-#     for i, outer_hp_value in enumerate(outer_hp_values):
-#         plt.plot(inner_hp_values, snvl_median[i], c=c[i], marker=".", markersize=16, label=f"{outer_hp_name}{outer_hp_value}")
-#         argmin = torch.argmin(snvl_median[i])
-#         plt.scatter([inner_hp_values[argmin]], [snvl_median[i, argmin]], c=c[i] * 0.5, s=256, marker="*")
-#     # Use snvl_median[:, 0, i] for multiple RNN initializations
-#
-#     plt.xlabel(inner_hp_name)
-#     if log_xscale:
-#         plt.xscale("log")
-#     # plt.xticks(hp_values)
-#     # plt.gca().xaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
-#     plt.ylabel(r"normalized_validation_loss: $\frac{1}{L}|| F_\theta(\tau) - \tau ||^2 - || KF(\tau) - \tau ||^2$")
-#     plt.yscale("log")
-#     plt.title(exp_name)
-#     plt.legend(fontsize=6)
-#
-#     plt.show()
 
 
 

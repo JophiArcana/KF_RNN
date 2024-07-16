@@ -311,14 +311,14 @@ def _run_training(
 
             # DONE: Set up caching for metrics
             metric_cache = {}
-            metrics: set = getattr(EHP, "metrics", {
+            metrics: set = utils.rgetattr(EHP, "metrics.training", {
                 "overfit",
                 "validation",
                 "validation_target",
                 "validation_analytical",
                 "impulse_target",
                 "overfit_gradient_norm"
-            } - getattr(EHP, "ignore_metrics", set()))
+            } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
             if THP.scheduler.epochs is None:
                 metrics.add("overfit_gradient_norm")
 
