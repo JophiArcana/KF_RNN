@@ -139,16 +139,16 @@ if __name__ == "__main__":
     for cns, training_output, color in zip(control_noise_std, training_outputs, COLOR_LIST):
         out = training_output.squeeze(0)
         tl = out["training"]
-        al = out["validation_analytical"].squeeze(-1)
-        acl = out["validation_controller_analytical"].squeeze(-1)
+        vl = out["validation"].squeeze(-1)
+        vcl = out["validation_controller"].squeeze(-1)
 
         def plot_with_clip(ax, y, **kwargs):
             return ax.plot(torch.arange(clip, len(y)), y[clip:], **kwargs)
 
         # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
-        plot_with_clip(ax_observation, (al.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{cns}_validation_analytical")
+        plot_with_clip(ax_observation, (vl.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{cns}_validation")
 
-        plot_with_clip(ax_controller, (acl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
+        plot_with_clip(ax_controller, (vcl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
 
     plt.xlabel("epoch")
     ax_observation.set_yscale("log")
