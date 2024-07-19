@@ -10,9 +10,9 @@ from model.convolutional import CnnPredictorLeastSquares, CnnPredictorAnalytical
 
 
 if __name__ == "__main__":
-    base_exp_name = "ImpulseResponseLengthAnalytical"
-    output_dir = "system2_CNN"
-    output_fname = "result2"
+    base_exp_name = "Debug"
+    output_dir = "debug"
+    output_fname = "result"
 
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
 
@@ -44,7 +44,7 @@ if __name__ == "__main__":
         args, configurations, {
             "dir": output_dir,
             "fname": output_fname
-        }, system2, save_experiment=True
+        }, system2, save_experiment=False
     )
     plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical", lstsq=False, xscale="linear")
 

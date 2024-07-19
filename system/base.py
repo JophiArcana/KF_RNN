@@ -13,7 +13,7 @@ from system.module_group import ModuleGroup
 
 class SystemGroup(ModuleGroup):
     def __init__(self,
-                 problem_shape: Namespace,
+                 SHP: Namespace,
                  environment: EnvironmentGroup,
                  controller: ControllerGroup
     ):
@@ -21,7 +21,7 @@ class SystemGroup(ModuleGroup):
             environment.group_shape,
             controller.group_shape
         ))
-        self.problem_shape = problem_shape
+        self.problem_shape = SHP.problem_shape
         self.environment = environment
         self.controller = controller
 
@@ -79,9 +79,7 @@ class SystemDistribution(object):
                SHP: Namespace,
                shape: Tuple[int, ...]
     ) -> SystemGroup:
-        return utils.call_func_with_kwargs(self.system_type, (SHP.problem_shape, self.sample_parameters(SHP, shape)), vars(SHP))
-
-
+        return self.system_type(SHP, self.sample_parameters(SHP, shape))
 
 
 

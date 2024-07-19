@@ -187,10 +187,7 @@ class Predictor(Observer):
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
 class Controller(Observer):
-    def act(self):
-        pass
     pass
-
 
 
 

@@ -48,11 +48,11 @@ class ZeroPredictor(Predictor):
 
         Dj = D.unsqueeze(-2)                                                                            # [B... x 1 x 2S_D]
 
+        inf_geometric = utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
+
         # State evolution noise error
         # Highlight
-        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ (
-            utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
-        ) @ sqrt_S_Ws)                                                                                  # [B...]
+        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)                  # [B...]
 
         # Observation noise error
         # Highlight
@@ -60,7 +60,7 @@ class ZeroPredictor(Predictor):
 
         # Highlight
         v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ Vinv_BL_F_BLK.mT @ (
-            utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
+            inf_geometric
         ) @ Vinv_BL_F_BLK @ sqrt_S_V)
 
         err = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                            # [B...]

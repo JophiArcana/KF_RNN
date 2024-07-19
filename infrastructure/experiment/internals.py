@@ -135,7 +135,7 @@ def _construct_info_dict(
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
     systems_arr = utils.multi_map(
-        lambda sg: utils.call_func_with_kwargs(type(sg), (SHP.problem_shape, sg.td()), vars(sg)),
+        lambda sg: type(sg)(SHP, sg.td()),
         systems_arr, dtype=SystemGroup
     )
     result["systems"] = systems_arr
@@ -232,9 +232,6 @@ def _populate_values(
 
     # DONE: Populate default values if not present
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
-
-    if not hasattr(HP.train, "control_coefficient"):
-        HP.train.control_coefficient = 1.0
 
     def _rgetattr_default(format_str: str, ds_type: str) -> Any:
         return utils.rgetattr_default(HP.dataset, format_str, ds_type, TRAINING_DATASET_TYPES[0])

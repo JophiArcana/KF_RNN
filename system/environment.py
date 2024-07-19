@@ -28,7 +28,7 @@ class EnvironmentGroup(ModuleGroup):
 
 
 class LTIEnvironment(EnvironmentGroup):
-    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor]):
+    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float):
         EnvironmentGroup.__init__(self, problem_shape, params.shape)
 
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V"):
@@ -64,10 +64,12 @@ class LTIEnvironment(EnvironmentGroup):
         self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
         self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
 
+        self.initial_state_scale = initial_state_scale
+
     def sample_initial_state(self,
                              batch_size: int                # B
     ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
-        state = torch.randn((*self.group_shape, batch_size, self.S_D), requires_grad=True) @ utils.sqrtm(self.S_state_inf).mT           # [N... x B x S_D]
+        state = self.initial_state_scale * torch.randn((*self.group_shape, batch_size, self.S_D), requires_grad=True) @ utils.sqrtm(self.S_state_inf).mT           # [N... x B x S_D]
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
         observation = state @ self.H.mT + v                                                                         # [N... x B x O_D]

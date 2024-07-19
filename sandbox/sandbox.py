@@ -868,115 +868,63 @@ if __name__ == '__main__':
     """ Sandbox 18 """
     from model.sequential.rnn_controller import RnnController
     torch.set_printoptions(precision=12, sci_mode=False)
-    # SHP = Namespace(S_D=10, problem_shape=Namespace(
-    #     environment=Namespace(observation=5),
-    #     # controller=Namespace(),
-    #     controller=Namespace(input=2),
-    # ))
-    # # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
-    # # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
-    #
-    # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    # sys = dist.sample(SHP, ())
-    #
-    # # ds = systems.generate_dataset(1, 12)["environment"].squeeze(0)
-    # # print(ds)
-    # #
-    # # x, xh, y, w, v = map(ds.__getitem__, ("state", "target_state_estimation", "observation", "w", "v"))
-    # #
-    # # augmented_x0 = torch.cat([x[0], xh[0]], dim=0)
-    # #
-    # # augmented_x1 = systems.effective.F @ augmented_x0 + torch.cat([
-    # #     w[1], systems.environment.K @ (systems.environment.H @ w[1] + v[1])
-    # # ], dim=0)
-    # # print("a0", augmented_x0)
-    # # print("b0", torch.cat([x[0], xh[0]], dim=0))
-    # #
-    # # print("a1", augmented_x1)
-    # # print("b1", torch.cat([x[1], xh[1]], dim=0))
-    #
-    #
-    # sys_td = sys.td()
-    # reference_module = RnnController(SHP).eval()
-    # kf_td = TensorDict.from_dict({
-    #     k: v for k, v in {
-    #         **sys_td.get("environment", {}),
-    #         **sys_td.get("controller", {})
-    #     }.items()
-    #     if hasattr(reference_module, k)
-    # }, batch_size=sys_td.shape) # .apply(torch.zeros_like)
-    #
-    # print(sys_td["environment", "irreducible_loss"])
-    # print(sys_td["irreducible_loss"].to_dict())
-    # print(sys_td["zero_predictor_loss"].to_dict())
-    # raise Exception()
-    # ds = sys.generate_dataset(1, 12)
-    # out = Predictor.run(reference_module, kf_td, ds)
-    # print(ds["controller", "input"][0, :4])
-    # print(out["controller", "input"][0, :4])
-    #
-    # raise Exception()
-    #
-    # print(torch.autograd.grad(
-    #     # sys_td["effective", "L", "input"].norm(),
-    #     SequentialPredictor.analytical_error(kf_td, sys_td),
-    #     sys_td["environment", "B", "input"]
-    # ))
-
-    """ Sandbox 19 """
-    n = Namespace(a=Namespace(b=Namespace(c=5)))
-    print(utils.rgetattr(n, "a.b.c", 3))
-    raise Exception()
-
-    import pickle
-    with open("data/val_upperTriA_gauss_C_tensor_dicts.pkl", "rb") as fp:
-        d = pickle.load(fp)[2]
-
-    td = TensorDict.from_dict({"environment": {
-         "F": d["A"], "H": d["C"], "sqrt_S_W": 0.1 * torch.eye(10), "sqrt_S_V": 0.1 * torch.eye(5), "B": TensorDict({}, batch_size=())
-    }}, batch_size=()).apply(lambda t: t.to(DTYPE))
-
 
     SHP = Namespace(S_D=10, problem_shape=Namespace(
         environment=Namespace(observation=5),
-        controller=Namespace(),
-    ))
-    sys = LTISystem(SHP.problem_shape, td)
+        # controller=Namespace(),
+        controller=Namespace(input=2),
+    ), control_noise_std=2.0)
+    # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
+    # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
+
+    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    sys = dist.sample(SHP, ())
+
+    ds = sys.generate_dataset(7, 12)["environment"]
+    print(ds)
+    raise Exception()
+    # print(ds)
+    #
+    # x, xh, y, w, v = map(ds.__getitem__, ("state", "target_state_estimation", "observation", "w", "v"))
+    #
+    # augmented_x0 = torch.cat([x[0], xh[0]], dim=0)
+    #
+    # augmented_x1 = systems.effective.F @ augmented_x0 + torch.cat([
+    #     w[1], systems.environment.K @ (systems.environment.H @ w[1] + v[1])
+    # ], dim=0)
+    # print("a0", augmented_x0)
+    # print("b0", torch.cat([x[0], xh[0]], dim=0))
+    #
+    # print("a1", augmented_x1)
+    # print("b1", torch.cat([x[1], xh[1]], dim=0))
+
 
     sys_td = sys.td()
+    reference_module = RnnController(SHP).eval()
+    kf_td = TensorDict.from_dict({
+        k: v for k, v in {
+            **sys_td.get("environment", {}),
+            **sys_td.get("controller", {})
+        }.items()
+        if hasattr(reference_module, k)
+    }, batch_size=sys_td.shape) # .apply(torch.zeros_like)
+
     print(sys_td["environment", "irreducible_loss"])
     print(sys_td["irreducible_loss"].to_dict())
     print(sys_td["zero_predictor_loss"].to_dict())
+    raise Exception()
+    ds = sys.generate_dataset(1, 12)
+    out = Predictor.run(reference_module, kf_td, ds)
+    print(ds["controller", "input"][0, :4])
+    print(out["controller", "input"][0, :4])
 
-    # t = torch.tensor([[[-0.213108941913, -0.076482892036, -0.002886268310, -0.399394601583,
-    #       -0.531960129738],
-    #      [-0.295079201460, -0.365193754435,  0.276217609644,  0.258012145758,
-    #       -0.325427919626]],
-    #
-    #     [[-0.353170305490, -0.244755879045,  0.287547379732,  0.545907199383,
-    #       -0.130725130439],
-    #      [ 0.155552610755,  0.225297629833, -0.110139131546, -0.045099522918,
-    #        0.083198539913]],
-    #
-    #     [[-0.736998200417,  0.084076076746, -0.059113919735,  0.179010629654,
-    #       -0.370384752750],
-    #      [ 0.130812391639, -0.330177664757,  0.242046400905,  0.091028898954,
-    #       -0.264540642500]],
-    #
-    #     [[-0.905120491982, -0.545689702034,  0.347147256136,  0.538557529449,
-    #       -0.267436683178],
-    #      [-0.933974087238, -1.178467512131,  0.606216073036,  0.847504854202,
-    #       -0.748944520950]],
-    #
-    #     [[-0.607982277870, -0.355590015650,  0.052718941122,  0.430850952864,
-    #        0.086465097964],
-    #      [ 0.468368589878, -0.142236992717, -0.128549367189,  0.158418118954,
-    #        0.409350693226]]])
+    raise Exception()
 
-    t = torch.load("data/observation_IR_2.pt", map_location=DEVICE).to(DTYPE)
-    kf_td = TensorDict.from_dict({"observation_IR": t}, batch_size=())
-
-    print(ConvolutionalPredictor.analytical_error(kf_td, sys_td)["environment", "observation"])
+    print(torch.autograd.grad(
+        # sys_td["effective", "L", "input"].norm(),
+        SequentialPredictor.analytical_error(kf_td, sys_td),
+        sys_td["environment", "B", "input"]
+    ))
 
 
 

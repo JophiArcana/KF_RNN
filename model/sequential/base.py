@@ -72,13 +72,15 @@ class SequentialPredictor(Predictor):
         VhinvFhKh_BhLK = Vhinv @ (Fh @ Kh - sum(Bh[k] @ L[k] @ K for k in controller_keys))             # [B... x S_Dh x O_D]
         VhinvFhKhHas_BhLas = Vhinv @ (Fh @ Kh @ Has - sum(Bh[k] @ Las[k] for k in controller_keys))     # [B... x S_Dh x 2S_D]
 
-        # State evolution noise error
-        # Highlight
-        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ (
+        inf_geometric = (
             utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
             - 2 * utils.hadamard_conjugation_diff_order1(HhstHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
             + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, HhstHhs)
-        ) @ sqrt_S_Ws)                                                                                  # [B...]
+        )
+
+        # State evolution noise error
+        # Highlight
+        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)                  # [B...]
 
         # Observation noise error
         # Highlight
@@ -86,11 +88,7 @@ class SequentialPredictor(Predictor):
 
         # Highlight
         v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
-            Vinv_BL_F_BLK.mT @ (
-                utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
-                - 2 * utils.hadamard_conjugation_diff_order1(HhstHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
-                + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, HhstHhs)
-            ) @ Vinv_BL_F_BLK
+            Vinv_BL_F_BLK.mT @ inf_geometric @ Vinv_BL_F_BLK
             - 2 * VhinvFhKh_BhLK.mT @ (
                 utils.hadamard_conjugation(Hhs, Has, Dhj, Dj, torch.eye(O_D))
                 - utils.hadamard_conjugation_diff_order1(HhstHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
@@ -301,13 +299,15 @@ class SequentialController(Controller, SequentialPredictor):
             LhVh_KhHhstLhVh_KhHhs = LhVh_KhHhs.mT @ LhVh_KhHhs                                          # [B... x S_Dh x S_Dh]
             Las_LhKhHas = Las - Lh @ Kh @ Has                                                           # [B... x I_D x 2S_D]
 
-            # State evolution noise error
-            # Highlight
-            ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ (
+            inf_geometric = (
                 utils.hadamard_conjugation(Las_LhKhHas, Las_LhKhHas, Dj, Dj, torch.eye(I_D))
                 - 2 * utils.hadamard_conjugation_diff_order1(LhVh_KhHhs.mT @ Las_LhKhHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
                 + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, LhVh_KhHhstLhVh_KhHhs)
-            ) @ sqrt_S_Ws)                                                                              # [B...]
+            )
+
+            # State evolution noise error
+            # Highlight
+            ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)              # [B...]
 
             # Observation noise error
             # Highlight
@@ -315,11 +315,7 @@ class SequentialController(Controller, SequentialPredictor):
 
             # Highlight
             v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
-                Vinv_BL_F_BLK.mT @ (
-                    utils.hadamard_conjugation(Las_LhKhHas, Las_LhKhHas, Dj, Dj, torch.eye(I_D))
-                    - 2 * utils.hadamard_conjugation_diff_order1(LhVh_KhHhs.mT @ Las_LhKhHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
-                    + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, LhVh_KhHhstLhVh_KhHhs)
-                ) @ Vinv_BL_F_BLK
+                Vinv_BL_F_BLK.mT @ inf_geometric @ Vinv_BL_F_BLK
                 - 2 * VhinvFhKh_BhLK.mT @ (
                     utils.hadamard_conjugation(LhVh_KhHhs, Las_LhKhHas, Dhj, Dj, torch.eye(I_D))
                     - utils.hadamard_conjugation_diff_order1(LhVh_KhHhstLhVh_KhHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))

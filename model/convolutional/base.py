@@ -75,7 +75,7 @@ class ConvolutionalPredictor(Predictor):
         Has_cumQlHas_PlLasD_lDk_R = Has_cumQlHas_PlLasD_lDk[..., -1, :, :]                              # [B... x O_D x 2S_D]
         Has_cumQlHas_PlLasD_lDk = Has_cumQlHas_PlLasD_lDk[..., :-1, :, :]                               # [B... x R x O_D x 2S_D]
 
-        infgeometric_Has_cumQlHas_PlLasD_lDk = utils.hadamard_conjugation(
+        inf_geometric_Has_cumQlHas_PlLasD_lDk = utils.hadamard_conjugation(
             Has_cumQlHas_PlLasD_lDk_R, Has_cumQlHas_PlLasD_lDk_R,
             Dj, Dj, torch.eye(O_D)
         )                                                                                               # [B... x 2S_D x 2S_D]
@@ -85,7 +85,7 @@ class ConvolutionalPredictor(Predictor):
         ws_recent_err = (torch.norm(Has_cumQlHas_PlLasD_lDk @ sqrt_S_Ws[..., None, :, :], dim=[-2, -1]) ** 2).sum(dim=-1)
 
         # Highlight
-        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ infgeometric_Has_cumQlHas_PlLasD_lDk @ sqrt_S_Ws)   # [B...]
+        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric_Has_cumQlHas_PlLasD_lDk @ sqrt_S_Ws)  # [B...]
 
         # Observation noise error
         # Highlight
@@ -96,7 +96,7 @@ class ConvolutionalPredictor(Predictor):
 
         # Highlight
         v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ Vinv_BL_F_BLK.mT @ (
-            infgeometric_Has_cumQlHas_PlLasD_lDk
+            inf_geometric_Has_cumQlHas_PlLasD_lDk
         ) @ Vinv_BL_F_BLK @ sqrt_S_V)                                                                   # [B...]
 
         err = torch.real(ws_recent_err + ws_geometric_err + v_current_err + v_recent_err + v_geometric_err)

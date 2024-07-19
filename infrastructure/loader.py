@@ -60,7 +60,10 @@ BaseTrainArgs = Namespace(
     ),
 
     # Iteration
-    iterations_per_epoch=20
+    iterations_per_epoch=20,
+
+    # Loss
+    control_coefficient=1.0,
 )
 BaseExperimentArgs = Namespace(
     n_experiments=1,
