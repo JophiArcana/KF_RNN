@@ -266,9 +266,9 @@ def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[DimArray]:
     )
     return (dim_arr.broadcast(reference_dim_arr) for dim_arr in dim_arrs)
 
-def broadcast_arrays_preserve_ndims(*arrs: np.ndarray) -> Iterator[np.ndarray]:
+def broadcast_arrays_preserve_ndims(*arrs: np.ndarray) -> Tuple[Iterator[np.ndarray], Tuple[int, ...]]:
     shape = np.broadcast_shapes(*(arr.shape for arr in arrs))
-    return (np.broadcast_to(arr, shape[-arr.ndim:]) for arr in arrs)
+    return (np.broadcast_to(arr, shape[-arr.ndim:]) for arr in arrs), shape
 
 def take_from_dim_array(dim_arr: DimArray | Dataset, idx: Dict[str, Any]):
     dims = set(dim_arr.dims)
@@ -342,18 +342,19 @@ def deepcopy_namespace(n: Namespace) -> Namespace:
             return o
     return _deepcopy_helper(n)
 
-def toJSON(n: Namespace):
-    d = OrderedDict(vars(n))
-    for k, v in d.items():
-        if type(v) is Namespace:
-            d[k] = toJSON(v)
-        else:
-            try:
-                json.dumps(v)
-                d[k] = v
-            except TypeError:
-                d[k] = str(v)
-    return d
+def toJSON(o: object):
+    if isinstance(o, Namespace):
+        return {k: toJSON(v) for k, v in vars(o).items()}
+    elif isinstance(o, dict):
+        return {k: toJSON(v) for k, v in o.items()}
+    elif isinstance(o, (list, tuple, set)):
+        return list(map(toJSON, o))
+    else:
+        try:
+            json.dumps(o)
+            return o
+        except TypeError:
+            return str(o)
 
 def str_namespace(n: Namespace) -> str:
     return json.dumps(toJSON(n), indent=4)

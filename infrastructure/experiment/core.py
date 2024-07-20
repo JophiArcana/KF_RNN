@@ -1,5 +1,3 @@
-import copy
-import itertools
 import json
 import os
 import shutil
@@ -11,9 +9,10 @@ import torch
 from dimarray import DimArray
 
 from infrastructure import utils
-from infrastructure.experiment.internals import _supports_dataset_condition, _prologue, \
-    _construct_info_dict_from_dataset_types, \
-    _process_info_dict, _construct_dataset_from_iterparam, _populate_values
+from infrastructure.experiment.internals import _filter_dimensions_if_any_satisfy_condition, \
+    _supports_dataset_condition, _prologue, \
+    _construct_info_dict_from_dataset_types, _iterate_HP_with_params, \
+    _process_info_dict, _populate_values
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.experiment.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
@@ -104,46 +103,27 @@ def run_training_experiments(
     cache = Namespace()
     conditions = (
         (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
-        (lambda n: not n.startswith("dataset.test."),
-         "Cannot sweep over test dataset hyperparameters during training."),
-        (_supports_dataset_condition(HP, "valid"),
-         "Cannot sweep over hyperparameters that determine shape of the validation dataset."),
+        (lambda n: not n.startswith("dataset.test."), "Cannot sweep over test dataset hyperparameters during training."),
+        # (_supports_dataset_condition(HP, "valid"), "Cannot sweep over hyperparameters that determine shape of the validation dataset."),
     )
-    numpy_HP, iterparams = _prologue(HP, iterparams, conditions)
-
-    # DONE: Filter out the hyperparameter sweeps that do not influence training
-    train_iterparams = []
-    for param_group, params in iterparams:
-        _params = {}
-        for n, v in params.items():
-            if not (n.startswith("dataset.") and not n.startswith("dataset.train.")):
-                _params[n] = v
-        if len(_params) > 0:
-            train_iterparams.append((param_group, _params))
-
-    # DONE: Construct Dataset structures
-    iterparam_datasets = (*map(_construct_dataset_from_iterparam, iterparams),)
-    train_iterparam_datasets = (*map(_construct_dataset_from_iterparam, train_iterparams),)
-
-    if len(train_iterparam_datasets) > 0:
-        train_datasets, train_dim_names, train_shapes = zip(*train_iterparam_datasets)
-    else:
-        train_datasets, train_dim_names, train_shapes = (), (), ()
-    cache.train_dim_names = train_dim_names = (*itertools.chain(*train_dim_names),)
-    cache.train_param_shape = train_param_shape = (*itertools.chain(*train_shapes),)
+    dimensions, params_dataset = _prologue(HP, iterparams, conditions)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
     _INFO_DICT = _construct_info_dict_from_dataset_types(
-        numpy_HP, OrderedDict(), TRAINING_DATASET_TYPES, train_output_dir,
+        HP, dimensions, params_dataset, OrderedDict(), TRAINING_DATASET_TYPES, train_output_dir,
         default_systems=systems
     )
 
-    # SECTION: Construct DimRecarrays from accumulated information
     # DONE: Cache unprocessed INFO_DICT to use during testing
     cache.info_dict = _INFO_DICT
     INFO_DICT: Dict[str, DimArray] = {k: _process_info_dict(v) for k, v in _INFO_DICT.items()}
 
     # SECTION: Run the experiments for hyperparameter sweeps
+    # DONE: Filter out the hyperparameter sweeps that do not influence training
+    cache.train_dimensions = _filter_dimensions_if_any_satisfy_condition(
+        dimensions, lambda param: not param.startswith("dataset.") or param.startswith("dataset.train.")
+    )
+
     # Result setup
     if save_experiment and os.path.exists(output_fname):
         try:
@@ -152,7 +132,10 @@ def run_training_experiments(
             result = torch.load(output_fname_backup, map_location=DEVICE)
     else:
         # Set up new result DimRecarray
-        result = DimArray(np.recarray(train_param_shape, dtype=RESULT_DTYPE), dims=train_dim_names, dtype=RESULT_DTYPE)
+        result = DimArray(
+            np.recarray([*cache.train_dimensions.values()], dtype=RESULT_DTYPE),
+            dims=[*cache.train_dimensions.keys()], dtype=RESULT_DTYPE
+        )
 
     print("=" * 160)
     print(HP.experiment.exp_name)
@@ -160,18 +143,15 @@ def run_training_experiments(
     print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
 
     counter = 0
-    for experiment_indices in itertools.product(*map(range, train_param_shape)):
-        experiment_dict_index = dict(zip(train_dim_names, experiment_indices))
+    for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, cache.train_dimensions, params_dataset):
         experiment_record = result.take(experiment_dict_index)
-
         if experiment_record.time == 0:
             done = np_records.fromrecords(result.values, dtype=RESULT_DTYPE).time > 0
             print("=" * 160)
             print(f'Experiment {done.sum().item()}/{done.size}')
 
             # DONE: Set up experiment hyperparameters
-            EXPERIMENT_HP = utils.deepcopy_namespace(HP)
-            _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
+            _populate_values(EXPERIMENT_HP)
 
             INFO = Namespace(**{
                 ds_type: np_records.fromrecords(utils.take_from_dim_array(ds_info, experiment_dict_index), dtype=ds_info.dtype)
@@ -277,14 +257,11 @@ def run_testing_experiments(
         (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
         (_supports_dataset_condition(HP, "test"), "Cannot sweep over hyperparameters that determine shape of the testing dataset."),
     )
-    numpy_HP, iterparams = _prologue(HP, iterparams, conditions)
-
-    # DONE: Construct Dataset structures
-    iterparam_datasets = (*map(_construct_dataset_from_iterparam, iterparams),)
+    dimensions, params_dataset = _prologue(HP, iterparams, conditions)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
     INFO_DICT = _construct_info_dict_from_dataset_types(
-        numpy_HP, cache.info_dict, (TESTING_DATASET_TYPE,), test_output_dir,
+        HP, dimensions, params_dataset, cache.info_dict, (TESTING_DATASET_TYPE,), test_output_dir,
         default_systems=systems
     )
 
@@ -301,17 +278,14 @@ def run_testing_experiments(
 
     # SECTION: Run the testing metrics
     counter = 0
-    for experiment_indices in itertools.product(*map(range, cache.train_param_shape)):
-        experiment_dict_index = dict(zip(cache.train_dim_names, experiment_indices))
+    for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, cache.train_dimensions, params_dataset):
         experiment_record = result.take(experiment_dict_index)
-
         if experiment_record.metrics is None:
             done = ~np.array(get_result_attr(result, "metrics") == None)
             print(f"Computing metrics for experiment {done.sum().item()}/{done.size}")
 
             # DONE: Set up experiment hyperparameters
-            EXPERIMENT_HP = utils.deepcopy_namespace(HP)
-            _populate_values(EXPERIMENT_HP, iterparam_datasets, experiment_dict_index)
+            _populate_values(EXPERIMENT_HP)
 
             # DONE: Set up metric information
             reference_module, ensembled_learned_kfs = experiment_record.learned_kfs

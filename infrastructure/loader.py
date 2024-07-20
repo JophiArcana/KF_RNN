@@ -108,7 +108,7 @@ def load_system_and_args(folder: str):
     args.dataset.train.system.n_systems = 1
     args.experiment.n_experiments = 1
 
-    system_group = LTISystem(problem_shape, TensorDict.from_dict({"environment": {
+    system_group = LTISystem(args.system, TensorDict.from_dict({"environment": {
         "F": A, "B": TensorDict({"input": B}, batch_size=()), "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
     }}, batch_size=()).expand(args.dataset.train.system.n_systems, args.experiment.n_experiments))
     return {"train": DimArray(utils.array_of(system_group), dims=[])}, args
