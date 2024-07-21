@@ -31,58 +31,32 @@ if __name__ == "__main__":
 
     # SECTION: Run imitation learning experiment across different control noises
     SHP = Namespace(
+        distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1),
         S_D=3, problem_shape=Namespace(
             environment=Namespace(observation=2),
             controller=Namespace(input=2),
-        )
+        ), auxiliary=Namespace(control_noise_std=0.0)
     )
     hp_name = "control_noise_std"
-
-
-    os.makedirs(f"output/{output_dir}", exist_ok=True)
-    lqg_fname = f"output/{output_dir}/systems.pt"
-    if not os.path.exists(lqg_fname):
-        dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-        lqg = dist.sample(SHP, ())
-        torch.save(lqg, lqg_fname)
-    else:
-        lqg = torch.load(lqg_fname, map_location=DEVICE)
-
     control_noise_std = [0.0, 0.5, 1.5, 2.0]
-    lqg_list = [LTISystem(SHP.problem_shape, lqg.td(), cns) for cns in control_noise_std]
 
-    train_systems = DimArray([
-        LTISystem(SHP.problem_shape, lqg.td().expand(1, 1), cns)
-        for cns in control_noise_std
-    ], dims=(PARAM_GROUP_FORMATTER.format(hp_name, -1),))
-    test_systems = DimArray(LTISystem(SHP.problem_shape, lqg.td().expand(1, 1)), dims=())
-    if not os.path.exists(train_dir := f"output/{output_dir}/{exp_name}/training"):
-        os.makedirs(train_dir)
-        torch.save({"train": train_systems, "valid": test_systems}, f"{train_dir}/systems.pt")
-    if not os.path.exists(test_dir := f"output/{output_dir}/{exp_name}/testing"):
-        os.makedirs(test_dir)
-        torch.save({"test": test_systems}, f"{test_dir}/systems.pt")
 
     args = loader.generate_args(SHP)
+    args.system.auxiliary.control_noise_std.update(valid=0.0, test=0.0)
+
     args.model.model = RnnController
     args.model.S_D = SHP.S_D
-    args.dataset.train = Namespace(
-        dataset_size=1,
-        total_sequence_length=2000,
-        system=Namespace(n_systems=1)
-    )
-    args.dataset.valid = args.dataset.test = Namespace(
-        dataset_size=10,
-        total_sequence_length=100000,
-        system=Namespace(n_systems=1)
-    )
-    args.train.sampling = Namespace(method="full")
-    args.train.optimizer = Namespace(
+
+    args.dataset.dataset_size.update(train=1, valid=10, test=10)
+    args.dataset.total_sequence_length.update(train=2000, valid=100000, test=100000)
+
+    args.training.sampling = Namespace(method="full")
+    args.training.optimizer = Namespace(
         type="Adam",
         max_lr=1e-2, min_lr=1e-9,
         weight_decay=0.0
     )
-    args.train.scheduler = Namespace(
+    args.training.scheduler = Namespace(
         type="exponential",
         warmup_duration=100,
         epochs=2000, lr_decay=0.995,
@@ -91,16 +65,23 @@ if __name__ == "__main__":
     args.experiment.n_experiments = 1
     args.experiment.ensemble_size = 32
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = {"validation_analytical", "validation_controller_analytical"}
+    args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
 
     configurations = [
-        (hp_name, {"system.control_noise_std": control_noise_std})
+        (hp_name, {"system.auxiliary.control_noise_std.train": control_noise_std})
     ]
 
-    result, _, _ = run_experiments(args, configurations, {
+    result, systems, _ = run_experiments(args, configurations, {
         "dir": output_dir,
         "fname": output_fname
     }, save_experiment=True)
+
+    lqg_params = systems.values[()].td().squeeze(1).squeeze(0)
+    lqg_list = [
+        LTISystem(SHP.problem_shape, Namespace(**{hp_name: cns}), lqg_params)
+        for cns in control_noise_std
+    ]
+    lqg = lqg_list[0]
 
     # DONE: After running experiment, refresh LQG because the saved system overrides the one sampled at the start
     il_observation = lqg.irreducible_loss.environment.observation

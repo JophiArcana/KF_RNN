@@ -325,19 +325,12 @@ def rgetitem(obj: Dict[str, Any], item: str, *args):
 Argument namespace processing
 """
 class DefaultingParameter(Namespace):
-    _defaulting = True
-
     def __init__(self, default_key: str = TRAINING_DATASET_TYPES[0], **kwargs):
         Namespace.__init__(self, **kwargs)
         self._default_key = default_key
 
     def __getattr__(self, item):
-        if item in vars(self):
-            return vars(self)[item]
-        elif DefaultingParameter._defaulting:
-            return vars(self)[self._default_key]
-        else:
-            raise AttributeError()
+        return vars(self).get(item, vars(self)[self._default_key])
 
     def update(self, **kwargs) -> None:
         vars(self).update(kwargs)
@@ -345,20 +338,6 @@ class DefaultingParameter(Namespace):
     def reset(self, **kwargs) -> None:
         vars(self).clear()
         vars(self).update(kwargs)
-
-    def default(self):
-        return vars(self)[self._default_key]
-
-class set_parameter_defaulting:
-    def __init__(self, mode: bool):
-        self._mode = mode
-
-    def __enter__(self):
-        self._original_mode = DefaultingParameter._defaulting
-        DefaultingParameter._defaulting = self._mode
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        DefaultingParameter._defaulting = self._original_mode
 
 def process_defaulting_roots(o: _T) -> _T:
     ds_types = (*TRAINING_DATASET_TYPES, TESTING_DATASET_TYPE)
@@ -383,11 +362,11 @@ def get_defaulting_roots(n: Namespace) -> List[DefaultingParameter]:
     _accumulate_defaulting_roots(n)
     return result
 
-def convert_to_default(o: object) -> Any:
+def index_defaulting_with_attr(o: object, attr: str = None) -> Any:
     if isinstance(o, DefaultingParameter):
-        return o.default()
+        return getattr(o, o._default_key if attr is None else attr)
     elif isinstance(o, Namespace):
-        return Namespace(**{k: convert_to_default(v) for k, v in vars(o).items()})
+        return Namespace(**{k: index_defaulting_with_attr(v, attr) for k, v in vars(o).items()})
     else:
         return o
 

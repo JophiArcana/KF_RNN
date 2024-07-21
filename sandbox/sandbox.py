@@ -934,14 +934,6 @@ if __name__ == '__main__':
     ))
 
 
-    with utils.set_parameter_defaulting(True):
-        print(utils.rhasattr(p, "n_systems.valid"))
-        print(utils.rgetattr(p, "n_systems.valid"))
-    with utils.set_parameter_defaulting(False):
-        print(utils.rhasattr(p, "n_systems.valid"))
-
-    print(vars(p.n_systems))
-
     raise Exception()
 
     utils.print_namespace(p)

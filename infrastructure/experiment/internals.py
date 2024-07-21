@@ -155,7 +155,7 @@ def _construct_info_dict(
 
                 def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
                     return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
-                        utils.convert_to_default(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
+                        utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
                     ))
 
                 print(f"Sampling new system matrices for dataset type {ds_type}")
@@ -179,6 +179,8 @@ def _construct_info_dict(
             def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> SystemGroup:
                 dist = utils.rgetattr(sub_HP, f"system.distribution.{ds_type}")
                 system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
+
+                sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
                 return dist.system_type(sub_HP.system.problem_shape, sub_HP.system.auxiliary, system_params)
 
             systems_arr = _map_HP_with_params(
