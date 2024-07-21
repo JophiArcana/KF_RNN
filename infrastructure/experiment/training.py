@@ -13,9 +13,9 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.experiment.metrics import Metrics
-from infrastructure.settings import *
 from infrastructure.utils import PTR
+from infrastructure.settings import *
+from infrastructure.experiment.metrics import Metrics
 from model.base import Predictor
 
 
@@ -239,7 +239,7 @@ def _run_training(
         print_frequency: int = 1,
 ) -> TensorDict:
 
-    SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
+    SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
 
     # TODO: Check if checkpoint exists and if so, load the stored information
     checkpoint = None
@@ -384,7 +384,7 @@ def _run_unit_training_experiment(
         initialization: TensorDict[str, torch.Tensor]
 ) -> Dict[str, TensorDict]:
 
-    SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "train", "dataset", "experiment"))
+    SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
 
     print("-" * 160)
     print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
@@ -405,8 +405,8 @@ def _run_unit_training_experiment(
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(
         lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
-            dataset.obj[..., :DHP.train.dataset_size, :DHP.train.sequence_length],
-            DHP.train.total_sequence_length
+            dataset.obj[..., :DHP.n_systems.train, :DHP.dataset_size.train, :DHP.sequence_length.train],
+            DHP.total_sequence_length.train
         )), info.train.dataset, dtype=PTR
     )
 
@@ -415,7 +415,7 @@ def _run_unit_training_experiment(
         info=info,
         train_info=info.train[()],
         reference_module=reference_module,
-        n_train_systems=DHP.train.system.n_systems
+        n_train_systems=DHP.n_systems.train
     )
 
     # Setup result and run training

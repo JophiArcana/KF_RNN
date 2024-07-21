@@ -14,24 +14,9 @@ from system.linear_time_invariant import LTISystem
 Loading and generating args
 """
 BaseDatasetArgs = Namespace(
-    # Dataset
-    train=Namespace(
-        dataset_size=1,
-        total_sequence_length=2000,
-        system=Namespace(
-            n_systems=1,
-            distribution=...
-        )
-    ),
-    valid=Namespace(
-        dataset_size=100,
-        total_sequence_length=20000
-    ),
-    test=Namespace(
-        dataset_size=500,
-        total_sequence_length=800000
-    ),
-    impulse_length=32
+    n_systems=Namespace(train=1),
+    dataset_size=Namespace(train=1, valid=100, test=500),
+    total_sequence_length=Namespace(train=2000, valid=20000, test=800000),
 )
 BaseTrainArgs = Namespace(
     # Batch sampling
@@ -71,6 +56,11 @@ BaseExperimentArgs = Namespace(
     backup_frequency=10
 )
 
+def args_from(HP: Namespace):
+    HP.system = utils.process_defaulting_roots(HP.system)
+    HP.dataset = utils.process_defaulting_roots(HP.dataset)
+    return HP
+
 def load_system_and_args(folder: str):
     A = torch.Tensor(np.loadtxt(f"{folder}/A.out", delimiter=",")).to(DEVICE)
     B = torch.Tensor(np.loadtxt(f"{folder}/B.out", delimiter=","))[:, None].to(DEVICE)
@@ -94,33 +84,33 @@ def load_system_and_args(folder: str):
         environment=Namespace(observation=O_D),
         controller=Namespace(input=I_D) if input_enabled else Namespace(),
     )
+    auxiliary = Namespace()
     args = utils.deepcopy_namespace(Namespace(
         system=Namespace(
-            S_D=S_D,
-            problem_shape=problem_shape
+            S_D=S_D, problem_shape=problem_shape,
+            auxiliary=auxiliary,
         ),
-        model=Namespace(problem_shape=problem_shape),
-        train=BaseTrainArgs,
         dataset=BaseDatasetArgs,
+        model=Namespace(problem_shape=problem_shape),
+        training=BaseTrainArgs,
         experiment=BaseExperimentArgs
     ))
-
-    args.dataset.train.system.n_systems = 1
+    args.dataset.n_systems.train = 1
     args.experiment.n_experiments = 1
 
-    system_group = LTISystem(args.system, TensorDict.from_dict({"environment": {
+    system_group = LTISystem(problem_shape, auxiliary, TensorDict.from_dict({"environment": {
         "F": A, "B": TensorDict({"input": B}, batch_size=()), "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
-    }}, batch_size=()).expand(args.dataset.train.system.n_systems, args.experiment.n_experiments))
-    return {"train": DimArray(utils.array_of(system_group), dims=[])}, args
+    }}, batch_size=()).expand(args.dataset.n_systems.train, args.experiment.n_experiments))
+    return {"train": DimArray(utils.array_of(system_group), dims=[])}, args_from(args)
 
 def generate_args(shp: Namespace) -> Namespace:
-    return utils.deepcopy_namespace(Namespace(
+    return args_from(utils.deepcopy_namespace(Namespace(
         system=shp,
-        model=Namespace(problem_shape=shp.problem_shape),
-        train=BaseTrainArgs,
         dataset=BaseDatasetArgs,
+        model=Namespace(problem_shape=shp.problem_shape),
+        training=BaseTrainArgs,
         experiment=BaseExperimentArgs
-    ))
+    )))
 
 
 

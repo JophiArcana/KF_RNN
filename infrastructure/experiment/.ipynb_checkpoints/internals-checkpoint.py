@@ -6,7 +6,7 @@ import torch
 from dimarray import DimArray, Dataset
 
 from infrastructure import utils
-from infrastructure.experiment.static import *
+from infrastructure.static import *
 from infrastructure.settings import DEVICE
 from system.base import SystemGroup
 

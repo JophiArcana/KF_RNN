@@ -16,11 +16,7 @@ if __name__ == "__main__":
 
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
 
-    args.dataset.train.total_sequence_length = 10000
-    args.dataset.valid = args.dataset.test = Namespace(
-        dataset_size=1,
-        total_sequence_length=10000
-    )
+    args.dataset.total_sequence_length.reset(train=10000)
     args.experiment.metrics = Namespace(
         training={"validation_analytical"},
         testing={"al", "il"}

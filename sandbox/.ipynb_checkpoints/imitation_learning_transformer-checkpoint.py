@@ -16,7 +16,7 @@ if os.getcwd() not in sys.path:
 from infrastructure import loader, utils
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
-from infrastructure.experiment.static import PARAM_GROUP_FORMATTER
+from infrastructure.static import PARAM_GROUP_FORMATTER
 from infrastructure.settings import DEVICE
 from system.controller import NNControllerGroup
 

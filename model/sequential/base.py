@@ -244,7 +244,7 @@ class SequentialPredictor(Predictor):
 
             reshaped_state_biases = torch.cat([
                 torch.zeros((B * lsqrtL, 1, self.S_D)),
-                ((u @ E.mT + reshaped_padded_observations @ self.K.mT).view(B * lsqrtL, -1) @ lower_triangular_matrix.T).view(B * lsqrtL, hsqrtL, self.S_D)
+                ((u @ E.mT + reshaped_padded_observations @ self.K.mT).view(B * lsqrtL, -1) @ lower_triangular_matrix.mT).view(B * lsqrtL, hsqrtL, self.S_D)
             ], dim=1)                                                                                                                   # [BsqrtT x (sqrtT + 1) x S_D]
             reshaped_observation_biases = (reshaped_state_biases[:, :-1] @ self.F.mT + u) @ self.H.mT                                   # [BsqrtT x sqrtT x O_D]
 

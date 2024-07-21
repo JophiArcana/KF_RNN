@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import time
 from argparse import Namespace
@@ -9,12 +10,13 @@ import torch
 from dimarray import DimArray
 
 from infrastructure import utils
+from infrastructure.utils import PTR
 from infrastructure.experiment.internals import _filter_dimensions_if_any_satisfy_condition, \
     _supports_dataset_condition, _prologue, \
     _construct_info_dict_from_dataset_types, _iterate_HP_with_params, \
     _process_info_dict, _populate_values
 from infrastructure.experiment.metrics import Metrics
-from infrastructure.experiment.static import *
+from infrastructure.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
 from infrastructure.settings import DEVICE
 
@@ -102,8 +104,8 @@ def run_training_experiments(
     # SECTION: Run prologue to construct basic data structures
     cache = Namespace()
     conditions = (
-        (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
-        (lambda n: not n.startswith("dataset.test."), "Cannot sweep over test dataset hyperparameters during training."),
+        (lambda n: not re.match(r"experiment\.", n), "Cannot sweep over experiment parameters."),
+        (lambda n: not re.match(r"dataset(\..*\.|\.)test$", n), "Cannot sweep over test dataset hyperparameters during training."),
         # (_supports_dataset_condition(HP, "valid"), "Cannot sweep over hyperparameters that determine shape of the validation dataset."),
     )
     dimensions, params_dataset = _prologue(HP, iterparams, conditions)
@@ -303,7 +305,7 @@ def run_testing_experiments(
             metric_result, metric_shape = {}, (
                 *INFO.dataset.shape,
                 *EXPERIMENT_HP.experiment.model_shape,
-                utils.rgetattr_default(EXPERIMENT_HP, "dataset.{0}.system.n_systems", TESTING_DATASET_TYPE, TRAINING_DATASET_TYPES[0])
+                utils.rgetattr(EXPERIMENT_HP, f"dataset.n_systems.{TESTING_DATASET_TYPE}")
             )
             for m in metrics:
                 try:

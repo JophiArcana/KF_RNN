@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import json
 import math
+import optional
 import os
 import sys
 from argparse import Namespace
@@ -20,54 +21,13 @@ from tensordict import TensorDict
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
 from infrastructure.settings import DEVICE
+from infrastructure.static import TRAINING_DATASET_TYPES, TESTING_DATASET_TYPE
 
 
+_T = TypeVar("_T")
 """
 System and model functions
 """
-# def sample_stable_state_matrix(d: int) -> torch.Tensor:
-#     M = torch.DoubleTensor([[2.]])
-#     scale = 1
-#     while torch.max(torch.abs(torch.linalg.eig(M)[0])) > 1:
-#         M = scale * torch.randn(d, d)
-#         scale *= 0.99
-#     return M
-
-def sample_stable_state_matrix(d: int, batch_size: Tuple[int, ...] = (), lo=0.4, hi=0.9) -> torch.Tensor:
-    M = torch.randn((*batch_size, d, d))                        # [B... x D x D]
-    eig_, V = torch.linalg.eig(M)                               # [B... x D], [B... x D x D]
-    eig_abs_ = eig_.abs()                                       # [B... x D]
-    eig_indices = torch.argmax(torch.Tensor(eig_abs_.unsqueeze(-2) == eig_abs_.unsqueeze(-1)).to(torch.int), dim=-2)    # [B... x D]
-
-    eig_abs = torch.take_along_dim(torch.empty((*batch_size, d)).uniform_(lo, hi), eig_indices, dim=-1)                 # [B... x D]
-    eig = eig_ * (eig_abs / eig_abs_)                           # [B... x D]
-    return (V @ torch.diag_embed(eig) @ torch.inverse(V)).real  # [B... x D x D]
-
-def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
-    N = M.shape[0]
-    I = torch.eye(N, device=M.device)
-    if n == 1:
-        return I[None]
-    else:
-        k = int(math.ceil(math.log2(n)))
-        bits = [M]
-        for _ in range(k - 1):
-            bits.append(bits[-1] @ bits[-1])
-
-        result = I
-        for bit in bits:
-            augmented_bit = torch.cat([I, bit], dim=1)
-            blocked_result = result @ augmented_bit
-            result = torch.cat([blocked_result[:, :N], blocked_result[:, N:]], dim=0)
-        return result.reshape(1 << k, N, N)[:n]
-
-def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], total_sequence_length: int) -> TensorDict[str, torch.Tensor]:
-    batch_size, sequence_length = ds.shape[-2:]
-    ds["mask"] = torch.Tensor(torch.arange(batch_size * sequence_length) < total_sequence_length).view(
-        sequence_length, batch_size
-    ).mT.expand(ds.shape)
-    return ds
-
 def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
     result = torch.stack((*tensor_arr.ravel(),), dim=dim)
     if tensor_arr.ndim > 1:
@@ -143,6 +103,9 @@ def run_module_arr(
             vmap_run = torch.func.vmap(vmap_run, randomness="different")
         return vmap_run(module_td.to_dict(), args)
 
+def double_vmap(func: Callable) -> Callable:
+    return torch.vmap(torch.vmap(func))
+
 def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
     def _buffer_dict(parent_module: nn.Module, td: TensorDict[str, torch.Tensor]) -> nn.Module:
         for k, v in td.items(include_nested=False):
@@ -153,12 +116,55 @@ def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
         return parent_module
     return _buffer_dict(nn.Module(), td)
 
-def double_vmap(func: Callable) -> Callable:
-    return torch.vmap(torch.vmap(func))
+def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], total_sequence_length: int) -> TensorDict[str, torch.Tensor]:
+    batch_size, sequence_length = ds.shape[-2:]
+    ds["mask"] = torch.Tensor(torch.arange(batch_size * sequence_length) < total_sequence_length).view(
+        sequence_length, batch_size
+    ).mT.expand(ds.shape)
+    return ds
+
+
+"""
+Computation
+"""
+def sample_stable_state_matrix(d: int, batch_size: Tuple[int, ...] = (), lo=0.4, hi=0.9) -> torch.Tensor:
+    M = torch.randn((*batch_size, d, d))                        # [B... x D x D]
+    eig_, V = torch.linalg.eig(M)                               # [B... x D], [B... x D x D]
+    eig_abs_ = eig_.abs()                                       # [B... x D]
+    eig_indices = torch.argmax(torch.Tensor(eig_abs_.unsqueeze(-2) == eig_abs_.unsqueeze(-1)).to(torch.int), dim=-2)    # [B... x D]
+
+    eig_abs = torch.take_along_dim(torch.empty((*batch_size, d)).uniform_(lo, hi), eig_indices, dim=-1)                 # [B... x D]
+    eig = eig_ * (eig_abs / eig_abs_)                           # [B... x D]
+    return (V @ torch.diag_embed(eig) @ torch.inverse(V)).real  # [B... x D x D]
+
+def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
+    N = M.shape[0]
+    I = torch.eye(N, device=M.device)
+    if n == 1:
+        return I[None]
+    else:
+        k = int(math.ceil(math.log2(n)))
+        bits = [M]
+        for _ in range(k - 1):
+            bits.append(bits[-1] @ bits[-1])
+
+        result = I
+        for bit in bits:
+            augmented_bit = torch.cat([I, bit], dim=1)
+            blocked_result = result @ augmented_bit
+            result = torch.cat([blocked_result[:, :N], blocked_result[:, N:]], dim=0)
+        return result.reshape(1 << k, N, N)[:n]
+
+def batch_trace(x: torch.Tensor) -> torch.Tensor:
+    return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
 
 def sqrtm(t: torch.Tensor) -> torch.Tensor:
     L, V = torch.linalg.eig(t)
     return (V @ torch.diag_embed(L ** 0.5) @ torch.inverse(V)).real
+
+def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
+    fn = lambda t_: torch.complex(t_, torch.zeros_like(t_))
+    return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
 
 def hadamard_conjugation(
         A: torch.Tensor,        # [B... x m x n]
@@ -303,41 +309,92 @@ def rhasattr(obj: object, attr: str) -> bool:
     except AttributeError:
         return False
 
-def rgetattr_default(o: object, format_str: str, try_str: str, default_str: str) -> Any:
-    try:
-        return rgetattr(o, format_str.format(try_str))
-    except AttributeError:
-        return rgetattr(o, format_str.format(default_str))
+# def rgetattr_default(o: object, format_str: str, try_str: str, default_str: str) -> Any:
+#     try:
+#         return rgetattr(o, format_str.format(try_str))
+#     except AttributeError:
+#         return rgetattr(o, format_str.format(default_str))
 
-def rgetitem(obj: object, item: str):
-    def _getitem(obj: object, item: str) -> Any:
-        return obj[item]
+def rgetitem(obj: Dict[str, Any], item: str, *args):
+    def _getitem(obj: Dict[str, Any], item: str) -> Any:
+        return obj.get(item, *args)
     return functools.reduce(_getitem, [obj] + item.split("."))
 
 
 """
-Miscellaneous
+Argument namespace processing
 """
-class PTR(object):
-    def __init__(self, obj: object) -> None:
-        self.obj = obj
+class DefaultingParameter(Namespace):
+    _defaulting = True
 
-    def __iter__(self):
-        yield self.obj
+    def __init__(self, default_key: str = TRAINING_DATASET_TYPES[0], **kwargs):
+        Namespace.__init__(self, **kwargs)
+        self._default_key = default_key
 
-class print_disabled:
+    def __getattr__(self, item):
+        if item in vars(self):
+            return vars(self)[item]
+        elif DefaultingParameter._defaulting:
+            return vars(self)[self._default_key]
+        else:
+            raise AttributeError()
+
+    def update(self, **kwargs) -> None:
+        vars(self).update(kwargs)
+
+    def reset(self, **kwargs) -> None:
+        vars(self).clear()
+        vars(self).update(kwargs)
+
+    def default(self):
+        return vars(self)[self._default_key]
+
+class set_parameter_defaulting:
+    def __init__(self, mode: bool):
+        self._mode = mode
+
     def __enter__(self):
-        self._original_stdout = sys.stdout
-        sys.stdout = open(os.devnull, "w")
+        self._original_mode = DefaultingParameter._defaulting
+        DefaultingParameter._defaulting = self._mode
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stdout = self._original_stdout
+        DefaultingParameter._defaulting = self._original_mode
+
+def process_defaulting_roots(o: _T) -> _T:
+    ds_types = (*TRAINING_DATASET_TYPES, TESTING_DATASET_TYPE)
+    if isinstance(o, Namespace):
+        if len(vars(o)) > 0 and all(k in ds_types for k in vars(o)):
+            return DefaultingParameter(**vars(o))
+        else:
+            for k, v in vars(o).items():
+                setattr(o, k, process_defaulting_roots(v))
+            return o
+    else:
+        return DefaultingParameter(**{TRAINING_DATASET_TYPES[0]: o})
+
+def get_defaulting_roots(n: Namespace) -> List[DefaultingParameter]:
+    result = []
+    def _accumulate_defaulting_roots(o: object) -> None:
+        if isinstance(o, DefaultingParameter):
+            result.append(o)
+        elif isinstance(o, Namespace):
+            for v in vars(o).values():
+                _accumulate_defaulting_roots(v)
+    _accumulate_defaulting_roots(n)
+    return result
+
+def convert_to_default(o: object) -> Any:
+    if isinstance(o, DefaultingParameter):
+        return o.default()
+    elif isinstance(o, Namespace):
+        return Namespace(**{k: convert_to_default(v) for k, v in vars(o).items()})
+    else:
+        return o
 
 def deepcopy_namespace(n: Namespace) -> Namespace:
-    def _deepcopy_helper(o: object) -> object:
+    def _deepcopy_helper(o: _T) -> _T:
         if isinstance(o, Namespace):
-            return Namespace(**{k: _deepcopy_helper(v) for k, v in vars(o).items()})
+            return type(o)(**{k: _deepcopy_helper(v) for k, v in vars(o).items()})
         else:
             return o
     return _deepcopy_helper(n)
@@ -365,6 +422,26 @@ def print_namespace(n: Namespace) -> None:
 def hash_namespace(n: Namespace) -> str:
     return hashlib.sha256(str_namespace(n).encode("utf-8")).hexdigest()[:8]
 
+
+"""
+Miscellaneous
+"""
+class PTR(object):
+    def __init__(self, obj: object) -> None:
+        self.obj = obj
+
+    def __iter__(self):
+        yield self.obj
+
+class print_disabled:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
+
 def nested_vars(n: Namespace) -> Dict[str, Any]:
     result = {}
     def _nested_vars(s: Tuple[str, ...], n: Namespace) -> None:
@@ -390,33 +467,10 @@ def map_dict(d: Dict[str, Any], func: Callable[[Any], Any]) -> Dict[str, Any]:
         for k, v in d.items()
     }
 
-def batch_trace(x: torch.Tensor) -> torch.Tensor:
-    return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-
-T = TypeVar("T")
-def array_of(o: T) -> np.ndarray[T]:
+def array_of(o: _T) -> np.ndarray[_T]:
     M = np.array(None, dtype=object)
     M[()] = o
     return M
-
-def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
-    fn = lambda t_: torch.complex(t_, torch.zeros_like(t_))
-    return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
-
-def class_name(cls: type) -> str:
-    return str(cls)[8:-2].split(".")[-1]
-
-def capitalize(s: str):
-    return s[0].upper() + s[1:]
-
-def npfy_namespace(n: Namespace) -> None:
-    for k, v in vars(n).items():
-        if isinstance(v, Namespace):
-            npfy_namespace(v)
-        elif isinstance(n, Iterable):
-            setattr(n, k, array_of(v))
-        else:
-            setattr(n, k, np.array(v))
 
 def model_size(m: nn.Module):
     return sum(p.numel() for p in m.parameters())

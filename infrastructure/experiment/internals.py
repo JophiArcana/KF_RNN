@@ -1,6 +1,7 @@
 import copy
 import itertools
 import os
+import re
 from argparse import Namespace
 from collections import OrderedDict
 
@@ -8,7 +9,8 @@ import torch
 from dimarray import DimArray, Dataset
 
 from infrastructure import utils
-from infrastructure.experiment.static import *
+from infrastructure.utils import PTR
+from infrastructure.static import *
 from infrastructure.settings import DEVICE
 from system.base import SystemGroup
 
@@ -62,7 +64,7 @@ def _prologue(
 
 def _filter_dimensions_if_any_satisfy_condition(
         dependency_dict: Dict[str, Tuple[int, List[str]]],
-        condition: Callable[[str], bool]
+        condition: Callable[[str], Any]
 ) -> OrderedDict[str, int]:
     return OrderedDict([
         (k, d) for k, (d, dependencies) in dependency_dict.items()
@@ -75,10 +77,11 @@ def _iterate_HP_with_params(
         params_dataset: Dataset,
 ) -> Iterable[Tuple[OrderedDict[str, int], Namespace]]:
     for idx in itertools.product(*map(range, dimensions.values())):
-        sub_HP = copy.deepcopy(HP)
-        for n, v in params_dataset.take(indices=idx).items():
+        dict_idx = OrderedDict([*zip(dimensions.keys(), idx)])
+        sub_HP = utils.deepcopy_namespace(HP)
+        for n, v in params_dataset.take(indices=dict_idx).items():
             utils.rsetattr(sub_HP, n, v.values[()])
-        yield OrderedDict([*zip(dimensions.keys(), idx)]), sub_HP
+        yield dict_idx, sub_HP
 
 def _map_HP_with_params(
         HP: Namespace,
@@ -89,8 +92,20 @@ def _map_HP_with_params(
 ) -> DimArray:
     result_arr = DimArray(np.empty([*dimensions.values()], dtype=dtype), dims=[*dimensions.keys()])
     for dict_idx, sub_HP in _iterate_HP_with_params(HP, dimensions, params_dataset):
-        result_arr[dict_idx] = func(dict_idx, sub_HP)
+        result_arr.put(indices=dict_idx, values=func(dict_idx, sub_HP))
     return result_arr
+
+def _get_param_dimarr(
+        HP: Namespace,
+        dimensions: OrderedDict[str, Tuple[int, List[str]]],
+        params_dataset: Dataset,
+        param: str, dtype: type
+):
+    filter_dimensions = _filter_dimensions_if_any_satisfy_condition(dimensions, param.__eq__)
+    return _map_HP_with_params(
+        HP, filter_dimensions, params_dataset,
+        lambda _, sub_HP: utils.rgetattr(sub_HP, param), dtype=dtype
+    )
 
 def _construct_info_dict(
         HP: Namespace,
@@ -102,65 +117,69 @@ def _construct_info_dict(
         systems: Dict[str, DimArray] = None,
 ) -> OrderedDict[str, DimArray]:
 
-    def _rgetattr_default(format_str: str) -> Any:
-        attr = format_str.format(ds_type if utils.rhasattr(HP, format_str.format(ds_type)) else TRAINING_DATASET_TYPES[0])
-        return params_dataset.get(attr, DimArray(utils.array_of(utils.rgetattr(HP, attr))))
-
     result = OrderedDict()
     # Dataset setup
     # DONE: Check for saved systems, if not then construct distribution and save systems
     if "systems" in save_dict:
-        if utils.rhasattr(HP, f"dataet.{ds_type}.system.distribution"):
-            print(f"Restoring distributions found for dataset type {ds_type}")
-            result["distributions"] = DimArray(utils.rgetattr(HP, f"dataset.{ds_type}.system.distribution"))
-
         systems = save_dict["systems"]
 
+    system_support_hyperparameters = utils.nested_vars(HP.system).keys()
     if systems is None or ds_type not in systems:
-        if utils.rhasattr(HP, f"dataset.{ds_type}.system"):
-            # DONE: If no saved systems, then construct distributions based on the provided sample functions
-            if utils.rhasattr(HP, f"dataset.{ds_type}.system.distribution"):
+        """
+        • if explicit change in system matrix parameters
+            • sample new system matrices and save them to the dict
+        • else if there is no explicit change to system matrix parameters but there is an explicit change to auxiliary parameters
+            • default to training system matrices
+            • create new systems with auxiliary hyperparameters, regardless of whether they were explicitly stated or not
+        • else there is no explicit change to any system parameters
+            • default to training systems  
+        """
+        if any(re.match(f"(?!\\.).*\\.{ds_type}", param) for param in system_support_hyperparameters):
+            if any(re.match(f"((?!auxiliary\\.).)*\\.{ds_type}$", param) for param in system_support_hyperparameters):
                 distribution_dimensions = _filter_dimensions_if_any_satisfy_condition(
-                    dimensions, lambda param: param == f"dataset.{ds_type}.system.distribution"
+                    dimensions, lambda param: re.match(f"system\\.distribution\\.{ds_type}", param)
                 )
                 distributions_arr = _map_HP_with_params(
                     HP, distribution_dimensions, params_dataset,
-                    lambda _, sub_HP: utils.rgetattr(sub_HP, f"dataset.{ds_type}.system.distribution"), dtype=object
+                    lambda _, sub_HP: utils.rgetattr(sub_HP, f"system.distribution.{ds_type}"), dtype=object
                 )
-            else:
-                print(f"Defaulting to train distributions for dataset type {ds_type}")
-                distributions_arr = info_dict[TRAINING_DATASET_TYPES[0]]["distributions"]
-                distribution_dimensions = OrderedDict([*zip(distributions_arr.dims, distributions_arr.shape)])
-            result["distributions"] = distributions_arr
 
-
-            # TODO: Sample minimal system parameters from array of distributions in the shape of (n_experiments, n_systems)
-            system_param_dimensions = distribution_dimensions
-            system_param_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
-                dimensions, lambda param: param == "system.S_D" or param.startswith("system.problem_shape.") or param.startswith(f"dataset.{ds_type}.system.")
-            ))
-
-            def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
-                return PTR(utils.rgetattr(sub_HP, f"dataset.{ds_type}.system.distribution").sample_parameters(
-                    sub_HP.system, (sub_HP.experiment.n_experiments, utils.rgetattr(sub_HP, f"dataset.{ds_type}.system.n_systems"))
+                # TODO: Sample minimal system parameters from array of distributions in the shape of (n_experiments, n_systems)
+                system_param_dimensions = distribution_dimensions
+                system_param_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
+                    dimensions, lambda param: re.match(f"system\\.((?!auxiliary\\.).)*\\.{ds_type}$", param)
                 ))
 
-            print(f"Sampling new systems for dataset type {ds_type}")
-            system_params_arr = _map_HP_with_params(
-                HP, system_param_dimensions, params_dataset,
-                sample_system_parameters_with_sub_hyperparameters, dtype=PTR
-            )
+                n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
+                max_n_systems = n_systems_arr.max()
+
+                def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
+                    return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
+                        utils.convert_to_default(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
+                    ))
+
+                print(f"Sampling new system matrices for dataset type {ds_type}")
+                system_params_arr = _map_HP_with_params(
+                    HP, system_param_dimensions, params_dataset,
+                    sample_system_parameters_with_sub_hyperparameters, dtype=PTR
+                )
+                result["system_params"] = system_params_arr
+
+            else:
+                print(f"Defaulting to train system matrices for dataset type {ds_type}")
+                system_params_arr = info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
+                system_param_dimensions = OrderedDict([*zip(system_params_arr.dims, system_params_arr.shape)])
 
             # TODO: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
             system_dimensions = system_param_dimensions
             system_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
-                dimensions, lambda param: param.startswith("system.")
+                dimensions, lambda param: re.match(f"system(\\..*\\.|\\.){ds_type}$", param)
             ))
 
             def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> SystemGroup:
-                dist = utils.take_from_dim_array(distributions_arr, dict_idx).values[()]
+                dist = utils.rgetattr(sub_HP, f"system.distribution.{ds_type}")
                 system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
-                return dist.system_type(sub_HP.system, system_params)
+                return dist.system_type(sub_HP.system.problem_shape, sub_HP.system.auxiliary, system_params)
 
             systems_arr = _map_HP_with_params(
                 HP, system_dimensions, params_dataset,
@@ -174,21 +193,35 @@ def _construct_info_dict(
         systems_arr = systems[ds_type]
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
-    # systems_arr = utils.multi_map(
-    #     lambda sg: type(sg)(SHP, sg.td()),
-    #     systems_arr, dtype=SystemGroup
-    # )
+    systems_arr = utils.multi_map(
+        lambda sg: type(sg)(sg.problem_shape, sg.auxiliary, sg.td()),
+        systems_arr, dtype=SystemGroup
+    )
     result["systems"] = systems_arr
 
+
     # DONE: Check for saved dataset, otherwise sample and save datasets
+    dataset_support_hyperparameters = utils.nested_vars(HP.dataset).keys()
     if "dataset" not in save_dict or ds_type not in save_dict["dataset"]:
-        if utils.rhasattr(HP, f"dataset.{ds_type}"):
+        """
+        • if explicit change in either system parameters or dataset shape parameters
+            • sample new dataset and save it to the dict
+        • else there is no explicit change to any parameters influencing the dataset
+            • default to training dataset
+        """
+        if any(re.match(f"(?!\\.).*\\.{ds_type}", param) for param in (
+            *system_support_hyperparameters,
+            *dataset_support_hyperparameters
+        )):
             print(f"Generating new dataset for dataset type {ds_type}")
             dataset_dimensions = OrderedDict([*zip(systems_arr.dims, systems_arr.shape)])
+            dataset_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
+                dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)
+            ))
 
             dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
-                _rgetattr_default("dataset.{0}.dataset_size"),
-                _rgetattr_default("dataset.{0}.total_sequence_length")
+                _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.dataset_size.{ds_type}", dtype=int),
+                _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
             )
             sequence_length_arr = (total_sequence_length_arr - 1) // dataset_size_arr + 1
 
@@ -266,14 +299,10 @@ def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
     return DimArray(info_recarr, dims=ref.dims)
 
 def _populate_values(HP: Namespace) -> None:
-    def _rgetattr_default(format_str: str, ds_type: str) -> Any:
-        return utils.rgetattr_default(HP.dataset, format_str, ds_type, TRAINING_DATASET_TYPES[0])
+    total_sequence_length = HP.dataset.total_sequence_length.train
+    dataset_size = HP.dataset.dataset_size.train
+    HP.dataset.sequence_length = utils.DefaultingParameter(train=(total_sequence_length - 1) // dataset_size + 1)
 
-    for ds_type, ds_config in vars(HP.dataset).items():
-        if isinstance(ds_config, Namespace):
-            dataset_size = _rgetattr_default("{0}.dataset_size", ds_type)
-            total_sequence_length = _rgetattr_default("{0}.total_sequence_length", ds_type)
-            ds_config.sequence_length = (total_sequence_length - 1) // dataset_size + 1
 
 
 

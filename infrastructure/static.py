@@ -3,7 +3,6 @@ from typing import *
 import numpy as np
 from tensordict import TensorDict
 
-from infrastructure.utils import PTR
 from system.base import SystemGroup
 
 PARAM_GROUP_FORMATTER: str = "{0}_d({1})"
@@ -19,14 +18,14 @@ DATASET_SUPPORT_PARAMS: List[str] = [
 ]
 INFO_DTYPE: np.dtype = np.dtype([
     ("systems", SystemGroup),
-    ("dataset", PTR)
+    ("dataset", object)
 ])
 RESULT_DTYPE: np.dtype = np.dtype([
     ("time", float),
     ("output", TensorDict),
     ("learned_kfs", tuple),
     ("systems", object),
-    ("metrics", PTR),
+    ("metrics", object),
 ])
 
 

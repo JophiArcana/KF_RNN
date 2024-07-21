@@ -46,12 +46,13 @@ class LTISystem(SystemGroup):
         def __init__(self):
             SystemDistribution.__init__(self, LTISystem)
 
-    def __init__(self, SHP: Namespace, params: TensorDict[str, torch.tensor]):
+    def __init__(self, problem_shape: Namespace, auxiliary: Namespace, params: TensorDict[str, torch.tensor]):
         # SECTION: Set up controller
         SystemGroup.__init__(self,
-                             SHP,
-                             LTIEnvironment(SHP.problem_shape, params["environment"], getattr(SHP, "initial_state_scale", 1.0)),
-                             LQGController(SHP.problem_shape, params, getattr(SHP, "control_noise_std", 0.0))
+                             problem_shape,
+                             auxiliary,
+                             LTIEnvironment(problem_shape, params["environment"], getattr(auxiliary, "initial_state_scale", 1.0)),
+                             LQGController(problem_shape, params, getattr(auxiliary, "control_noise_std", 0.0))
         )
 
         # SECTION: Set up the effective system that produces the same distribution of data, but without controls.

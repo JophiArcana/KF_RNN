@@ -13,7 +13,8 @@ from system.module_group import ModuleGroup
 
 class SystemGroup(ModuleGroup):
     def __init__(self,
-                 SHP: Namespace,
+                 problem_shape: Namespace,
+                 auxiliary: Namespace,
                  environment: EnvironmentGroup,
                  controller: ControllerGroup
     ):
@@ -21,7 +22,9 @@ class SystemGroup(ModuleGroup):
             environment.group_shape,
             controller.group_shape
         ))
-        self.problem_shape = SHP.problem_shape
+        self.problem_shape = problem_shape
+        self.auxiliary = auxiliary
+
         self.environment = environment
         self.controller = controller
 
@@ -79,7 +82,7 @@ class SystemDistribution(object):
                SHP: Namespace,
                shape: Tuple[int, ...]
     ) -> SystemGroup:
-        return self.system_type(SHP, self.sample_parameters(SHP, shape))
+        return self.system_type(SHP.problem_shape, SHP.auxiliary, self.sample_parameters(SHP, shape))
 
 
 
