@@ -1,4 +1,3 @@
-import copy
 import itertools
 import os
 import re
@@ -183,7 +182,7 @@ def _construct_info_dict(
         print(f"Systems found for dataset type {ds_type}")
         systems_arr = systems[ds_type]
 
-        def retrieve_system_params_from_system(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> PTR:
+        def retrieve_system_params_from_system(dict_idx: OrderedDict[str, int], _) -> PTR:
             return PTR(systems_arr.take(indices=dict_idx).values.ravel()[0].td())
 
         system_params_arr = _map_HP_with_params(
@@ -229,7 +228,7 @@ def _construct_info_dict(
             max_sequence_length = sequence_length_arr.max()
             max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_dataset_size
 
-            def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> PTR:
+            def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> PTR:
                 sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
                 dataset = sg.generate_dataset(max_batch_size, max_sequence_length)
 

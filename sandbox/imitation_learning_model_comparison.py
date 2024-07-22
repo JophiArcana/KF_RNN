@@ -75,7 +75,7 @@ if __name__ == "__main__":
     )
 
     args.experiment.n_experiments = 1
-    args.experiment.ensemble_size = 32
+    args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
     args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
 
