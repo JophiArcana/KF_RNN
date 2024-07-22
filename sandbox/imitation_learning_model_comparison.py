@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
+from transformers import TransfoXLConfig
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -20,32 +21,46 @@ from system.controller import NNControllerGroup
 if __name__ == "__main__":
     from system.linear_time_invariant import LTISystem, MOPDistribution
     from model.sequential.rnn_controller import RnnController
+    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
     # Experiment setup
-    exp_name = "ControlNoiseComparison"
+    exp_name = "InitialStateScaling"
     output_dir = "imitation_learning"
     output_fname = "result"
 
     # SECTION: Run imitation learning experiment across different control noises
+    hp_name = "initial_state_scale"
+    hp_values = [1.0, 2.0, 5.0, 10.0, 20.0]
+
     SHP = Namespace(
         distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1),
         S_D=3, problem_shape=Namespace(
             environment=Namespace(observation=2),
             controller=Namespace(input=2),
-        ), auxiliary=Namespace(control_noise_std=0.0)
+        ), auxiliary=Namespace(**{hp_name: hp_values[0]})
     )
-    hp_name = "control_noise_std"
-    control_noise_std = [0.0, 0.5, 1.5, 2.0]
-
 
     args = loader.generate_args(SHP)
-    args.system.auxiliary.control_noise_std.update(valid=0.0, test=0.0)
+    getattr(args.system.auxiliary, hp_name).update(valid=hp_values[0], test=hp_values[0])
 
-    args.model.model = RnnController
+    d_embed = 8
+    n_layer = 3
+    n_head = 2
+    d_inner = 2 * d_embed
+
     args.model.S_D = SHP.S_D
+    args.model.transformerxl = TransfoXLConfig(
+        d_model=d_embed,
+        d_embed=d_embed,
+        n_layer=n_layer,
+        n_head=n_head,
+        d_head=d_embed // n_head,
+        d_inner=d_inner,
+        dropout=0.0,
+    )
 
-    args.dataset.dataset_size.update(train=1, valid=10, test=10)
-    args.dataset.total_sequence_length.update(train=2000, valid=100000, test=100000)
+    args.dataset.dataset_size.reset(train=100)
+    args.dataset.total_sequence_length.update(train=10000, valid=100000, test=100000)
 
     args.training.sampling = Namespace(method="full")
     args.training.optimizer = Namespace(
@@ -65,7 +80,8 @@ if __name__ == "__main__":
     args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
 
     configurations = [
-        (hp_name, {"system.auxiliary.control_noise_std.train": control_noise_std})
+        ("model", {"model.model": [RnnController, TransformerXLInContextController]}),
+        (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
     ]
 
     result, systems, _ = run_experiments(args, configurations, {
@@ -75,8 +91,8 @@ if __name__ == "__main__":
 
     lqg_params = systems.values[()].td().squeeze(1).squeeze(0)
     lqg_list = [
-        LTISystem(SHP.problem_shape, Namespace(**{hp_name: cns}), lqg_params)
-        for cns in control_noise_std
+        LTISystem(SHP.problem_shape, Namespace(**{hp_name: hp_value}), lqg_params)
+        for hp_value in hp_values
     ]
     lqg = lqg_list[0]
 
@@ -91,7 +107,7 @@ if __name__ == "__main__":
     fig, ax_observation = plt.subplots()
     ax_controller = ax_observation.twinx()
     clip = 100
-    for cns, training_output, color in zip(control_noise_std, training_outputs, COLOR_LIST):
+    for hp_value, training_output, color in zip(hp_values, training_outputs, COLOR_LIST):
         out = training_output.squeeze(0)
         tl = out["training"]
         al = out["validation_analytical"].squeeze(-1)
@@ -101,7 +117,7 @@ if __name__ == "__main__":
             return ax.plot(torch.arange(clip, len(y)), y[clip:], **kwargs)
 
         # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
-        plot_with_clip(ax_observation, (al.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{cns}_validation_analytical")
+        plot_with_clip(ax_observation, (al.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation_analytical")
 
         plot_with_clip(ax_controller, (acl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
 
@@ -144,9 +160,9 @@ if __name__ == "__main__":
     optimal_trajectory = trace[0]
     learned_trajectories = trace[1:]
 
-    for cns, learned_trajectory, color in zip(control_noise_std, learned_trajectories, COLOR_LIST):
+    for hp_value, learned_trajectory, color in zip(hp_values, learned_trajectories, COLOR_LIST):
         trajectory = learned_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression
-        plt.plot(*trajectory.mT, color=color, marker=".", markersize="8", label=f"{hp_name}{cns}_learned_trajectory")
+        plt.plot(*trajectory.mT, color=color, marker=".", markersize="8", label=f"{hp_name}{hp_value}_learned_trajectory")
     plt.plot(*(optimal_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression).mT, color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
 
     plt.xlabel("$\\sigma_0$")
@@ -163,12 +179,12 @@ if __name__ == "__main__":
     # SECTION: Plot covariances of sampled states
     indices = torch.randint(0, batch_size * horizon, (2000,))
 
-    for cns, ds_, color in zip(control_noise_std, datasets, COLOR_LIST):
+    for hp_value, ds_, color in zip(hp_values, datasets, COLOR_LIST):
         compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
         plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
         utils.confidence_ellipse(
             *compressed_states.mT, plt.gca(),
-            n_std=2.0, linewidth=2, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{cns}_states", zorder=12
+            n_std=2.0, linewidth=2, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{hp_value}_states", zorder=12
         )
 
     plt.xlabel("$\\sigma_0$")
@@ -181,12 +197,12 @@ if __name__ == "__main__":
     plt.show()
 
 
-    for cns, ds_, color in zip(control_noise_std, learned_trajectories, COLOR_LIST):
+    for hp_value, ds_, color in zip(hp_values, learned_trajectories, COLOR_LIST):
         compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
         plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
         utils.confidence_ellipse(
             *compressed_states.mT, plt.gca(),
-            n_std=2.0, linewidth=2, linestyle='-', edgecolor=0.7 * color, label=f"{hp_name}{cns}_learned_states", zorder=12
+            n_std=2.0, linewidth=2, linestyle='-', edgecolor=0.7 * color, label=f"{hp_name}{hp_value}_learned_states", zorder=12
         )
 
     compressed_optimal_states = optimal_trajectory["environment", "state"].flatten(0, -2) @ compression
@@ -220,9 +236,9 @@ if __name__ == "__main__":
         )
         return state_loss + control_loss
 
-    for cns, lqg_, ds_, color in zip(control_noise_std, lqg_list, datasets, COLOR_LIST):
+    for hp_value, lqg_, ds_, color in zip(hp_values, lqg_list, datasets, COLOR_LIST):
         l = loss(ds_, lqg_)
-        plt.plot(torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=f"{hp_name}{cns}_regret")
+        plt.plot(torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=f"{hp_name}{hp_value}_regret")
 
     plt.xlabel("horizon")
     plt.ylabel("loss")

@@ -3,7 +3,6 @@ import hashlib
 import inspect
 import json
 import math
-import optional
 import os
 import sys
 from argparse import Namespace

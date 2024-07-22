@@ -124,6 +124,9 @@ def _construct_info_dict(
         systems = save_dict["systems"]
 
     system_support_hyperparameters = utils.nested_vars(HP.system).keys()
+    system_param_dimensions = _filter_dimensions_if_any_satisfy_condition(
+        dimensions, lambda param: re.match(f"system\\.((?!auxiliary\\.).)*\\.{ds_type}$", param)
+    )
     if systems is None or ds_type not in systems:
         """
         • if explicit change in system matrix parameters
@@ -136,20 +139,7 @@ def _construct_info_dict(
         """
         if any(re.match(f"(?!\\.).*\\.{ds_type}", param) for param in system_support_hyperparameters):
             if any(re.match(f"((?!auxiliary\\.).)*\\.{ds_type}$", param) for param in system_support_hyperparameters):
-                distribution_dimensions = _filter_dimensions_if_any_satisfy_condition(
-                    dimensions, lambda param: re.match(f"system\\.distribution\\.{ds_type}", param)
-                )
-                distributions_arr = _map_HP_with_params(
-                    HP, distribution_dimensions, params_dataset,
-                    lambda _, sub_HP: utils.rgetattr(sub_HP, f"system.distribution.{ds_type}"), dtype=object
-                )
-
                 # TODO: Sample minimal system parameters from array of distributions in the shape of (n_experiments, n_systems)
-                system_param_dimensions = distribution_dimensions
-                system_param_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
-                    dimensions, lambda param: re.match(f"system\\.((?!auxiliary\\.).)*\\.{ds_type}$", param)
-                ))
-
                 n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
                 max_n_systems = n_systems_arr.max()
 
@@ -164,11 +154,9 @@ def _construct_info_dict(
                     sample_system_parameters_with_sub_hyperparameters, dtype=PTR
                 )
                 result["system_params"] = system_params_arr
-
             else:
                 print(f"Defaulting to train system matrices for dataset type {ds_type}")
                 system_params_arr = info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
-                system_param_dimensions = OrderedDict([*zip(system_params_arr.dims, system_params_arr.shape)])
 
             # TODO: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
             system_dimensions = system_param_dimensions
@@ -190,9 +178,19 @@ def _construct_info_dict(
         else:
             print(f"Defaulting to train systems for dataset type {ds_type}")
             systems_arr = info_dict[TRAINING_DATASET_TYPES[0]]["systems"]
+            system_params_arr = info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
     else:
         print(f"Systems found for dataset type {ds_type}")
         systems_arr = systems[ds_type]
+
+        def retrieve_system_params_from_system(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> PTR:
+            return PTR(systems_arr.take(indices=dict_idx).values.ravel()[0].td())
+
+        system_params_arr = _map_HP_with_params(
+            HP, system_param_dimensions, params_dataset,
+            retrieve_system_params_from_system, dtype=PTR
+        )
+    result["system_params"] = system_params_arr
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
     systems_arr = utils.multi_map(

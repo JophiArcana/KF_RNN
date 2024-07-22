@@ -4,7 +4,6 @@ from argparse import Namespace
 
 import numpy as np
 import torch
-from dimarray import DimArray
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
 
@@ -15,8 +14,6 @@ if os.getcwd() not in sys.path:
 from infrastructure import loader, utils
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
-from infrastructure.static import PARAM_GROUP_FORMATTER
-from infrastructure.settings import DEVICE
 from system.controller import NNControllerGroup
 
 

@@ -18,6 +18,7 @@ DATASET_SUPPORT_PARAMS: List[str] = [
 ]
 INFO_DTYPE: np.dtype = np.dtype([
     ("systems", SystemGroup),
+    ("system_params", object),
     ("dataset", object)
 ])
 RESULT_DTYPE: np.dtype = np.dtype([
