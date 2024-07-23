@@ -107,7 +107,6 @@ if __name__ == "__main__":
     args.train.scheduler = Namespace(
         type="exponential",
         epochs=10000, lr_decay=0.9998,
-
     )
     args.train.iterations_per_epoch = 1
 

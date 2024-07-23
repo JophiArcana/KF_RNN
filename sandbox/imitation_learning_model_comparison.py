@@ -58,6 +58,7 @@ if __name__ == "__main__":
         d_inner=d_inner,
         dropout=0.0,
     )
+    args.model.bias = True
 
     args.dataset.dataset_size.reset(train=100)
     args.dataset.total_sequence_length.update(train=10000, valid=100000, test=100000)
@@ -77,10 +78,18 @@ if __name__ == "__main__":
     args.experiment.n_experiments = 1
     args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
+    args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
 
     configurations = [
-        ("model", {"model.model": [RnnController, TransformerXLInContextController]}),
+        ("model", {
+            "model.model": [RnnController, TransformerXLInContextController],
+            "training.optimizer.max_lr": [1e-2, 3e-4],
+            "training.optimizer.min_lr": [1e-9, 1e-6],
+            "training.optimizer.weight_decay": [0.0, 1e-2],
+            "training.scheduler.epochs": [2000, 10000],
+            "training.scheduler.lr_decay": [0.995, 0.9998],
+            "training.iterations_per_epoch": [20, 1]
+        }),
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
     ]
 
