@@ -28,7 +28,7 @@ def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str], 
             return True
     return condition
 
-def _prologue(
+def _construct_dependency_dict_and_params_dataset(
         HP: Namespace,
         iterparams: List[Tuple[str, Dict[str, Any]]],
         assertion_conditions: Iterable[Tuple[Callable[[str], bool], str]] = ()
@@ -40,6 +40,7 @@ def _prologue(
     # DONE: Set up 0d NumPy arrays to preserve objects before adding iterated hyperparameters
     dependency_dict, dataset = OrderedDict(), OrderedDict()
     for param_group, params in iterparams:
+        params = utils.flatten_nested_dict(params)
         for n, v in params.items():
             for condition, message in assertion_conditions:
                 assert condition(n), message

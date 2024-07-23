@@ -308,12 +308,6 @@ def rhasattr(obj: object, attr: str) -> bool:
     except AttributeError:
         return False
 
-# def rgetattr_default(o: object, format_str: str, try_str: str, default_str: str) -> Any:
-#     try:
-#         return rgetattr(o, format_str.format(try_str))
-#     except AttributeError:
-#         return rgetattr(o, format_str.format(default_str))
-
 def rgetitem(obj: Dict[str, Any], item: str, *args):
     def _getitem(obj: Dict[str, Any], item: str) -> Any:
         return obj.get(item, *args)
@@ -419,6 +413,17 @@ class print_disabled:
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout.close()
         sys.stdout = self._original_stdout
+
+def flatten_nested_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    result = {}
+    def _flatten_nested_dict(s: Tuple[str, ...], d: Dict[str, Any]) -> None:
+        for k, v in d.items():
+            if isinstance(v, dict):
+                _flatten_nested_dict((*s, k), v)
+            else:
+                result[".".join((*s, k))] = v
+    _flatten_nested_dict((), d)
+    return result
 
 def nested_vars(n: Namespace) -> Dict[str, Any]:
     result = {}

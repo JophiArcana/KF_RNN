@@ -83,12 +83,18 @@ if __name__ == "__main__":
     configurations = [
         ("model", {
             "model.model": [RnnController, TransformerXLInContextController],
-            "training.optimizer.max_lr": [1e-2, 3e-4],
-            "training.optimizer.min_lr": [1e-9, 1e-6],
-            "training.optimizer.weight_decay": [0.0, 1e-2],
-            "training.scheduler.epochs": [2000, 10000],
-            "training.scheduler.lr_decay": [0.995, 0.9998],
-            "training.iterations_per_epoch": [20, 1]
+            "training": {
+                "optimizer": {
+                    "max_lr": [1e-2, 3e-4],
+                    "min_lr": [1e-9, 1e-6],
+                    "weight_decay": [0.0, 1e-2],
+                },
+                "scheduler": {
+                    "epochs": [2000, 10000],
+                    "lr_decay": [0.995, 0.9998],
+                },
+                "iterations_per_epoch": [20, 1]
+            },
         }),
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
     ]

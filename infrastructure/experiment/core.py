@@ -12,7 +12,7 @@ from dimarray import DimArray
 from infrastructure import utils
 from infrastructure.utils import PTR
 from infrastructure.experiment.internals import _filter_dimensions_if_any_satisfy_condition, \
-    _supports_dataset_condition, _prologue, \
+    _supports_dataset_condition, _construct_dependency_dict_and_params_dataset, \
     _construct_info_dict_from_dataset_types, _iterate_HP_with_params, \
     _process_info_dict, _populate_values
 from infrastructure.experiment.metrics import Metrics
@@ -108,7 +108,7 @@ def run_training_experiments(
         (lambda n: not re.match(r"dataset(\..*\.|\.)test$", n), "Cannot sweep over test dataset hyperparameters during training."),
         # (_supports_dataset_condition(HP, "valid"), "Cannot sweep over hyperparameters that determine shape of the validation dataset."),
     )
-    dimensions, params_dataset = _prologue(HP, iterparams, conditions)
+    dimensions, params_dataset = _construct_dependency_dict_and_params_dataset(HP, iterparams, conditions)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
     _INFO_DICT = _construct_info_dict_from_dataset_types(
@@ -259,7 +259,7 @@ def run_testing_experiments(
         (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
         (_supports_dataset_condition(HP, "test"), "Cannot sweep over hyperparameters that determine shape of the testing dataset."),
     )
-    dimensions, params_dataset = _prologue(HP, iterparams, conditions)
+    dimensions, params_dataset = _construct_dependency_dict_and_params_dataset(HP, iterparams, conditions)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
     INFO_DICT = _construct_info_dict_from_dataset_types(
