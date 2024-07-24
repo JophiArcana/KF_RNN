@@ -82,6 +82,7 @@ if __name__ == "__main__":
 
     configurations = [
         ("model", {
+            "name": ["rnn", "transformer"],
             "model.model": [RnnController, TransformerXLInContextController],
             "training": {
                 "optimizer": {
@@ -117,35 +118,36 @@ if __name__ == "__main__":
 
     # """
     # SECTION: Plot the training loss curve
-    training_outputs = list(get_result_attr(result, "output"))
+    training_outputs = get_result_attr(result, "output")
 
-    fig, ax_observation = plt.subplots()
-    ax_controller = ax_observation.twinx()
     clip = 100
-    for hp_value, training_output, color in zip(hp_values, training_outputs, COLOR_LIST):
-        out = training_output.squeeze(0)
-        tl = out["training"]
-        al = out["validation_analytical"].squeeze(-1)
-        acl = out["validation_controller_analytical"].squeeze(-1)
+    for idx, model_name in enumerate(configurations[0][1]["name"]):
+        fig, ax_observation = plt.subplots()
+        ax_controller = ax_observation.twinx()
+        for hp_value, training_output, color in zip(hp_values, training_outputs[idx], COLOR_LIST):
+            out = training_output.squeeze(0)
+            tl = out["training"]
+            vl = out["validation"].squeeze(-1)
+            vcl = out["validation_controller"].squeeze(-1)
 
-        def plot_with_clip(ax, y, **kwargs):
-            return ax.plot(torch.arange(clip, len(y)), y[clip:], **kwargs)
+            def plot_with_clip(ax, y, **kwargs):
+                return ax.plot(torch.arange(clip, len(y)).cpu(), y[clip:].cpu(), **kwargs)
 
-        # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
-        plot_with_clip(ax_observation, (al.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation_analytical")
+            # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
+            plot_with_clip(ax_observation, (vl.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation")
 
-        plot_with_clip(ax_controller, (acl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
+            plot_with_clip(ax_controller, (vcl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
 
-    plt.xlabel("epoch")
-    ax_observation.set_yscale("log")
-    ax_observation.set_ylabel("analytical_observation_loss")
-    ax_observation.legend()
+        plt.xlabel("epoch")
+        ax_observation.set_yscale("log")
+        ax_observation.set_ylabel("analytical_observation_loss")
+        ax_observation.legend()
 
-    ax_controller.set_yscale("log")
-    ax_controller.set_ylabel("analytical_controller_loss")
+        ax_controller.set_yscale("log")
+        ax_controller.set_ylabel("analytical_controller_loss")
 
-    plt.title("training_curve")
-    plt.show()
+        plt.title(f"{model_name}_training_curve")
+        plt.show()
     # """
 
     # LQG system visualization

@@ -256,7 +256,7 @@ def run_testing_experiments(
 
     # SECTION: Run prologue to construct basic data structures
     conditions = (
-        (lambda n: not n.startswith("experiment."), "Cannot sweep over experiment parameters."),
+        (lambda n: not re.match(r"experiment\.", n), "Cannot sweep over experiment parameters."),
         (_supports_dataset_condition(HP, "test"), "Cannot sweep over hyperparameters that determine shape of the testing dataset."),
     )
     dimensions, params_dataset = _construct_dependency_dict_and_params_dataset(HP, iterparams, conditions)
