@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
+from transformers import TransfoXLConfig
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -20,29 +21,45 @@ from system.controller import NNControllerGroup
 if __name__ == "__main__":
     from system.linear_time_invariant import LTISystem, MOPDistribution
     from model.sequential.rnn_controller import RnnController
+    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
     # Experiment setup
-    hp_name = "control_noise_std"
-    hp_values = [0.0, 0.5, 1.5, 2.0]
-
     exp_name = "ControlNoiseComparison"
     output_dir = "imitation_learning"
     output_fname = "result"
 
     # SECTION: Run imitation learning experiment across different control noises
+    hp_name = "control_noise_std"
+    hp_values = torch.linspace(1.0, 10.0, 5).log().tolist()
+
+    S_D = 3
     SHP = Namespace(
         distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1),
-        S_D=3, problem_shape=Namespace(
+        S_D=S_D, problem_shape=Namespace(
             environment=Namespace(observation=2),
             controller=Namespace(input=2),
-        ), auxiliary=Namespace(control_noise_std=0.0)
+        ), auxiliary=Namespace(**{hp_name: hp_values[0]})
     )
 
     args = loader.generate_args(SHP)
     getattr(args.system.auxiliary, hp_name).update(valid=hp_values[0], test=hp_values[0])
 
-    args.model.model = RnnController
+    d_embed = 2 * S_D
+    n_layer = 3
+    n_head = 1
+    d_inner = 2 * d_embed
+
     args.model.S_D = SHP.S_D
+    args.model.transformerxl = TransfoXLConfig(
+        d_model=d_embed,
+        d_embed=d_embed,
+        n_layer=n_layer,
+        n_head=n_head,
+        d_head=d_embed // n_head,
+        d_inner=d_inner,
+        dropout=0.0,
+    )
+    args.model.bias = True
 
     args.dataset.dataset_size.update(train=1, valid=10, test=10)
     args.dataset.total_sequence_length.update(train=2000, valid=100000, test=100000)
@@ -59,12 +76,27 @@ if __name__ == "__main__":
         epochs=2000, lr_decay=0.995,
     )
 
-    args.experiment.n_experiments = 1
-    args.experiment.ensemble_size = 32
+    args.experiment.n_experiments = 5
+    args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
+    args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
 
     configurations = [
+        ("model", {
+            "name": ["rnn", "transformer"],
+            "model.model": [RnnController, TransformerXLInContextController],
+            "training": {
+                "optimizer": {
+                    "max_lr": [3e-3, 3e-4],
+                    "weight_decay": [0.0, 1e-2],
+                },
+                "scheduler": {
+                    "epochs": [2000, 10000],
+                    "lr_decay": [0.995, 0.9998],
+                },
+                "iterations_per_epoch": [20, 1]
+            },
+        }),
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
     ]
 
@@ -86,35 +118,36 @@ if __name__ == "__main__":
 
     # """
     # SECTION: Plot the training loss curve
-    training_outputs = list(get_result_attr(result, "output"))
+    training_outputs = get_result_attr(result, "output")
 
-    fig, ax_observation = plt.subplots()
-    ax_controller = ax_observation.twinx()
     clip = 100
-    for hp_value, training_output, color in zip(hp_values, training_outputs, COLOR_LIST):
-        out = training_output.squeeze(0)
-        tl = out["training"]
-        al = out["validation_analytical"].squeeze(-1)
-        acl = out["validation_controller_analytical"].squeeze(-1)
+    for idx, model_name in enumerate(configurations[0][1]["name"]):
+        fig, ax_observation = plt.subplots()
+        ax_controller = ax_observation.twinx()
+        for hp_value, training_output, color in zip(hp_values, training_outputs[idx], COLOR_LIST):
+            out = training_output.squeeze(0)
+            tl = out["training"]
+            vl = out["validation"].squeeze(-1)
+            vcl = out["validation_controller"].squeeze(-1)
 
-        def plot_with_clip(ax, y, **kwargs):
-            return ax.plot(torch.arange(clip, len(y)), y[clip:], **kwargs)
+            def plot_with_clip(ax, y, **kwargs):
+                return ax.plot(torch.arange(clip, len(y)).cpu(), y[clip:].cpu(), **kwargs)
 
-        # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
-        plot_with_clip(ax_observation, (al.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation_analytical")
+            # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
+            plot_with_clip(ax_observation, (vl.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation")
 
-        plot_with_clip(ax_controller, (acl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
+            plot_with_clip(ax_controller, (vcl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
 
-    plt.xlabel("epoch")
-    ax_observation.set_yscale("log")
-    ax_observation.set_ylabel("analytical_observation_loss")
-    ax_observation.legend()
+        plt.xlabel("epoch")
+        ax_observation.set_yscale("log")
+        ax_observation.set_ylabel("analytical_observation_loss")
+        ax_observation.legend()
 
-    ax_controller.set_yscale("log")
-    ax_controller.set_ylabel("analytical_controller_loss")
+        ax_controller.set_yscale("log")
+        ax_controller.set_ylabel("analytical_controller_loss")
 
-    plt.title("training_curve")
-    plt.show()
+        plt.title(f"{model_name}_training_curve")
+        plt.show()
     # """
 
     # LQG system visualization

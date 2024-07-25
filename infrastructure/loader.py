@@ -21,7 +21,7 @@ BaseDatasetArgs = Namespace(
 BaseTrainArgs = Namespace(
     # Batch sampling
     sampling=Namespace(
-        method="subsequence_padded",
+        method="subsequence_padded",        # {"full", "subsequence_padded", "subsequence_unpadded"}
         batch_size=128,
         subsequence_length=16
     ),
@@ -72,13 +72,10 @@ def load_system_and_args(folder: str):
     I_D = B.shape[1]
 
     noise_block = torch.Tensor(np.loadtxt(f"{folder}/noise_block.out", delimiter=",")).to(DEVICE)
-    W = noise_block[0:S_D, 0:S_D]
-    V = noise_block[S_D:S_D + O_D, S_D:S_D + O_D]
+    W = noise_block[:S_D, :S_D]
+    V = noise_block[S_D:, S_D:]
 
-    L_W, V_W = torch.linalg.eig(W)
-    sqrt_W = torch.real(V_W @ torch.diag(torch.sqrt(L_W)) @ V_W.mT)
-    L_V, V_V = torch.linalg.eig(V)
-    sqrt_V = torch.real(V_V @ torch.diag(torch.sqrt(L_V)) @ V_V.mT)
+    sqrt_W, sqrt_V = utils.sqrtm(W), utils.sqrtm(V)
 
     problem_shape = Namespace(
         environment=Namespace(observation=O_D),

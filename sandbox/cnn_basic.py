@@ -19,7 +19,6 @@ if __name__ == "__main__":
 
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
     args.model.S_D = args.system.S_D
-    # args.model.ir_length = 16
 
     args.train.sampling.batch_size = 64
     args.train.sampling.subsequence_length = 32
@@ -37,9 +36,10 @@ if __name__ == "__main__":
 
     configurations = [
         ("model", {
-            "model.model": [RnnPredictor]
-            # "model.model": [CnnPredictor, CnnPredictorLeastSquares]
+            "model.model": [CnnPredictor, CnnPredictorLeastSquares]
         }),
+
+
         ("total_trace_length", {
             "dataset.train.total_sequence_length": [100, 200, 500, 1000, 2000, 5000, 10000]
         })

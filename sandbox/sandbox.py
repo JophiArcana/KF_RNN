@@ -927,22 +927,32 @@ if __name__ == '__main__':
     # ))
 
     """ Sandbox 19 """
-    p = utils.process_defaulting_roots(Namespace(
-        dataset_size=Namespace(train=1, valid=100, test=500),
-        total_sequence_length=Namespace(train=2000, valid=20000, test=800000),
-        n_systems=Namespace(train=1),
-    ))
+    from transformers import TransfoXLConfig
+    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
+    d_embed = 6
+    n_layer = 3
+    n_head = 1
+    d_inner = 2 * d_embed
 
-    raise Exception()
-
-    utils.print_namespace(p)
-    p.n_systems.update(valid=10, test=12)
-    print()
-    utils.print_namespace(p)
-
-
-    raise Exception()
+    MHP = Namespace(
+        problem_shape=Namespace(
+            environment=Namespace(observation=2),
+            controller=Namespace(input=2),
+        ),
+        transformerxl=TransfoXLConfig(
+            d_model=d_embed,
+            d_embed=d_embed,
+            n_layer=n_layer,
+            n_head=n_head,
+            d_head=d_embed // n_head,
+            d_inner=d_inner,
+            dropout=0.0,
+        ),
+        bias=True
+    )
+    model = TransformerXLInContextController(MHP)
+    print(utils.model_size(model))
 
 
 
