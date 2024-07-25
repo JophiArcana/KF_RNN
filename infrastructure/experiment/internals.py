@@ -138,25 +138,29 @@ def _construct_info_dict(
             • default to training systems  
         """
         if any(re.match(f"(?!\\.).*\\.{ds_type}", param) for param in system_support_hyperparameters):
-            if any(re.match(f"((?!auxiliary\\.).)*\\.{ds_type}$", param) for param in system_support_hyperparameters):
-                # TODO: Sample minimal system parameters from array of distributions in the shape of (n_experiments, n_systems)
-                n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
-                max_n_systems = n_systems_arr.max()
-
-                def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
-                    return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
-                        utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
-                    ))
-
-                print(f"Sampling new system matrices for dataset type {ds_type}")
-                system_params_arr = _map_HP_with_params(
-                    HP, system_param_dimensions, params_dataset,
-                    sample_system_parameters_with_sub_hyperparameters, dtype=PTR
-                )
-                result["system_params"] = system_params_arr
+            if "system_params" not in save_dict or ds_type not in save_dict["system_params"]:
+                if any(re.match(f"((?!auxiliary\\.).)*\\.{ds_type}$", param) for param in system_support_hyperparameters):
+                    # TODO: Sample minimal system parameters from array of distributions in the shape of (n_experiments, n_systems)
+                    n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
+                    max_n_systems = n_systems_arr.max()
+    
+                    def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
+                        return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
+                            utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
+                        ))
+    
+                    print(f"Sampling new system matrices for dataset type {ds_type}")
+                    system_params_arr = _map_HP_with_params(
+                        HP, system_param_dimensions, params_dataset,
+                        sample_system_parameters_with_sub_hyperparameters, dtype=PTR
+                    )
+                    result["system_params"] = system_params_arr
+                else:
+                    print(f"Defaulting to train system matrices for dataset type {ds_type}")
+                    system_params_arr = info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
             else:
-                print(f"Defaulting to train system matrices for dataset type {ds_type}")
-                system_params_arr = info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
+                print(f"System matrices found for dataset type {ds_type}")
+                system_params_arr = save_dict["system_params"][ds_type]
 
             # TODO: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
             system_dimensions = system_param_dimensions
