@@ -80,27 +80,32 @@ def run_module_arr(
         for k, v in module_td.items(include_nested=True, leaves_only=True)
     }, batch_size=module_td.shape)
 
-    if np.prod(module_td.shape) == 1:
-        flat_args, args_spec = tree_flatten(args)
-        flat_squeezed_args = [
-            t.view(*t.shape[module_td.ndim:])
-            for t in flat_args
-        ]
-        squeezed_args = tree_unflatten(flat_squeezed_args, args_spec)
-
-        squeezed_out = nn.utils.stateless.functional_call(reference_module, module_td.view().to_dict(), squeezed_args, kwargs)
-        flat_squeezed_out, args_spec = tree_flatten(squeezed_out)
-        flat_out = [
-            t.view(*module_td.shape, *t.shape)
-            for t in flat_squeezed_out
-        ]
-        return tree_unflatten(flat_out, args_spec)
-    else:
+    try:
         def vmap_run(module_d, ags):
             return nn.utils.stateless.functional_call(reference_module, module_d, ags, kwargs)
         for _ in range(module_td.ndim):
             vmap_run = torch.func.vmap(vmap_run, randomness="different")
         return vmap_run(module_td.to_dict(), args)
+    except RuntimeError:
+        n = np.prod(module_td.shape)
+        flat_args, args_spec = tree_flatten(args)
+        single_flat_args_list = [
+            [t.view(n, *t.shape[module_td.ndim:])[idx] for t in flat_args]
+            for idx in range(n)
+        ]
+        single_args_list = [tree_unflatten(single_flat_args, args_spec) for single_flat_args in single_flat_args_list]
+
+        single_out_list = [
+            nn.utils.stateless.functional_call(reference_module, module_td.view(n)[idx].to_dict(), single_args)
+            for idx, single_args in enumerate(single_args_list)
+        ]
+        _, out_spec = tree_flatten(single_out_list[0])
+        single_flat_out_list = [tree_flatten(single_out)[0] for single_out in single_out_list]
+        flat_out = [
+            torch.stack([*out_component_list], dim=0)
+            for out_component_list in zip(single_flat_out_list)
+        ]
+        return tree_unflatten(flat_out, out_spec)
 
 def double_vmap(func: Callable) -> Callable:
     return torch.vmap(torch.vmap(func))
