@@ -41,7 +41,7 @@ if __name__ == "__main__":
         args, configurations, {
             "dir": output_dir,
             "fname": output_fname
-        }, system2, save_experiment=True
+        }, system2, save_experiment=False
     )
     plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical", lstsq=False, xscale="log")
 

@@ -4,6 +4,7 @@ import re
 from argparse import Namespace
 from collections import OrderedDict
 
+import numpy as np
 import torch
 from dimarray import DimArray, Dataset
 
@@ -49,7 +50,9 @@ def _construct_dependency_dict_and_params_dataset(
                 utils.rsetattr(HP, n, v)
 
         # DONE: Need to pre-broadcast at some point before constructing Dataset structures or else they will do something stupid
-        _vs, param_group_shape = utils.broadcast_arrays_preserve_ndims(*map(np.array, params.values()))
+        vs = (*map(np.array, params.values()),)
+        param_group_shape = np.broadcast_shapes(*(v.shape for v in vs))
+        _vs = (np.broadcast_to(v, param_group_shape[-v.ndim:]) for v in vs)
 
         dim_names = [
             PARAM_GROUP_FORMATTER.format(param_group, d)
