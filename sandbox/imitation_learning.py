@@ -176,6 +176,7 @@ if __name__ == "__main__":
                 get_result_attr(result, "learned_kfs"), dtype=tuple
             )
         ], axis=1), batch_size, horizon)
+        torch.save(_datasets, datasets_cache_fname)
 
     print(_datasets)
     raise Exception()
