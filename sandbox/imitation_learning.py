@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     # SECTION: Run imitation learning experiment across different control noises
     hp_name = "control_noise_std"
-    hp_values = torch.linspace(*torch.Tensor([0.0, 1.8]).exp(), 5).log().tolist()
+    hp_values = torch.linspace(*torch.Tensor([0.0, 2.0]).exp(), 5).log().tolist()
 
     S_D = 3
     SHP = Namespace(
