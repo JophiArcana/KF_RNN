@@ -82,5 +82,53 @@ class ZeroPredictor(Predictor):
         return TensorDict.from_dict(trace, batch_size=()).apply(torch.zeros_like).to_dict()
 
 
+class ZeroController(ZeroPredictor):
+    @classmethod
+    def _analytical_error_and_cache(cls,
+                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
+                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
+    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+        result, cache = ZeroPredictor._analytical_error_and_cache(kfs, systems)
+
+        # Variable definition
+        controller_keys = cache.controller_keys
+        shape = cache.shape
+
+        K, L_dict = cache.K, cache.L                                                                    # [B... x S_D x O_D], [B... x I_D? x S_D]
+        sqrt_S_V = cache.sqrt_S_V                                                                       # [B... x O_D x O_D]
+
+        Las_dict = cache.Las                                                                            # [B... x I_D? x 2S_D]
+        sqrt_S_Ws = cache.sqrt_S_Ws                                                                     # [B... x 2S_D x 2S_D]
+
+        Dj = cache.Dj                                                                                   # [B... x 1 x 2S_D]
+        Vinv_BL_F_BLK = cache.Vinv_BL_F_BLK                                                             # [B... x 2S_D x O_D]
+
+        r = dict()
+        for k in controller_keys:
+            # Precomputation
+            L, Las = L_dict[k], Las_dict[k]                                                             # [B... x I_D x S_D], [B... x I_D x 2S_D]
+            I_D = L.shape[-2]
+
+            inf_geometric = utils.hadamard_conjugation(Las, Las, Dj, Dj, torch.eye(I_D))
+
+            # State evolution noise error
+            # Highlight
+            ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)              # [B...]
+
+            # Observation noise error
+            # Highlight
+            v_current_err = torch.norm((L @ K) @ sqrt_S_V, dim=[-1, -2]) ** 2                           # [B...]
+
+            # Highlight
+            v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
+                Vinv_BL_F_BLK.mT @ inf_geometric @ Vinv_BL_F_BLK
+            ) @ sqrt_S_V)                                                                               # [B...]
+
+            r[k] = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                       # [B...]
+
+        result["controller"] = TensorDict.from_dict(r, batch_size=shape)
+        return result, cache
+
+
 
 

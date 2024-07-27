@@ -331,17 +331,6 @@ def process_defaulting_roots(o: _T) -> _T:
     else:
         return DefaultingParameter(**{TRAINING_DATASET_TYPES[0]: o})
 
-def get_defaulting_roots(n: Namespace) -> List[DefaultingParameter]:
-    result = []
-    def _accumulate_defaulting_roots(o: object) -> None:
-        if isinstance(o, DefaultingParameter):
-            result.append(o)
-        elif isinstance(o, Namespace):
-            for v in vars(o).values():
-                _accumulate_defaulting_roots(v)
-    _accumulate_defaulting_roots(n)
-    return result
-
 def index_defaulting_with_attr(o: object, attr: str = None) -> Any:
     if isinstance(o, DefaultingParameter):
         return getattr(o, o._default_key if attr is None else attr)

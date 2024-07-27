@@ -2,6 +2,7 @@ from argparse import Namespace
 from typing import *
 
 import numpy as np
+import numpy.typing
 import torch
 from tensordict import TensorDict
 
@@ -32,10 +33,11 @@ class SystemGroup(ModuleGroup):
         return self.generate_dataset_with_controller_arr(utils.array_of(self.controller), batch_size, sequence_length)
 
     def generate_dataset_with_controller_arr(self,
-                                             controller_arr: np.ndarray[ControllerGroup],
+                                             controller_arr: np.typing.ArrayLike,
                                              batch_size: int,
                                              sequence_length: int
     ) -> TensorDict[str, torch.Tensor]:
+        controller_arr = np.array(controller_arr)
         with torch.set_grad_enabled(False):
             group_shape = torch.broadcast_shapes(
                 self.group_shape,

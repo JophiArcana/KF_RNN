@@ -15,7 +15,9 @@ if os.getcwd() not in sys.path:
 from infrastructure import loader, utils
 from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
+from infrastructure.settings import DEVICE
 from system.controller import NNControllerGroup
+from model.zero_predictor import ZeroController
 
 
 if __name__ == "__main__":
@@ -33,12 +35,13 @@ if __name__ == "__main__":
     hp_values = torch.linspace(*torch.Tensor([0.0, 2.0]).exp(), 5).log().tolist()
 
     S_D = 3
+    problem_shape = Namespace(
+        environment=Namespace(observation=2),
+        controller=Namespace(input=2),
+    )
     SHP = Namespace(
         distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1),
-        S_D=S_D, problem_shape=Namespace(
-            environment=Namespace(observation=2),
-            controller=Namespace(input=2),
-        ), auxiliary=Namespace(**{hp_name: hp_values[0]})
+        S_D=S_D, problem_shape=problem_shape, auxiliary=Namespace(**{hp_name: hp_values[0]})
     )
 
     args = loader.generate_args(SHP)
@@ -100,12 +103,18 @@ if __name__ == "__main__":
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
     ]
 
-    result, systems, _ = run_experiments(args, configurations, {
-        "dir": output_dir,
-        "fname": output_fname
-    }, save_experiment=True)
+    cache_fname = f"output/{output_dir}/{exp_name}/result_cache.pt"
+    if os.path.exists(cache_fname):
+        result_cache = torch.load(cache_fname, map_location=DEVICE)
+    else:
+        result_cache = run_experiments(args, configurations, {
+            "dir": output_dir,
+            "fname": output_fname
+        }, save_experiment=True)
+        torch.save(result_cache, cache_fname)
+    result, systems, _ = result_cache
 
-    lqg_params = systems.values[()].td().squeeze(1).squeeze(0)
+    lqg_params = systems.values[()].td().squeeze(1)
     lqg_list = [
         LTISystem(SHP.problem_shape, Namespace(**{hp_name: hp_value}), lqg_params)
         for hp_value in hp_values
@@ -121,11 +130,12 @@ if __name__ == "__main__":
     training_outputs = get_result_attr(result, "output")
 
     clip = 100
-    for idx, model_name in enumerate(configurations[0][1]["name"]):
+    sys_idx = 0
+    for model_idx, model_name in enumerate(configurations[0][1]["name"]):
         fig, ax_observation = plt.subplots()
         ax_controller = ax_observation.twinx()
-        for hp_value, training_output, color in zip(hp_values, training_outputs[idx], COLOR_LIST):
-            out = training_output.squeeze(0)
+        for hp_value, training_output, color in zip(hp_values, training_outputs[model_idx], COLOR_LIST):
+            out = training_output[sys_idx]
             tl = out["training"]
             vl = out["validation"].squeeze(-1)
             vcl = out["validation_controller"].squeeze(-1)
@@ -133,10 +143,10 @@ if __name__ == "__main__":
             def plot_with_clip(ax, y, **kwargs):
                 return ax.plot(torch.arange(clip, len(y)).cpu(), y[clip:].cpu(), **kwargs)
 
-            # plot_with_clip(ax_observation, (tl.median(dim=0).values - il_observation).detach(), color=0.7 * color, linestyle="--")
-            plot_with_clip(ax_observation, (vl.median(dim=0).values - il_observation).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation")
+            # plot_with_clip(ax_observation, (tl.median(dim=-2).values - il_observation[sys_idx]).detach(), color=0.7 * color, linestyle="--")
+            plot_with_clip(ax_observation, (vl.median(dim=-2).values - il_observation[sys_idx]).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation")
 
-            plot_with_clip(ax_controller, (vcl.median(dim=0).values - il_controller).detach(), color=0.7 * color, linestyle="--")
+            plot_with_clip(ax_observation, (vcl.median(dim=-2).values - il_controller[sys_idx]).detach(), color=0.7 * color, linestyle="--")
 
         plt.xlabel("epoch")
         ax_observation.set_yscale("log")
@@ -150,13 +160,29 @@ if __name__ == "__main__":
         plt.show()
     # """
 
-    # LQG system visualization
-    batch_size, horizon = 128, 200
-    datasets = [lqg_.generate_dataset(batch_size, horizon) for lqg_ in lqg_list]
 
-    optimal_states = datasets[0]["environment", "state"].flatten(0, -2)
+    # LQG system visualization
+    zero_controller_group = NNControllerGroup(problem_shape, *utils.stack_module_arr(utils.array_of(ZeroController(Namespace(problem_shape=problem_shape)))))
+    batch_size, horizon = 128, 200
+
+    datasets_cache_fname = f"output/{output_dir}/{exp_name}/datasets_cache.pt"
+    if os.path.exists(datasets_cache_fname):
+        _datasets = torch.load(datasets_cache_fname, map_location=DEVICE)
+    else:
+        _datasets = lqg.generate_dataset_with_controller_arr(np.concatenate([
+            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(2, 1)),
+            utils.multi_map(
+                lambda module_arr: NNControllerGroup(problem_shape, module_arr[0], module_arr[1].squeeze(1)),
+                get_result_attr(result, "learned_kfs"), dtype=tuple
+            )
+        ], axis=1), batch_size, horizon)
+
+    print(_datasets)
+    raise Exception()
+
+    optimal_states = datasets[1]["environment", "state"].flatten(1, -2)
     U, S, Vh = torch.linalg.svd(optimal_states, full_matrices=False)
-    s0, s1 = S[:2] * len(optimal_states) ** -0.5
+    s0, s1 = S[..., :2] / ((batch_size * horizon) ** 0.5)
     compression = Vh.H[:, :2]
 
     # """
@@ -170,7 +196,7 @@ if __name__ == "__main__":
     trace_idx, ensemble_idx = 0, 0
 
     trace = lqg.generate_dataset_with_controller_arr(
-        np.array([lqg.controller] + learned_controllers),
+        [lqg.controller] + learned_controllers,
         batch_size, horizon
     )
 
