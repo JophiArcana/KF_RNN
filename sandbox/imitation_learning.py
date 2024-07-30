@@ -47,7 +47,7 @@ if __name__ == "__main__":
     args = loader.generate_args(SHP)
     getattr(args.system.auxiliary, hp_name).update(valid=hp_values[0], test=hp_values[0])
 
-    d_embed = 2 * S_D
+    d_embed = 8 # 2 * S_D
     n_layer = 3
     n_head = 1
     d_inner = 2 * d_embed
@@ -62,7 +62,6 @@ if __name__ == "__main__":
         d_inner=d_inner,
         dropout=0.0,
     )
-    args.model.bias = True
 
     args.dataset.dataset_size.update(train=1, valid=10, test=10)
     args.dataset.total_sequence_length.update(train=2000, valid=20000, test=20000)
@@ -82,22 +81,26 @@ if __name__ == "__main__":
     args.experiment.n_experiments = 5
     args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
+    # args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
+    args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
 
     configurations = [
         ("model", {
-            "name": ["rnn", "transformer"],
-            "model.model": [RnnController, TransformerXLInContextController],
+            "name": ["rnn", "transformer_no_bias", "transformer_bias"],
+            "model": {
+                "model": [RnnController, TransformerXLInContextController, TransformerXLInContextController],
+                "bias": [None, False, True]
+            },
             "training": {
                 "optimizer": {
-                    "max_lr": [1e-2, 3e-4],
-                    "weight_decay": [0.0, 1e-2],
+                    "max_lr": [1e-2, 3e-4, 3e-4],
+                    "weight_decay": [0.0, 1e-2, 1e-2],
                 },
                 "scheduler": {
-                    "epochs": [2000, 10000],
-                    "lr_decay": [0.995, 0.9998],
+                    "epochs": [2000, 10000, 10000],
+                    "lr_decay": [0.995, 0.9998, 0.9998],
                 },
-                "iterations_per_epoch": [20, 1]
+                "iterations_per_epoch": [20, 1, 1]
             },
         }),
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
@@ -170,7 +173,7 @@ if __name__ == "__main__":
         _datasets = torch.load(datasets_cache_fname, map_location=DEVICE)
     else:
         _datasets = lqg.generate_dataset_with_controller_arr(np.concatenate([
-            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(2, 1)),
+            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(len(configurations[0][1]["name"]), 1)),
             utils.multi_map(
                 lambda module_arr: NNControllerGroup(problem_shape, module_arr[0], module_arr[1].squeeze(1)),
                 get_result_attr(result, "learned_kfs"), dtype=tuple

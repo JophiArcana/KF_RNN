@@ -131,16 +131,6 @@ def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], t
 """
 Computation
 """
-def sample_stable_state_matrix(d: int, batch_size: Tuple[int, ...] = (), lo=0.4, hi=0.9) -> torch.Tensor:
-    M = torch.randn((*batch_size, d, d))                        # [B... x D x D]
-    eig_, V = torch.linalg.eig(M)                               # [B... x D], [B... x D x D]
-    eig_abs_ = eig_.abs()                                       # [B... x D]
-    eig_indices = torch.argmax(torch.Tensor(eig_abs_.unsqueeze(-2) == eig_abs_.unsqueeze(-1)).to(torch.int), dim=-2)    # [B... x D]
-
-    eig_abs = torch.take_along_dim(torch.empty((*batch_size, d)).uniform_(lo, hi), eig_indices, dim=-1)                 # [B... x D]
-    eig = eig_ * (eig_abs / eig_abs_)                           # [B... x D]
-    return (V @ torch.diag_embed(eig) @ torch.inverse(V)).real  # [B... x D x D]
-
 def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
     N = M.shape[0]
     I = torch.eye(N, device=M.device)
@@ -276,17 +266,9 @@ def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[DimArray]:
     )
     return (dim_arr.broadcast(reference_dim_arr) for dim_arr in dim_arrs)
 
-def broadcast_arrays_preserve_ndims(*arrs: np.ndarray) -> Tuple[Iterator[np.ndarray], Tuple[int, ...]]:
-    shape = np.broadcast_shapes(*(arr.shape for arr in arrs))
-    return (np.broadcast_to(arr, shape[-arr.ndim:]) for arr in arrs), shape
-
 def take_from_dim_array(dim_arr: DimArray | Dataset, idx: Dict[str, Any]):
     dims = set(dim_arr.dims)
     return dim_arr.take(indices={k: v for k, v in idx.items() if k in dims})
-
-def put_in_dim_array(dim_arr: DimArray, idx: Dict[str, Any], value: Any):
-    dims = set(dim_arr.dims)
-    dim_arr.put(indices={k: v for k, v in idx.items() if k in dims}, values=value)
 
 
 """
@@ -348,17 +330,6 @@ def process_defaulting_roots(o: _T) -> _T:
             return o
     else:
         return DefaultingParameter(**{TRAINING_DATASET_TYPES[0]: o})
-
-def get_defaulting_roots(n: Namespace) -> List[DefaultingParameter]:
-    result = []
-    def _accumulate_defaulting_roots(o: object) -> None:
-        if isinstance(o, DefaultingParameter):
-            result.append(o)
-        elif isinstance(o, Namespace):
-            for v in vars(o).values():
-                _accumulate_defaulting_roots(v)
-    _accumulate_defaulting_roots(n)
-    return result
 
 def index_defaulting_with_attr(o: object, attr: str = None) -> Any:
     if isinstance(o, DefaultingParameter):
@@ -506,19 +477,16 @@ def confidence_ellipse(x, y, ax, n_std=1.0, facecolor="none", **kwargs):
 
     cov = np.cov(x, y)
     pearson = cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1])
-    # Using a special case to obtain the eigenvalues of this
-    # two-dimensional dataset.
+    # Using a special case to obtain the eigenvalues of this two-dimensional dataset.
     ell_radius_x = np.sqrt(1 + pearson)
     ell_radius_y = np.sqrt(1 - pearson)
     ellipse = Ellipse((0, 0), width=ell_radius_x * 2, height=ell_radius_y * 2, facecolor=facecolor, **kwargs)
 
-    # Calculating the standard deviation of x from
-    # the squareroot of the variance and multiplying
-    # with the given number of standard deviations.
+    # Calculating the standard deviation of x from the squareroot of the variance and multiplying with the given number of standard deviations.
     scale_x = np.sqrt(cov[0, 0]) * n_std
     mean_x = np.mean(x)
 
-    # calculating the standard deviation of y ...
+    # Calculating the standard deviation of y
     scale_y = np.sqrt(cov[1, 1]) * n_std
     mean_y = np.mean(y)
 
