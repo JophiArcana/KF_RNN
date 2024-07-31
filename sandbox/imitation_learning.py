@@ -1,11 +1,15 @@
+import math
 import os
 import sys
 from argparse import Namespace
 
 import numpy as np
+import tensordict.utils
 import torch
+from matplotlib import colors
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
+from tensordict.utils import expand_as_right
 from transformers import TransfoXLConfig
 
 # This line needs to be added since some terminals will not recognize the current directory
@@ -17,14 +21,13 @@ from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
 from infrastructure.settings import DEVICE
 from system.controller import NNControllerGroup
+from system.linear_time_invariant import LTISystem, MOPDistribution
 from model.zero_predictor import ZeroController
+from model.sequential.rnn_controller import RnnController
+from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
 
 if __name__ == "__main__":
-    from system.linear_time_invariant import LTISystem, MOPDistribution
-    from model.sequential.rnn_controller import RnnController
-    from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
-
     # Experiment setup
     exp_name = "ControlNoiseComparison"
     output_dir = "imitation_learning"
@@ -47,7 +50,7 @@ if __name__ == "__main__":
     args = loader.generate_args(SHP)
     getattr(args.system.auxiliary, hp_name).update(valid=hp_values[0], test=hp_values[0])
 
-    d_embed = 2 * S_D
+    d_embed = 8 # 2 * S_D
     n_layer = 3
     n_head = 1
     d_inner = 2 * d_embed
@@ -62,7 +65,6 @@ if __name__ == "__main__":
         d_inner=d_inner,
         dropout=0.0,
     )
-    args.model.bias = True
 
     args.dataset.dataset_size.update(train=1, valid=10, test=10)
     args.dataset.total_sequence_length.update(train=2000, valid=20000, test=20000)
@@ -86,18 +88,21 @@ if __name__ == "__main__":
 
     configurations = [
         ("model", {
-            "name": ["rnn", "transformer"],
-            "model.model": [RnnController, TransformerXLInContextController],
+            "name": ["rnn", "transformer_no_bias", "transformer_bias"],
+            "model": {
+                "model": [RnnController, TransformerXLInContextController, TransformerXLInContextController],
+                "bias": [None, False, True]
+            },
             "training": {
                 "optimizer": {
-                    "max_lr": [1e-2, 3e-4],
-                    "weight_decay": [0.0, 1e-2],
+                    "max_lr": [1e-2, 3e-4, 3e-4],
+                    "weight_decay": [0.0, 1e-2, 1e-2],
                 },
                 "scheduler": {
-                    "epochs": [2000, 10000],
-                    "lr_decay": [0.995, 0.9998],
+                    "epochs": [2000, 10000, 10000],
+                    "lr_decay": [0.995, 0.9998, 0.9998],
                 },
-                "iterations_per_epoch": [20, 1]
+                "iterations_per_epoch": [20, 1, 1]
             },
         }),
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
@@ -114,6 +119,9 @@ if __name__ == "__main__":
         torch.save(result_cache, cache_fname)
     result, systems, _ = result_cache
 
+    print(get_result_attr(result, "time"))
+    raise Exception()
+
     lqg_params = systems.values[()].td().squeeze(1)
     lqg_list = [
         LTISystem(SHP.problem_shape, Namespace(**{hp_name: hp_value}), lqg_params)
@@ -124,41 +132,66 @@ if __name__ == "__main__":
     # DONE: After running experiment, refresh LQG because the saved system overrides the one sampled at the start
     il_observation = lqg.irreducible_loss.environment.observation
     il_controller = lqg.irreducible_loss.controller.input
+    zl_observation = lqg.zero_predictor_loss.environment.observation
+    zl_controller = lqg.zero_predictor_loss.controller.input
+
+    sys_idx = 2
 
     # """
     # SECTION: Plot the training loss curve
     training_outputs = get_result_attr(result, "output")
 
-    clip = 100
-    sys_idx = 0
-    for model_idx, model_name in enumerate(configurations[0][1]["name"]):
-        fig, ax_observation = plt.subplots()
-        ax_controller = ax_observation.twinx()
-        for hp_value, training_output, color in zip(hp_values, training_outputs[model_idx], COLOR_LIST):
-            out = training_output[sys_idx]
-            tl = out["training"]
+    clip = 25
+    plt.rcParams['figure.figsize'] = (18.0, 5.0)
+    observation_fig, observation_axs = plt.subplots(nrows=1, ncols=2, sharey=True)
+    controller_fig, controller_axs = plt.subplots(nrows=1, ncols=2, sharey=True)
+
+    def plot_normalized_with_clip(ax_idx, out, color: np.ndarray, label: str):
+        tl = out["training"]
+        try:
+            vl = out["validation_analytical"].squeeze(-1)
+            vcl = out["validation_controller_analytical"].squeeze(-1)
+        except KeyError:
             vl = out["validation"].squeeze(-1)
             vcl = out["validation_controller"].squeeze(-1)
 
-            def plot_with_clip(ax, y, **kwargs):
-                return ax.plot(torch.arange(clip, len(y)).cpu(), y[clip:].cpu(), **kwargs)
+        normalized_vl = ((vl - expand_as_right(il_observation, vl)) / expand_as_right(zl_observation - il_observation, vl)).median(dim=-2).values[sys_idx]
+        normalized_vcl = ((vcl - expand_as_right(il_controller, vcl)) / expand_as_right(zl_controller - il_controller, vcl)).median(dim=-2).values[sys_idx]
 
-            # plot_with_clip(ax_observation, (tl.median(dim=-2).values - il_observation[sys_idx]).detach(), color=0.7 * color, linestyle="--")
-            plot_with_clip(ax_observation, (vl.median(dim=-2).values - il_observation[sys_idx]).detach(), color=color, linestyle="-", label=f"{hp_name}{hp_value}_validation")
+        x = torch.arange(clip, out.shape[-1])
+        observation_axs[ax_idx].plot(x.cpu(), normalized_vl[clip:].detach().cpu(), linestyle="-", color=color, label=label)
+        controller_axs[ax_idx].plot(x.cpu(), normalized_vcl[clip:].detach().cpu(), linestyle="--", color=0.7 * color, label=label)
 
-            plot_with_clip(ax_observation, (vcl.median(dim=-2).values - il_controller[sys_idx]).detach(), color=0.7 * color, linestyle="--")
+    for hp_index, (hp_value, color) in enumerate(zip(hp_values, COLOR_LIST)):
+        rnn_out = training_outputs[0, hp_index]
+        plot_normalized_with_clip(0, rnn_out, color, f"$\\alpha=${hp_value}")
 
-        plt.xlabel("epoch")
-        ax_observation.set_yscale("log")
-        ax_observation.set_ylabel("analytical_observation_loss")
-        ax_observation.legend()
+        transformer_out = training_outputs[2, hp_index]
+        plot_normalized_with_clip(1, transformer_out, color, f"$\\alpha=${hp_value}")
 
-        ax_controller.set_yscale("log")
-        ax_controller.set_ylabel("analytical_controller_loss")
+    for (ax, name) in zip(observation_axs, ("rnn", "transformer")):
+        ax.set_xscale("log")
+        ax.set_xlabel("training_epoch")
+        ax.set_yscale("log")
+        ax.set_ylabel("validation_error")
 
-        plt.title(f"{model_name}_training_curve")
-        plt.show()
+        ax.legend()
+        ax.set_title(name)
+    observation_fig.suptitle("observation_prediction_error")
+
+    for (ax, name) in zip(controller_axs, ("rnn", "transformer")):
+        ax.set_xscale("log")
+        ax.set_xlabel("training_epoch")
+        ax.set_yscale("log")
+        ax.set_ylabel("validation_error")
+
+        ax.legend()
+        ax.set_title(name)
+    controller_fig.suptitle("controller_imitation_error")
+
+    plt.show()
     # """
+    raise Exception()
 
 
     # LQG system visualization
@@ -170,7 +203,7 @@ if __name__ == "__main__":
         _datasets = torch.load(datasets_cache_fname, map_location=DEVICE)
     else:
         _datasets = lqg.generate_dataset_with_controller_arr(np.concatenate([
-            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(2, 1)),
+            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(len(configurations[0][1]["name"]), 1)),
             utils.multi_map(
                 lambda module_arr: NNControllerGroup(problem_shape, module_arr[0], module_arr[1].squeeze(1)),
                 get_result_attr(result, "learned_kfs"), dtype=tuple
@@ -179,118 +212,214 @@ if __name__ == "__main__":
         torch.save(_datasets, datasets_cache_fname)
 
     print(_datasets)
-    raise Exception()
 
-    optimal_states = datasets[1]["environment", "state"].flatten(1, -2)
+    zero_trace = _datasets[:, 0:1]
+    optimal_trace = _datasets[:, 1:2]
+    exemplar_traces = _datasets[:, 1:len(hp_values) + 1]
+    learned_traces = _datasets[:, len(hp_values) + 1:]
+
+    optimal_states = optimal_trace["environment", "state"].flatten(-3, -2)
     U, S, Vh = torch.linalg.svd(optimal_states, full_matrices=False)
-    s0, s1 = S[..., :2] / ((batch_size * horizon) ** 0.5)
-    compression = Vh.H[:, :2]
+    s_max = S[0, 0, :, 0] / ((batch_size * horizon) ** 0.5)
 
-    # """
+    # DONE: Precompute aligned states
+    alignment = Vh.mH[..., None, :, :]
+    
+    aligned_optimal_states = (optimal_trace["environment", "state"] @ alignment).squeeze(1)
+    aligned_zero_states = (zero_trace["environment", "state"] @ alignment).squeeze(1)
+
+    aligned_exemplar_states = exemplar_traces["environment", "state"] @ alignment
+    aligned_learned_states = learned_traces["environment", "state"] @ alignment
+
+    # DONE: Precompute compressed states
+    compression = Vh.mH[..., :2][..., None, :, :]
+
+    compressed_optimal_states = (optimal_trace["environment", "state"] @ compression).squeeze(1)
+    compressed_zero_states = (zero_trace["environment", "state"] @ compression).squeeze(1)
+
+    compressed_exemplar_states = exemplar_traces["environment", "state"] @ compression
+    compressed_learned_states = learned_traces["environment", "state"] @ compression
+
+
+    """
     # SECTION: Visualize trajectory generated using the learned controllers
-    learned_controllers = [
-        NNControllerGroup(SHP.problem_shape, reference_module, module_td.squeeze(0))
-        for reference_module, module_td in get_result_attr(result, "learned_kfs")
-    ]
+    small_horizon = 12
+    trace_idx = 0
 
-    small_horizon = 20
-    trace_idx, ensemble_idx = 0, 0
+    for model_idx, model_name in enumerate(configurations[0][1]["name"]):
+        for hp_value, states, color in zip(hp_values, compressed_learned_states[model_idx], COLOR_LIST):
+            trajectory = states[sys_idx, trace_idx, :small_horizon]
+            plt.plot(*trajectory.mT, color=color, linewidth=0.5, marker=".", markersize=8, label=f"$\\alpha=${hp_value}_learned_trajectory")
 
-    trace = lqg.generate_dataset_with_controller_arr(
-        [lqg.controller] + learned_controllers,
-        batch_size, horizon
-    )
+        plt.plot(*compressed_zero_states[model_idx, sys_idx, trace_idx, :small_horizon].mT, color="gray", linewidth=0.5, linestyle="--", marker="o", markersize=4, label="zero_predictor_trajectory")
+        plt.plot(*compressed_optimal_states[model_idx, sys_idx, trace_idx, :small_horizon].mT, color="black", linestyle="--", marker="*", markersize=8, label="optimal_trajectory")
+        plt.plot(*compressed_zero_states[model_idx, sys_idx, trace_idx, 0], color="black", marker="*", markersize=16)
 
-    optimal_trajectory = trace[0]
-    learned_trajectories = trace[1:]
+        plt.xlabel("$\\sigma_0$")
+        plt.ylabel("$\\sigma_1$")
+        plt.title(f"{model_name}_trajectories")
 
-    for hp_value, learned_trajectory, color in zip(hp_values, learned_trajectories, COLOR_LIST):
-        trajectory = learned_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression
-        plt.plot(*trajectory.mT, color=color, marker=".", markersize="8", label=f"{hp_name}{hp_value}_learned_trajectory")
-    plt.plot(*(optimal_trajectory["environment", "state"][ensemble_idx, trace_idx, :small_horizon] @ compression).mT, color="black", linestyle="--", marker="*", markersize="8", label="optimal_trajectory")
+        plt.legend(fontsize=6)
+        plt.show()
+    """
 
-    plt.xlabel("$\\sigma_0$")
-    # plt.xlim(left=-3 * s0, right=3 * s0)
-    plt.ylabel("$\\sigma_1$")
-    # plt.ylim(bottom=-3 * s0, top=3 * s0)
-    plt.title("trajectory")
-
-    plt.legend()
-    plt.show()
-    # """
 
     # """
-    # SECTION: Plot covariances of sampled states
+    # SECTION: Plot covariances of exemplar states
     indices = torch.randint(0, batch_size * horizon, (2000,))
 
-    for hp_value, ds_, color in zip(hp_values, datasets, COLOR_LIST):
-        compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
-        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
+    sampled_compressed_optimal_states = compressed_optimal_states.flatten(-3, -2)[0, sys_idx, indices]
+    sampled_compressed_zero_states = compressed_zero_states.flatten(-3, -2)[0, sys_idx, indices]
+
+    def plot_covariance(states: torch.Tensor, color: np.ndarray, label: str) -> None:
+        plt.scatter(*states.mT, s=3, color=color, alpha=0.15)
         utils.confidence_ellipse(
-            *compressed_states.mT, plt.gca(),
-            n_std=2.0, linewidth=2, linestyle='--', edgecolor=0.7 * color, label=f"{hp_name}{hp_value}_states", zorder=12
+            *states.mT, plt.gca(),
+            n_std=2.0, linewidth=2, linestyle="--", edgecolor=0.7 * color, label=label, zorder=12
         )
 
-    plt.xlabel("$\\sigma_0$")
-    # plt.xlim(left=-3 * s0, right=3 * s0)
-    plt.ylabel("$\\sigma_1$")
-    # plt.ylim(bottom=-3 * s0, top=3 * s0)
-    plt.title("state_covariance")
+    for hp_value, states, color in zip(hp_values, compressed_exemplar_states[0], COLOR_LIST):
+        plot_covariance(states.flatten(-3, -2)[sys_idx, indices], color, f"$\\alpha=${hp_value}_states")
 
-    plt.legend()
-    plt.show()
+    plot_covariance(sampled_compressed_optimal_states, np.array(colors.to_rgb("black")), "optimal_states")
+    plot_covariance(sampled_compressed_zero_states, np.array(colors.to_rgb("gray")), "zero_predictor_states")
 
-
-    for hp_value, ds_, color in zip(hp_values, learned_trajectories, COLOR_LIST):
-        compressed_states = ds_["environment", "state"].flatten(0, -2) @ compression
-        plt.scatter(*compressed_states[indices].mT, s=3, color=color, alpha=0.15)
-        utils.confidence_ellipse(
-            *compressed_states.mT, plt.gca(),
-            n_std=2.0, linewidth=2, linestyle='-', edgecolor=0.7 * color, label=f"{hp_name}{hp_value}_learned_states", zorder=12
-        )
-
-    compressed_optimal_states = optimal_trajectory["environment", "state"].flatten(0, -2) @ compression
-    plt.scatter(*compressed_optimal_states[indices].mT, s=3, color="black", alpha=0.15)
-    utils.confidence_ellipse(
-        *compressed_optimal_states.mT, plt.gca(),
-        n_std=2.0, linewidth=2, linestyle='-', edgecolor="black", label=f"optimal_states", zorder=12
-    )
 
     plt.xlabel("$\\sigma_0$")
-    # plt.xlim(left=-3 * s0, right=3 * s0)
     plt.ylabel("$\\sigma_1$")
-    # plt.ylim(bottom=-3 * s0, top=3 * s0)
-    plt.title("learned_state_covariance")
+    plt.title(f"exemplar_state_covariance")
 
-    plt.legend()
+    plt.legend(fontsize=6)
+    plt.savefig("images/paper/exemplar/state_covariance.png", bbox_inches="tight")
     plt.show()
     # """
 
+
     # """
-    # SECTION: Plot cumulative loss over horizon
-    def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LTISystem) -> torch.Tensor:
+    # SECTION: Plot excitations of exemplar states
+    def plot_state_excitation(ax, states: torch.Tensor, color: np.ndarray, label: str) -> None:
+        s = states.std()
+        x = torch.linspace(-3 * s, 3 * s, 100)
+
+        nbins = 20 * math.ceil(s * (batch_size * horizon) ** 0.5)
+        ax.hist(states, density=True, color=color, bins=nbins, histtype="step", linewidth=0.3, label=label)
+        ax.plot(x, torch.distributions.Normal(loc=0.0, scale=s).log_prob(x).exp(), color=0.5 * color, linewidth=1.0)
+
+    fig, axs = plt.subplots(nrows=S_D, ncols=1, sharex=True, sharey=True)
+    for i in range(S_D):
+        for hp_value, states, color in zip(hp_values, aligned_exemplar_states[0], COLOR_LIST):
+            plot_state_excitation(axs[i], states.flatten(-3, -2)[sys_idx, :, i], color, f"$\\alpha=${hp_value}_dist")
+
+        # plot_state_excitation(aligned_optimal_states.flatten(-3, -2)[0, sys_idx, :, i], np.array(colors.to_rgb("black")), f"optimal_distribution")
+        # plot_state_excitation(axs[i], aligned_zero_states.flatten(-3, -2)[0, sys_idx, :, i], np.array(colors.to_rgb("gray")), f"zero_predictor_dist")
+
+        axs[i].set_xlabel(f"$\\sigma_{i}$")
+        axs[i].set_xlim(left=-3.5 * s_max[sys_idx], right=3.5 * s_max[sys_idx])
+        axs[i].set_ylabel("distribution")
+
+        if i == 0:
+            axs[i].set_title("exemplar_state_excitation")
+            axs[i].legend(fontsize=6)
+
+    plt.savefig("images/paper/exemplar/state_excitation.png", bbox_inches="tight")
+    plt.show()
+    # """
+
+
+    """
+    for model_idx, model_name in enumerate(configurations[0][1]["name"]):
+        # SECTION: Plot covariances of learned states
+        for hp_value, states, color in zip(hp_values, compressed_learned_states[model_idx], COLOR_LIST):
+            plot_covariance(states.flatten(-3, -2)[sys_idx, indices], color, f"$\\alpha=${hp_value}_learned_states")
+
+        plot_covariance(sampled_compressed_optimal_states, np.array(colors.to_rgb("black")), "optimal_states")
+        plot_covariance(sampled_compressed_zero_states, np.array(colors.to_rgb("gray")), "zero_predictor_states")
+
+
+        plt.xlabel("$\\sigma_0$")
+        plt.ylabel("$\\sigma_1$")
+        plt.title(f"{model_name}_learned_state_covariance")
+
+        plt.legend(fontsize=6)
+        plt.show()
+
+
+        # SECTION: Plot excitations of learned states
+        fig, axs = plt.subplots(nrows=S_D, ncols=1, sharex=True, sharey=True)
+        for i in range(S_D):
+            for hp_value, states, color in zip(hp_values, aligned_learned_states[model_idx], COLOR_LIST):
+                plot_state_excitation(axs[i], states.flatten(-3, -2)[sys_idx, :, i], color, f"$\\alpha=${hp_value}_learned_dist")
+    
+            # plot_state_excitation(aligned_optimal_states.flatten(-3, -2)[0, sys_idx, :, i], np.array(colors.to_rgb("black")), f"optimal_distribution")
+            # plot_state_excitation(axs[i], aligned_zero_states.flatten(-3, -2)[0, sys_idx, :, i], np.array(colors.to_rgb("gray")), f"zero_predictor_dist")
+    
+            axs[i].set_xlabel(f"$\\sigma_{i}$")
+            axs[i].set_xlim(left=-3.5 * s_max[sys_idx], right=3.5 * s_max[sys_idx])
+            axs[i].set_ylabel("distribution")
+    
+            if i == 0:
+                axs[i].set_title(f"{model_name}_learned_state_excitation")
+                axs[i].legend(fontsize=6)
+    
+        plt.show()
+    """
+
+
+    # """
+    # SECTION: Plot exemplar cumulative loss over horizon
+    def plot_cumulative_loss(dataset: TensorDict[str, torch.Tensor], color: np.ndarray, label: str, **kwargs) -> None:
         state_loss = (
-                ds_["environment", "state"].unsqueeze(-2) @
-                sum(lqg_.controller.Q.values()) @
-                ds_["environment", "state"].unsqueeze(-1)
-        ).squeeze(-2).squeeze(-1)
-        control_loss = sum(
-            (ds_["controller", k].unsqueeze(-2) @ v @ ds_["controller", k].unsqueeze(-1)).squeeze(-2).squeeze(-1)
-            for k, v in lqg_.controller.R.items()
+                dataset["environment", "state"][..., None, :] @
+                sum(lqg.controller.Q.values())[sys_idx] @
+                dataset["environment", "state"][..., :, None]
         )
-        return state_loss + control_loss
+        control_loss = sum(
+            (dataset["controller", k][..., None, :] @ v[sys_idx] @ dataset["controller", k][..., :, None])
+            for k, v in lqg.controller.R.items()
+        )
+        loss = (state_loss + control_loss)[..., 0, 0]
 
-    for hp_value, lqg_, ds_, color in zip(hp_values, lqg_list, datasets, COLOR_LIST):
-        l = loss(ds_, lqg_)
-        plt.plot(torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=f"{hp_name}{hp_value}_regret")
+        x = torch.arange(horizon)
+        plt.plot(x, torch.cumsum(loss, dim=-1).median(dim=-2).values.detach(), color=color, label=label, **kwargs)
+        plt.fill_between(
+            x, *torch.cumsum(loss, dim=-1).quantile(torch.tensor([0.25, 0.75]), dim=-2).detach(),
+            color=color, alpha=0.1
+        )
+
+    for hp_value, dataset, color in zip(hp_values, exemplar_traces[0], COLOR_LIST):
+        plot_cumulative_loss(dataset[sys_idx], color, linewidth=0.5, label=f"$\\alpha=${hp_value}_loss")
+
+    plot_cumulative_loss(optimal_trace[0, 0, sys_idx], np.array(colors.to_rgb("black")), linewidth=2.0, linestyle="--", label="optimal_loss")
+    plot_cumulative_loss(zero_trace[0, 0, sys_idx], np.array(colors.to_rgb("gray")), linewidth=2.0, linestyle="--", label="zero_predictor_loss")
+
 
     plt.xlabel("horizon")
     plt.ylabel("loss")
-    plt.title("cumulative_regret")
+    plt.title("exemplar_cumulative_loss")
 
-    plt.legend()
+    plt.legend(fontsize=6)
+    plt.savefig("images/paper/exemplar/cumulative_loss.png", bbox_inches="tight")
     plt.show()
     # """
+
+
+    """
+    # SECTION: Plot learned cumulative loss over horizon
+    for model_idx, model_name in enumerate(configurations[0][1]["name"]):
+        for hp_value, dataset, color in zip(hp_values, learned_traces[model_idx], COLOR_LIST):
+            plot_cumulative_loss(dataset[sys_idx], color, linewidth=0.5, label=f"$\\alpha=${hp_value}_learned_loss")
+
+        plot_cumulative_loss(optimal_trace[0, 0, sys_idx], np.array(colors.to_rgb("black")), linewidth=2.0, linestyle="--", label="optimal_loss")
+        plot_cumulative_loss(zero_trace[0, 0, sys_idx], np.array(colors.to_rgb("gray")), linewidth=2.0, linestyle="--", label="zero_predictor_loss")
+
+
+        plt.xlabel("horizon")
+        plt.ylabel("loss")
+        plt.title(f"{model_name}_learned_cumulative_loss")
+
+        plt.legend(fontsize=6)
+        plt.show()
+    """
 
 
 
