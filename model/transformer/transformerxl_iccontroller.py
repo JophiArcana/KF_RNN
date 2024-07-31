@@ -16,8 +16,8 @@ class TransformerXLInContextController(TransformerController):
         self.core = TransfoXLModel(self.config)
 
         if modelArgs.bias:
-            self.input_bias = nn.Parameter(torch.randn((self.S_D,)) / (self.S_D ** 0.5))
-            self.observation_bias = nn.Parameter(torch.randn((self.S_D,)) / (self.S_D ** 0.5))
+            self.input_bias = nn.Parameter(torch.zeros((self.S_D,)))
+            self.observation_bias = nn.Parameter(torch.zeros((self.S_D,)))
         else:
             self.input_bias = torch.zeros((self.S_D,))
             self.observation_bias = torch.zeros((self.S_D,))

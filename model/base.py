@@ -55,9 +55,6 @@ class Predictor(Observer):
                 kwargs
             ), batch_size=_dataset_slice.shape))
 
-            torch.cuda.empty_cache()
-            gc.collect()
-
         _result = torch.cat(_result_list, dim=n)
         return _result.view(dataset.shape)
 
@@ -90,9 +87,6 @@ class Predictor(Observer):
                 params.keys(),
                 torch.autograd.grad(out, (*params.values(),), allow_unused=True)
             )), batch_size=_dataset_slice.shape))
-
-            torch.cuda.empty_cache()
-            gc.collect()
 
         _result = torch.cat(_result_list, dim=n)
         return _result.view(dataset.shape)
