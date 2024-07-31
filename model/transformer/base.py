@@ -13,16 +13,12 @@ class TransformerPredictor(Predictor):
         self.S_D = S_D
 
         self.observation_in = nn.Parameter(torch.zeros((self.S_D, self.O_D)))       # [S_D x O_D]
-        nn.init.kaiming_normal_(self.observation_in)
         self.observation_out = nn.Parameter(torch.zeros((self.O_D, self.S_D)))      # [O_D x S_D]
-        nn.init.kaiming_normal_(self.observation_out)
-
+        
         self.input_in = nn.ParameterDict({
             k: nn.Parameter(torch.zeros((self.S_D, d)))
             for k, d in vars(self.problem_shape.controller).items()
         })
-        for v in self.input_in.values():
-            nn.init.kaiming_normal_(v)
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]

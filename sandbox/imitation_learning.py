@@ -84,7 +84,8 @@ if __name__ == "__main__":
     args.experiment.n_experiments = 5
     args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
+    # args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
+    args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
 
     configurations = [
         ("model", {
