@@ -26,7 +26,7 @@ if __name__ == "__main__":
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
     # Experiment setup
-    exp_name = "ControlNoiseComparison"
+    exp_name = "ControlNoiseComparison_ZeroInit_NoWeightDecay"
     output_dir = "imitation_learning"
     output_fname = "result"
 
@@ -81,24 +81,23 @@ if __name__ == "__main__":
     args.experiment.n_experiments = 5
     args.experiment.ensemble_size = 1
     args.experiment.exp_name = exp_name
-    # args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
-    args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
+    args.experiment.metrics = Namespace(training={"validation", "validation_controller"})
+    # args.experiment.metrics = Namespace(training={"validation_analytical", "validation_controller_analytical"})
 
     configurations = [
         ("model", {
-            "name": ["rnn", "transformer_no_bias", "transformer_bias"],
+            "name": ["rnn", "transformer_bias", "transformer_no_bias"],
             "model": {
                 "model": [RnnController, TransformerXLInContextController, TransformerXLInContextController],
-                "bias": [None, False, True]
+                "bias": [None, True, False]
             },
             "training": {
                 "optimizer": {
-                    "max_lr": [1e-2, 3e-4, 3e-4],
-                    "weight_decay": [0.0, 1e-2, 1e-2],
+                    "max_lr": [1e-2, 1e-3, 1e-3]
                 },
                 "scheduler": {
                     "epochs": [2000, 10000, 10000],
-                    "lr_decay": [0.995, 0.9998, 0.9998],
+                    "lr_decay": [0.995, 0.9997, 0.9997],
                 },
                 "iterations_per_epoch": [20, 1, 1]
             },
@@ -124,6 +123,26 @@ if __name__ == "__main__":
     ]
     lqg = lqg_list[0]
 
+    # LQG system visualization
+    zero_controller_group = NNControllerGroup(problem_shape, *utils.stack_module_arr(utils.array_of(ZeroController(Namespace(problem_shape=problem_shape)))))
+    batch_size, horizon = 128, 200
+
+    datasets_cache_fname = f"output/{output_dir}/{exp_name}/datasets_cache.pt"
+    if os.path.exists(datasets_cache_fname):
+        _datasets = torch.load(datasets_cache_fname, map_location=DEVICE)
+    else:
+        _datasets = lqg.generate_dataset_with_controller_arr(np.concatenate([
+            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(len(configurations[0][1]["name"]), 1)),
+            utils.multi_map(
+                lambda module_arr: NNControllerGroup(problem_shape, module_arr[0], module_arr[1].squeeze(1)),
+                get_result_attr(result, "learned_kfs"), dtype=tuple
+            )
+        ], axis=1), batch_size, horizon)
+        torch.save(_datasets, datasets_cache_fname)
+
+    print(_datasets)
+    raise Exception()
+    
     # DONE: After running experiment, refresh LQG because the saved system overrides the one sampled at the start
     il_observation = lqg.irreducible_loss.environment.observation
     il_controller = lqg.irreducible_loss.controller.input
@@ -163,26 +182,6 @@ if __name__ == "__main__":
         plt.show()
     # """
 
-
-    # LQG system visualization
-    zero_controller_group = NNControllerGroup(problem_shape, *utils.stack_module_arr(utils.array_of(ZeroController(Namespace(problem_shape=problem_shape)))))
-    batch_size, horizon = 128, 200
-
-    datasets_cache_fname = f"output/{output_dir}/{exp_name}/datasets_cache.pt"
-    if os.path.exists(datasets_cache_fname):
-        _datasets = torch.load(datasets_cache_fname, map_location=DEVICE)
-    else:
-        _datasets = lqg.generate_dataset_with_controller_arr(np.concatenate([
-            np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(len(configurations[0][1]["name"]), 1)),
-            utils.multi_map(
-                lambda module_arr: NNControllerGroup(problem_shape, module_arr[0], module_arr[1].squeeze(1)),
-                get_result_attr(result, "learned_kfs"), dtype=tuple
-            )
-        ], axis=1), batch_size, horizon)
-        torch.save(_datasets, datasets_cache_fname)
-
-    print(_datasets)
-    raise Exception()
 
     optimal_states = datasets[1]["environment", "state"].flatten(1, -2)
     U, S, Vh = torch.linalg.svd(optimal_states, full_matrices=False)

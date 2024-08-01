@@ -26,7 +26,7 @@ if __name__ == "__main__":
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
     # Experiment setup
-    exp_name = "ControlNoiseComparison_ZeroInit_NoWeightDecay"
+    exp_name = "ControlNoiseComparison_ZeroInit_Debug"
     output_dir = "imitation_learning"
     output_fname = "result"
 
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     n_head = 1
     d_inner = 2 * d_embed
 
-    args.model.S_D = SHP.S_D
+    args.model.model = TransformerXLInContextController
     args.model.transformerxl = TransfoXLConfig(
         d_model=d_embed,
         d_embed=d_embed,
@@ -69,14 +69,16 @@ if __name__ == "__main__":
     args.training.sampling = Namespace(method="full")
     args.training.optimizer = Namespace(
         type="Adam",
-        max_lr=1e-2, min_lr=1e-9,
+        max_lr=3e-4, min_lr=1e-9,
         weight_decay=0.0
     )
     args.training.scheduler = Namespace(
         type="exponential",
         warmup_duration=100,
-        epochs=2000, lr_decay=0.995,
+        epochs=10000, lr_decay=0.9998,
     )
+    args.training.iterations_per_epoch = 1
+    # args.training.control_coefficient = 1e-12
 
     args.experiment.n_experiments = 5
     args.experiment.ensemble_size = 1
@@ -86,21 +88,8 @@ if __name__ == "__main__":
 
     configurations = [
         ("model", {
-            "name": ["rnn", "transformer_bias", "transformer_no_bias"],
-            "model": {
-                "model": [RnnController, TransformerXLInContextController, TransformerXLInContextController],
-                "bias": [None, True, False]
-            },
-            "training": {
-                "optimizer": {
-                    "max_lr": [1e-2, 1e-3, 1e-3]
-                },
-                "scheduler": {
-                    "epochs": [2000, 10000, 10000],
-                    "lr_decay": [0.995, 0.9997, 0.9997],
-                },
-                "iterations_per_epoch": [20, 1, 1]
-            },
+            "name": ["transformer_bias", "transformer_no_bias"],
+            "model.bias": [True, False],
         }),
         (hp_name, {f"system.auxiliary.{hp_name}.train": hp_values})
     ]

@@ -15,10 +15,9 @@ class TransformerPredictor(Predictor):
         self.observation_in = nn.Parameter(torch.zeros((self.S_D, self.O_D)))       # [S_D x O_D]
         nn.init.kaiming_normal_(self.observation_in)
         self.observation_out = nn.Parameter(torch.zeros((self.O_D, self.S_D)))      # [O_D x S_D]
-        nn.init.kaiming_normal_(self.observation_out)
-
+        
         self.input_in = nn.ParameterDict({
-            k: nn.Parameter(torch.zeros((self.S_D, d)))
+            k: nn.Parameter(torch.zeros((self.S_D, d)))                             # [S_D x I_D?]
             for k, d in vars(self.problem_shape.controller).items()
         })
         for v in self.input_in.values():
@@ -66,8 +65,6 @@ class TransformerController(Controller, TransformerPredictor):
             k: nn.Parameter(torch.zeros((d, self.S_D)))
             for k, d in vars(self.problem_shape.controller).items()
         })
-        for v in self.input_out.values():
-            nn.init.kaiming_normal_(v)
 
     def embedding_to_output(self, embedding: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
         result = TransformerPredictor.embedding_to_output(self, embedding)
