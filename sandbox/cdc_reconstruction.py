@@ -47,7 +47,7 @@ if __name__ == "__main__":
     n_firs = 5
     rnn_increment = 5
     
-    save_file = "sandbox/cdc_reconstruction_save.pt"
+    save_file = f"output/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
         save = torch.load(save_file, map_location=DEVICE)
     
