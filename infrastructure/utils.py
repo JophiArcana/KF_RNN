@@ -152,6 +152,9 @@ def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
 def batch_trace(x: torch.Tensor) -> torch.Tensor:
     return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
 
+def kl_div(cov1: torch.Tensor, cov2: torch.Tensor) -> torch.Tensor:
+    return ((torch.det(cov2) / torch.det(cov1)).log() - cov1.shape[-1] + (torch.inverse(cov2) * cov1).sum(dim=(-2, -1))) / 2
+
 def sqrtm(t: torch.Tensor) -> torch.Tensor:
     L, V = torch.linalg.eig(t)
     return (V @ torch.diag_embed(L ** 0.5) @ torch.inverse(V)).real
@@ -475,7 +478,8 @@ def confidence_ellipse(x, y, ax, n_std=1.0, facecolor="none", **kwargs):
     if x.size != y.size:
         raise ValueError("x and y must be the same size")
 
-    cov = np.cov(x, y)
+    M = np.stack([x, y], axis=0)
+    cov = (M @ M.T) / len(x)
     pearson = cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1])
     # Using a special case to obtain the eigenvalues of this two-dimensional dataset.
     ell_radius_x = np.sqrt(1 + pearson)
@@ -484,13 +488,11 @@ def confidence_ellipse(x, y, ax, n_std=1.0, facecolor="none", **kwargs):
 
     # Calculating the standard deviation of x from the squareroot of the variance and multiplying with the given number of standard deviations.
     scale_x = np.sqrt(cov[0, 0]) * n_std
-    mean_x = np.mean(x)
 
     # Calculating the standard deviation of y
     scale_y = np.sqrt(cov[1, 1]) * n_std
-    mean_y = np.mean(y)
 
-    transf = transforms.Affine2D().rotate_deg(45).scale(scale_x, scale_y).translate(mean_x, mean_y)
+    transf = transforms.Affine2D().rotate_deg(45).scale(scale_x, scale_y)
 
     ellipse.set_transform(transf + ax.transData)
     return ax.add_patch(ellipse)

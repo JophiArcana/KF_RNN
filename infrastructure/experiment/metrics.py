@@ -171,9 +171,22 @@ add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "valid", ("controller", "input"), ("controller", "input")
 ), names="validation_controller")
 
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "train", ("environment", "observation"), ("environment", "noiseless_observation")
+), names="noiseless_overfit")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "valid", ("environment", "observation"), ("environment", "noiseless_observation")
+), names="noiseless_validation")
+add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
+    "test", ("environment", "observation"), ("environment", "noiseless_observation")
+), names=["noiseless_testing", "nl"])
+
 add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
     "test", ("environment", "target_observation_estimation"), ("environment", "observation")
 ), names=["testing_empirical_irreducible", "eil"])
+add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
+    "test", ("environment", "target_observation_estimation"), ("environment", "noiseless_observation")
+), names=["noiseless_testing_empirical_irreducible", "neil"])
 
 add_to_metrics(_get_analytical_error_with_dataset_type_and_target("valid", ("environment", "observation")), names="validation_analytical")
 add_to_metrics(_get_analytical_error_with_dataset_type_and_target("valid", ("controller", "input")), names="validation_controller_analytical")
