@@ -29,9 +29,10 @@ from system.linear_time_invariant import LTISystem, MOPDistribution
 if __name__ == "__main__":
     output_dir = "in_context"
     output_fname = "result"
-    
+
+    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     SHP = Namespace(
-        distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1), S_D=10,
+        distribution=dist, S_D=10,
         problem_shape=Namespace(
             environment=Namespace(observation=5),
             controller=Namespace()
@@ -47,7 +48,7 @@ if __name__ == "__main__":
     n_firs = 5
     rnn_increment = 5
     
-    save_file = "sandbox/cdc_reconstruction_save.pt"
+    save_file = f"output/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
         save = torch.load(save_file, map_location=DEVICE)
     
@@ -89,6 +90,8 @@ if __name__ == "__main__":
         )
     
         # SECTION: Dataset hyperparameters
+        ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
+        
         ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
         ARGS_TRANSFORMER.dataset.dataset_size.update(train=1, valid=valid_dataset_size, test=test_dataset_size)
         ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=valid_dataset_size * context_length, test=test_dataset_size * context_length)
@@ -113,7 +116,7 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-        ARGS_TRANSFORMER.experiment.metrics = Namespace(training=set()) # {"validation"}
+        ARGS_TRANSFORMER.experiment.metrics = Namespace(training={"noiseless_validation"}) # {"validation"}
     
         configurations_transformer = [
             ("model", {
