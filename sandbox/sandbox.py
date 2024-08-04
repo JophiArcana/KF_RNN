@@ -626,74 +626,6 @@ if __name__ == '__main__':
     # # print('Difference:', (analytical_error - il).squeeze())
     # # print((analytical_error > torch.diag(il)).squeeze())
 
-    """ Sandbox 12 """
-    # I_D, O_D, input_enabled = 1, 5, False
-    # model_shape = ()
-    #
-    # n_embd = 8 # 256
-    # n_positions = 16
-    # configuration = GPT2Config(
-    #     n_positions=n_positions,  # set to sthg large advised
-    #     n_embd=n_embd,
-    #     n_layer=2,  # 12
-    #     n_head=4,   # 8
-    #     resid_pdrop=0.0,
-    #     embd_pdrop=0.0,
-    #     attn_pdrop=0.0,
-    #     use_cache=False,
-    # )
-    # n_sys, B, L = 3, 5, 12
-    #
-    # MHP = Namespace(gpt2=configuration, I_D=I_D, O_D=O_D, input_enabled=input_enabled)
-    # # model = GPT2InContextKF(MHP)
-    # # dataset = TensorDict({
-    # #     "input": torch.randn((B, L, I_D)),
-    # #     "observation": nn.Parameter(torch.randn((B, L, O_D)))
-    # # }, batch_size=(B, L))
-    # # model(dataset)
-    #
-    # models = utils.multi_map(
-    #     lambda _: GPT2InContextKF(MHP),
-    #     np.empty(model_shape), dtype=object
-    # )
-    #
-    # dataset = TensorDict({
-    #     "input": torch.randn((*model_shape, n_sys, B, L, I_D)),
-    #     "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
-    # }, batch_size=(*model_shape, n_sys, B, L))
-    #
-    #
-    # out = KF.run(*utils.stack_module_arr(models), dataset)
-    # print(out.shape)
-    # print(torch.autograd.grad(
-    #     out[:, :, 0].norm(),
-    #     dataset["observation"]
-    # )[0][0, 0])
-
-    """ Sandbox 13 """
-    # base_exp_name = 'Basic'
-    # output_dir = 'system2'
-    # output_fname = 'result'
-    #
-    # system2, args = loader.load_system_and_args('data/2dim_scalar_system_matrices')
-    # systems = [system2]
-    # args.model.model = RnnKF
-    # args.model.S_D = 2
-    # args.train.scheduler = 'exponential'
-    # args.train.epochs = 2500
-    # args.experiment.ensemble_size = 1
-    # args.experiment.exp_name = base_exp_name
-    # args.experiment.metrics = {'analytical_validation'}
-    #
-    # configurations = []
-    #
-    # result = run_experiments(
-    #     args, configurations, {
-    #         'dir': output_dir,
-    #         'fname': output_fname
-    #     }, systems
-    # )
-
     """ Sandbox 14 """
     # base_exp_name = "SingleTrace2"
     # output_dir = "system2_CNN"s
@@ -866,98 +798,177 @@ if __name__ == '__main__':
     # result, dataset = run_experiments(args, [], {}, save_experiment=False)
 
     """ Sandbox 18 """
-    # from model.sequential.rnn_controller import RnnController
-    # from model.zero_predictor import ZeroController
-    #
-    # torch.set_printoptions(precision=12, sci_mode=False)
-    #
-    # SHP = Namespace(S_D=10, problem_shape=Namespace(
-    #     environment=Namespace(observation=5),
-    #     # controller=Namespace(),
-    #     controller=Namespace(input=2),
-    # ), auxiliary=Namespace(control_noise_std=2.0))
-    # # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
-    # # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
-    #
-    # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    # sys = dist.sample(SHP, ())
-    #
-    #
-    # # ds = sys.generate_dataset(7, 12)["environment"]
-    # # print(ds)
-    # # raise Exception()
-    # # print(ds)
-    # #
-    # # x, xh, y, w, v = map(ds.__getitem__, ("state", "target_state_estimation", "observation", "w", "v"))
-    # #
-    # # augmented_x0 = torch.cat([x[0], xh[0]], dim=0)
-    # #
-    # # augmented_x1 = systems.effective.F @ augmented_x0 + torch.cat([
-    # #     w[1], systems.environment.K @ (systems.environment.H @ w[1] + v[1])
-    # # ], dim=0)
-    # # print("a0", augmented_x0)
-    # # print("b0", torch.cat([x[0], xh[0]], dim=0))
-    # #
-    # # print("a1", augmented_x1)
-    # # print("b1", torch.cat([x[1], xh[1]], dim=0))
-    #
-    #
-    # sys_td = sys.td()
-    # reference_module = RnnController(SHP).eval()
-    # kf_td = TensorDict.from_dict({
-    #     k: v for k, v in {
-    #         **sys_td.get("environment", {}),
-    #         **sys_td.get("controller", {})
-    #     }.items()
-    #     if hasattr(reference_module, k)
-    # }, batch_size=sys_td.shape) # .apply(torch.zeros_like)
-    #
-    # print(sys_td["environment", "irreducible_loss"])
-    # print(sys_td["irreducible_loss"].to_dict())
-    # print(sys_td["zero_predictor_loss"].to_dict())
-    # print(ZeroController.analytical_error(None, sys_td).to_dict())
-    #
+    from model.sequential.rnn_controller import RnnController
+    from model.zero_predictor import ZeroController
+
+    torch.set_printoptions(precision=12, sci_mode=False)
+
+    SHP = Namespace(S_D=10, problem_shape=Namespace(
+        environment=Namespace(observation=5),
+        # controller=Namespace(),
+        controller=Namespace(input=2),
+    ), auxiliary=Namespace(control_noise_std=2.0))
+    # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
+    # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
+
+    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    sys = dist.sample(SHP, ())
+
+
+    # ds = sys.generate_dataset(7, 12)["environment"]
+    # print(ds)
     # raise Exception()
-    # ds = sys.generate_dataset(1, 12)
-    # out = Predictor.run(reference_module, kf_td, ds)
-    # print(ds["controller", "input"][0, :4])
-    # print(out["controller", "input"][0, :4])
+    # print(ds)
     #
-    # raise Exception()
+    # x, xh, y, w, v = map(ds.__getitem__, ("state", "target_state_estimation", "observation", "w", "v"))
     #
+    # augmented_x0 = torch.cat([x[0], xh[0]], dim=0)
+    #
+    # augmented_x1 = systems.effective.F @ augmented_x0 + torch.cat([
+    #     w[1], systems.environment.K @ (systems.environment.H @ w[1] + v[1])
+    # ], dim=0)
+    # print("a0", augmented_x0)
+    # print("b0", torch.cat([x[0], xh[0]], dim=0))
+    #
+    # print("a1", augmented_x1)
+    # print("b1", torch.cat([x[1], xh[1]], dim=0))
+
+
+    sys_td = sys.td()
+    reference_module = RnnController(SHP).eval()
+    kf_td = TensorDict.from_dict({
+        k: v for k, v in {
+            **sys_td.get("environment", {}),
+            **sys_td.get("controller", {})
+        }.items()
+        if hasattr(reference_module, k)
+    }, batch_size=sys_td.shape) # .apply(torch.zeros_like)
+
+    print(sys_td["environment", "irreducible_loss"])
+    print(sys_td["irreducible_loss"].to_dict())
+    print(sys_td["zero_predictor_loss"].to_dict())
+    print(ZeroController.analytical_error(None, sys_td).to_dict())
+
+    env_td = sys_td["environment"]
+    print(utils.batch_trace(env_td["S_V"] + env_td["H"] @ env_td["S_W"] @ env_td["H"].mT))
+
+    raise Exception()
+    ds = sys.generate_dataset(1, 12)
+    out = Predictor.run(reference_module, kf_td, ds)
+    print(ds["controller", "input"][0, :4])
+    print(out["controller", "input"][0, :4])
+
+    raise Exception()
+
+    print(torch.autograd.grad(
+        # sys_td["effective", "L", "input"].norm(),
+        SequentialPredictor.analytical_error(kf_td, sys_td),
+        sys_td["environment", "B", "input"]
+    ))
+
+    """ Sandbox 12 """
+    # from model.transformer.gpt2_icpredictor import GPT2InContextPredictor
+    # O_D = 5
+    # problem_shape = Namespace(
+    #     environment=Namespace(observation=O_D),
+    #     controller=Namespace()
+    # )
+    # model_shape = ()
+    #
+    # n_embd = 8 # 256
+    # n_positions = 16
+    # configuration = GPT2Config(
+    #     n_positions=n_positions,  # set to sthg large advised
+    #     n_embd=n_embd,
+    #     n_layer=2,  # 12
+    #     n_head=4,   # 8
+    #     resid_pdrop=0.0,
+    #     embd_pdrop=0.0,
+    #     attn_pdrop=0.0,
+    #     use_cache=False,
+    # )
+    # n_sys, B, L = 3, 5, 12
+    #
+    # MHP = Namespace(problem_shape=problem_shape, gpt2=configuration)
+    # models = utils.multi_map(
+    #     lambda _: GPT2InContextPredictor(MHP),
+    #     np.empty(model_shape), dtype=object
+    # )
+    #
+    # dataset = TensorDict.from_dict({"environment": {
+    #     "observation": nn.Parameter(torch.randn((*model_shape, n_sys, B, L, O_D)))
+    # }, "controller": {}}, batch_size=(*model_shape, n_sys, B, L))
+    #
+    #
+    # out = Predictor.run(*utils.stack_module_arr(models), dataset)["environment", "observation"]
     # print(torch.autograd.grad(
-    #     # sys_td["effective", "L", "input"].norm(),
-    #     SequentialPredictor.analytical_error(kf_td, sys_td),
-    #     sys_td["environment", "B", "input"]
-    # ))
+    #     out[:, :, L - 1].norm(),
+    #     dataset["environment", "observation"]
+    # )[0][0, 0])
+    # raise Exception()
 
     """ Sandbox 19 """
-    from transformers import TransfoXLConfig
+    from transformers import TransfoXLConfig, TransfoXLModel
+    from transformers import GPT2Config, GPT2Model
     from model.transformer.transformerxl_iccontroller import TransformerXLInContextController
 
-    d_embed = 8
-    n_layer = 3
-    n_head = 1
-    d_inner = 2 * d_embed
+    torch.set_printoptions(sci_mode=True)
 
-    MHP = Namespace(
-        problem_shape=Namespace(
-            environment=Namespace(observation=2),
-            controller=Namespace(input=2),
-        ),
+
+    S_D = 3
+    problem_shape = Namespace(
+        environment=Namespace(observation=2),
+        controller=Namespace(input=2)
+    )
+
+    d_model = (S_D + 1) >> 1 << 1
+    n_layer = 6
+    n_head = 1
+    d_inner = 2 * d_model
+
+    model = TransformerXLInContextController(Namespace(
+        problem_shape=problem_shape,
+        model=TransformerXLInContextController,
         transformerxl=TransfoXLConfig(
-            d_model=d_embed,
-            d_embed=d_embed,
+            d_model=d_model,
+            d_embed=d_model,
             n_layer=n_layer,
             n_head=n_head,
-            d_head=d_embed // n_head,
+            d_head=d_model // n_head,
             d_inner=d_inner,
             dropout=0.0,
         ),
         bias=True
-    )
-    model = TransformerXLInContextController(MHP)
+    ))
     print(utils.model_size(model))
+    # embds = 10 * torch.randn((l, 2))
+    # embds2 = embds.flip(dims=(-2,))
+    # print(embds)
+    # print(embds2)
+    # out = model.forward(inputs_embeds=embds[None]).last_hidden_state[0]
+    # out2 = model.forward(inputs_embeds=embds2[None]).last_hidden_state[0]
+    # print(out)
+    # print(out2)
+
+
+    # embds = nn.Parameter(torch.randn((l, d_embed)))
+    # out = model.forward(inputs_embeds=embds[None]).last_hidden_state[0]
+    #
+    # print(torch.autograd.grad(
+    #     out[2].norm() ** 2, embds
+    # ))
+
+    # opt = optim.SGD((embds, *model.parameters()), lr=0.0)
+    # print(embds)
+    # print(out)
+    # grads = []
+    # for i in range(l):
+    #     opt.zero_grad()
+    #     (out[i].norm() ** 2).backward(retain_graph=True)
+    #     grads.append(embds.grad.clone())
+    # grads = torch.stack(grads, dim=0).norm(dim=-1) ** 2
+    # print(grads)
+    raise Exception()
 
 
 

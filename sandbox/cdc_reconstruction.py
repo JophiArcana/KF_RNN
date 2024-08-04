@@ -30,10 +30,13 @@ if __name__ == "__main__":
     output_dir = "in_context"
     output_fname = "result"
     
-    SHP = Namespace(S_D=10, problem_shape=Namespace(
-        environment=Namespace(observation=5),
-        controller=Namespace()
-    ))
+    SHP = Namespace(
+        distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1), S_D=10,
+        problem_shape=Namespace(
+            environment=Namespace(observation=5),
+            controller=Namespace()
+        ), auxiliary=Namespace()
+    )
     
     context_length = 250
     n_train_systems = 40000
@@ -86,52 +89,31 @@ if __name__ == "__main__":
         )
     
         # SECTION: Dataset hyperparameters
-        ARGS_TRANSFORMER.dataset.train = Namespace(
-            dataset_size=1,
-            total_sequence_length=context_length,
-            system=Namespace(
-                n_systems=n_train_systems,
-                distribution=MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-            )
-        )
-        ARGS_TRANSFORMER.dataset.valid = Namespace(
-            dataset_size=valid_dataset_size,
-            total_sequence_length=valid_dataset_size * context_length,
-            system=Namespace(
-                n_systems=n_test_systems
-            )
-        )
-        ARGS_TRANSFORMER.dataset.test = Namespace(
-            dataset_size=test_dataset_size,
-            total_sequence_length=test_dataset_size * context_length,
-            system=Namespace(
-                n_systems=n_test_systems
-            )
-        )
-    
+        ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
+        ARGS_TRANSFORMER.dataset.dataset_size.update(train=1, valid=valid_dataset_size, test=test_dataset_size)
+        ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=valid_dataset_size * context_length, test=test_dataset_size * context_length)
+
         # SECTION: Training hyperparameters
-        ARGS_TRANSFORMER.train.sampling = Namespace(
+        ARGS_TRANSFORMER.training.sampling = Namespace(
             method="subsequence_padded",
             subsequence_length=context_length,
             batch_size=32
         )
-        ARGS_TRANSFORMER.train.optimizer = Namespace(
+        ARGS_TRANSFORMER.training.optimizer = Namespace(
             type="Adam",
             max_lr=3e-4, min_lr=1e-6,
             weight_decay=1e-2, momentum=0.9
         )
-        ARGS_TRANSFORMER.train.scheduler = Namespace(
+        ARGS_TRANSFORMER.training.scheduler = Namespace(
             type="exponential",
-            epochs=40000, lr_decay=1.0,
-
+            epochs=2000, lr_decay=1.0,
         )
-        ARGS_TRANSFORMER.train.iterations_per_epoch = 1
 
     
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-        ARGS_TRANSFORMER.experiment.metrics = set() # {"validation"}
+        ARGS_TRANSFORMER.experiment.metrics = Namespace(training=set()) # {"validation"}
     
         configurations_transformer = [
             ("model", {
@@ -189,16 +171,14 @@ if __name__ == "__main__":
     
         """ CNN Experiment """
         ARGS_BASELINE_CNN = loader.generate_args(SHP)
-        ARGS_BASELINE_CNN.dataset.train = Namespace(
-            dataset_size=1,
-            system=Namespace(n_systems=1)
-        )
-        ARGS_BASELINE_CNN.dataset.valid = ARGS_BASELINE_CNN.dataset.test = Namespace(
-            total_sequence_length=context_length
-        )
+
+        ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
+        ARGS_BASELINE_CNN.dataset.dataset_size.reset(train=1)
+        ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
+
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
         ARGS_BASELINE_CNN.experiment.ensemble_size = test_dataset_size
-        ARGS_BASELINE_CNN.experiment.metrics = {"validation_analytical"}
+        ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
     
         # SECTION: Make a copy for RNN args after setting shared parameters
         ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
@@ -213,7 +193,7 @@ if __name__ == "__main__":
             }),
             ("total_trace_length", {
                 "model.model": [ZeroPredictor] + [CnnPredictorLeastSquares] * (context_length - 1),
-                "dataset.train.total_sequence_length": [*range(context_length),]
+                "dataset.total_sequence_length.train": [*range(context_length),]
             })
         ]
     
@@ -229,15 +209,15 @@ if __name__ == "__main__":
         """ RNN Experiment """
         # SECTION: Set RNN exclusive hyperparameters
         ARGS_BASELINE_RNN.model.S_D = SHP.S_D
-        ARGS_BASELINE_RNN.train.sampling.method = "full"
-        ARGS_BASELINE_RNN.train.optimizer.max_lr = 1e-3
-        ARGS_BASELINE_RNN.train.scheduler.epochs = 1200
+        ARGS_BASELINE_RNN.training.sampling.method = "full"
+        ARGS_BASELINE_RNN.training.optimizer.max_lr = 1e-3
+        ARGS_BASELINE_RNN.training.scheduler.epochs = 1200
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_baseline_rnn
     
         configurations_baseline_rnn = [
             ("total_trace_length", {
                 "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * ((context_length - 1) // rnn_increment),
-                "dataset.train.total_sequence_length": [*range(0, context_length, rnn_increment),]
+                "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
             })
         ]
     
@@ -272,13 +252,13 @@ if __name__ == "__main__":
     dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
-        return (dataset["environment", "observation"] - observation_estimation).norm(dim=-1) ** 2
+        return (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
     
     with torch.set_grad_enabled(False):
         zero_predictor_al = utils.batch_trace(systems.S_observation_inf)
         zero_predictor_l = loss(torch.zeros_like(dataset["environment", "observation"]))
         il = utils.batch_trace(systems.S_prediction_err_inf)
-        eil = loss(dataset["target"])
+        eil = loss(dataset["environment", "target_observation_estimation"])
     
     
         # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]

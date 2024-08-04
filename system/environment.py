@@ -100,14 +100,16 @@ class LTIEnvironment(EnvironmentGroup):
 
         x = x_ @ self.F.mT + u + w
         y = x @ self.H.mT + v
+        noiseless_y = x_ @ (self.H @ self.F).mT
 
         target_xh = target_xh_ @ self.F.mT + u                                                                      # [C... x N... x B x S_D]
         target_yh = target_xh @ self.H.mT                                                                           # [C... x N... x B x O_D]
-        target_xh = target_xh + (y - target_yh) @ self.K.mT                                                       # [C... x N... x B x S_D]
+        target_xh = target_xh + (y - target_yh) @ self.K.mT                                                         # [C... x N... x B x S_D]
 
         return TensorDict({
             "state": x,
             "observation": y,
+            "noiseless_observation": noiseless_y,
             # "w": w, "v": v,
             "target_state_estimation": target_xh,
             "target_observation_estimation": target_yh
