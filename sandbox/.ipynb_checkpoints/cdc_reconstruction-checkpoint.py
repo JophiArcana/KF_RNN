@@ -251,16 +251,17 @@ if __name__ == "__main__":
     
     """ Result processing """
     print("Result processing" + "\n" + "-" * 120)
-    systems = LTISystem(SHP.problem_shape, systems.values[()].td().squeeze(0))
+    lsg = systems.values[()]
+    systems = LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().squeeze(0))
     dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
         return (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
     
     with torch.set_grad_enabled(False):
-        zero_predictor_al = utils.batch_trace(systems.S_observation_inf)
+        zero_predictor_al = systems.zero_predictor_loss.environment.observation
         zero_predictor_l = loss(torch.zeros_like(dataset["environment", "observation"]))
-        il = utils.batch_trace(systems.S_prediction_err_inf)
+        il = systems.irreducible_loss.environment.observation
         eil = loss(dataset["environment", "target_observation_estimation"])
     
     
@@ -297,7 +298,7 @@ if __name__ == "__main__":
     
     
         rnn_indices = torch.tensor(rnn_sequence_lengths)
-        padded_rnn_output = torch.zeros((n_test_systems, test_dataset_size, context_length, SHP.O_D))
+        padded_rnn_output = torch.zeros((n_test_systems, test_dataset_size, context_length, SHP.problem_shape.environment.observation))
         padded_rnn_output[:, :, rnn_indices] = rnn_output
         # -> [n_test_systems x test_dataset_size x context_length]
         rnn_l = loss(padded_rnn_output)[:, :, rnn_indices]
