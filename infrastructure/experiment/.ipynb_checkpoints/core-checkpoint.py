@@ -299,7 +299,7 @@ def run_testing_experiments(
             # DONE: Compute testing metrics
             metric_cache = {}
             metrics: set = utils.rgetattr(HP, "experiment.metrics.testing", {
-                "l", "al", "il", "eil"
+                "l", "al", "il", "neil"
             } - utils.rgetattr(HP, "experiment.ignore_metrics.testing", set()))
 
             metric_result, metric_shape = {}, (

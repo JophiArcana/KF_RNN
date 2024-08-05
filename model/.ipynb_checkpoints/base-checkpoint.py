@@ -33,7 +33,7 @@ class Predictor(Observer):
             ensembled_kfs: TensorDict[str, torch.Tensor],
             dataset: TensorDict[str, torch.Tensor],
             kwargs: Dict[str, Any] = MappingProxyType(dict()),
-            split_size: int = 1 << 18
+            split_size: int = 1 << 17
     ) -> TensorDict[str, torch.Tensor]:
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]

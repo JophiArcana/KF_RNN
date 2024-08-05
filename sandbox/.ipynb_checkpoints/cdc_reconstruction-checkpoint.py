@@ -42,7 +42,7 @@ if __name__ == "__main__":
     context_length = 250
     n_train_systems = 40000
     n_test_systems = 3
-    valid_dataset_size = 2000
+    valid_dataset_size = 256
     test_dataset_size = 256
     
     n_firs = 5
@@ -146,7 +146,7 @@ if __name__ == "__main__":
                 f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt"
             ))):
                 baseline_systems = utils.multi_map(
-                    lambda lsg: LTISystem(SHP.problem_shape, lsg.td().permute(1, 0)),
+                    lambda lsg: LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().permute(1, 0)),
                     systems, dtype=LTISystem
                 )
                 torch.save({
