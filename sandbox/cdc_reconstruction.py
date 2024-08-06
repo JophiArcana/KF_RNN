@@ -46,7 +46,7 @@ if __name__ == "__main__":
     test_dataset_size = 256
     
     n_firs = 5
-    rnn_increment = 5
+    rnn_increment = 1
     
     save_file = f"output/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
@@ -212,9 +212,20 @@ if __name__ == "__main__":
         """ RNN Experiment """
         # SECTION: Set RNN exclusive hyperparameters
         ARGS_BASELINE_RNN.model.S_D = SHP.S_D
-        ARGS_BASELINE_RNN.training.sampling.method = "full"
-        ARGS_BASELINE_RNN.training.optimizer.max_lr = 1e-3
-        ARGS_BASELINE_RNN.training.scheduler.epochs = 1200
+        ARGS_BASELINE_RNN.training.sampling = Namespace(method="full")
+        ARGS_BASELINE_RNN.training.optimizer = Namespace(
+            type="SGD",
+            max_lr=1e-3, min_lr=1e-6,
+            weight_decay=0.0,
+            momentum=0.9
+        )
+        ARGS_BASELINE_RNN.training.scheduler = Namespace(
+            type="exponential",
+            warmup_duration=100,
+            epochs=2000,
+            lr_decay=0.995
+        )
+        ARGS_BASELINE_RNN.training.iterations_per_epoch = 20
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_baseline_rnn
     
         configurations_baseline_rnn = [
