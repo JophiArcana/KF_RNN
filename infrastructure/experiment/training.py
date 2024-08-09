@@ -365,7 +365,6 @@ def _run_training(
                 raise RuntimeError("Model diverged")
 
             counter += 1
-            torch.cuda.empty_cache()
 
     # TODO: Delete the checkpoint so that it does not interfere with the next experiment
     if checkpoint_paths is not None:

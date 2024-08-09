@@ -90,10 +90,8 @@ def _get_noiseless_error_with_dataset_type_and_key(ds_type: str, key: Tuple[str,
                 run[key], dataset.obj, ("environment", "noiseless_observation"),
                 batch_mean=not with_batch_dim
             )
-            
             env = sg.environment
             irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
-
             return reducible_error + tensordict.utils.expand_as_right(irreducible_error, reducible_error)
 
         return utils.multi_map(noiseless_error, utils.multi_zip(
@@ -101,12 +99,31 @@ def _get_noiseless_error_with_dataset_type_and_key(ds_type: str, key: Tuple[str,
             utils.rgetattr(exclusive, f"info.{ds_type}.systems")
         ), dtype=torch.Tensor)
 
-        # return utils.multi_map(
-        #     lambda pair: Predictor.evaluate_run(
-        #         pair[0][key], pair[1].obj, ("environment", "noiseless_observation"),
-        #         batch_mean=not with_batch_dim
-        #     ), utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
-        # )
+    return Metric(eval_func)
+
+def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: Tuple[str, ...]) -> Metric:
+    def eval_func(
+            mv: MetricVars,
+            cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        exclusive, ensembled_learned_kfs = mv
+
+        def noiseless_error(args: Tuple[PTR, SystemGroup]) -> torch.Tensor:
+            dataset, sg = args
+            reducible_error = Predictor.evaluate_run(
+                dataset.obj[target], dataset.obj, ("environment", "noiseless_observation"),
+                batch_mean=not with_batch_dim
+            )
+            env = sg.environment
+            irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
+            return reducible_error + tensordict.utils.expand_as_right(irreducible_error, reducible_error)
+
+        return utils.multi_map(noiseless_error, utils.multi_zip(
+            utils.rgetattr(exclusive, f"info.{ds_type}.dataset"),
+            utils.rgetattr(exclusive, f"info.{ds_type}.systems")
+        ), dtype=torch.Tensor)
+
     return Metric(eval_func)
 
 def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: Tuple[str, ...], target2: Tuple[str, ...]) -> Metric:
@@ -129,14 +146,15 @@ def _get_analytical_error_with_dataset_type_and_key(ds_type: str, key: Tuple[str
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
         exclusive, ensembled_learned_kfs = mv
-        def AE(sg: SystemGroup) -> torch.Tensor:
+
+        def analytical_error(sg: SystemGroup) -> torch.Tensor:
             return _unsqueeze_if(exclusive.reference_module.analytical_error(
                 ensembled_learned_kfs[:, :, None],
                 sg.td()[:, None, :]
             )[key], with_batch_dim)
 
         with torch.set_grad_enabled(False):
-            return utils.multi_map(AE, utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
+            return utils.multi_map(analytical_error, utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
     return Metric(eval_func)
 
 def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
@@ -214,8 +232,9 @@ add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("test", ("environm
 add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
     "test", ("environment", "target_observation_estimation"), ("environment", "observation")
 ), names=["testing_empirical_irreducible", "eil"])
-add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
-    "test", ("environment", "target_observation_estimation"), ("environment", "noiseless_observation")
+
+add_to_metrics(_get_noiseless_error_with_dataset_type_and_target(
+    "test", ("environment", "target_observation_estimation")
 ), names=["noiseless_testing_empirical_irreducible", "neil"])
 
 add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("environment", "observation")), names="validation_analytical")
