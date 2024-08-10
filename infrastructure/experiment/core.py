@@ -178,7 +178,8 @@ def run_training_experiments(
 
             print("\n" + "#" * 160)
             if save_experiment:
-                if counter % HP.experiment.backup_frequency == 0:
+                backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
+                if backup_frequency is not None and counter % backup_frequency == 0:
                     torch.save(result, output_fname_backup)
                     print(f'{os.path.getsize(output_fname_backup)} bytes written to {output_fname_backup}')
                 torch.save(result, output_fname)
@@ -325,7 +326,8 @@ def run_testing_experiments(
 
             if save_experiment:
                 # TODO: Save if backup frequency or if it was the last experiment
-                if (counter % HP.experiment.backup_frequency == 0) or (done.sum().item() + 1 == done.size):
+                backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
+                if (backup_frequency is not None and counter % backup_frequency == 0) or (done.sum().item() + 1 == done.size):
                     print("\n" + "#" * 160)
                     torch.save(result, output_fname)
                     print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')

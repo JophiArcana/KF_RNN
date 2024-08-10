@@ -53,7 +53,7 @@ BaseTrainArgs = Namespace(
 BaseExperimentArgs = Namespace(
     n_experiments=1,
     ensemble_size=32,
-    backup_frequency=10
+    backup_frequency=None
 )
 
 def args_from(HP: Namespace):
