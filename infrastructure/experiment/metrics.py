@@ -93,20 +93,13 @@ def _get_noiseless_error_with_dataset_type_and_key(ds_type: str, key: Tuple[str,
             
             env = sg.environment
             irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
-
-            return reducible_error + tensordict.utils.expand_as_right(irreducible_error, reducible_error)
-
+            return (reducible_error.T + irreducible_error.T).T
+            
         return utils.multi_map(noiseless_error, utils.multi_zip(
             run_arr, utils.rgetattr(exclusive, f"info.{ds_type}.dataset"),
             utils.rgetattr(exclusive, f"info.{ds_type}.systems")
         ), dtype=torch.Tensor)
-
-        # return utils.multi_map(
-        #     lambda pair: Predictor.evaluate_run(
-        #         pair[0][key], pair[1].obj, ("environment", "noiseless_observation"),
-        #         batch_mean=not with_batch_dim
-        #     ), utils.multi_zip(run, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
-        # )
+        
     return Metric(eval_func)
 
 def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: Tuple[str, ...], target2: Tuple[str, ...]) -> Metric:

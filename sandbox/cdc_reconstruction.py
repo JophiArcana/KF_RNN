@@ -111,6 +111,7 @@ if __name__ == "__main__":
             type="exponential",
             epochs=2000, lr_decay=1.0,
         )
+        ARGS_TRANSFORMER.training.iterations_per_epoch = 50
 
     
         ARGS_TRANSFORMER.experiment.n_experiments = 1
