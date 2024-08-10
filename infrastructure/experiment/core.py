@@ -186,7 +186,6 @@ def run_training_experiments(
             print("#" * 160 + "\n")
 
             counter += 1
-        torch.cuda.empty_cache()
 
     # SECTION: Save relevant information
     if save_experiment:
@@ -333,7 +332,6 @@ def run_testing_experiments(
                     print("#" * 160 + "\n")
 
             counter += 1
-        torch.cuda.empty_cache()
 
     # SECTION: Save relevant information
     if save_experiment:
