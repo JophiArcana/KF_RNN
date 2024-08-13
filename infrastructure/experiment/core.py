@@ -92,14 +92,25 @@ def run_training_experiments(
         output_dir = f"{root_dir}/{HP.experiment.exp_name}"
         os.makedirs((train_output_dir := f"{output_dir}/{output_kwargs['training_dir']}"), exist_ok=True)
 
-        output_fname = f"{train_output_dir}/{output_kwargs['fname']}.pt"
-        output_fname_backup = f"{train_output_dir}/{output_kwargs['fname']}_backup.pt"
+        caching_output_fname = f"{train_output_dir}/_{output_kwargs['fname']}.pt"
+        caching_output_fname_backup = f"{train_output_dir}/_{output_kwargs['fname']}_backup.pt"
+        final_output_fname = f"{train_output_dir}/{output_kwargs['fname']}.pt"
+
         checkpoint_paths = [
             f"{train_output_dir}/checkpoint.pt",
             f"{train_output_dir}/checkpoint_backup.pt"
         ]
     else:
-        output_dir = train_output_dir = output_fname = output_fname_backup = checkpoint_paths = None
+        output_dir = train_output_dir = caching_output_fname = caching_output_fname_backup = final_output_fname = checkpoint_paths = None
+
+    # Check if the entire experiment has already been run
+    if save_experiment and os.path.exists(final_output_fname):
+        try:
+            result, cache = torch.load(final_output_fname, map_location=DEVICE)
+            print(f"Complete result recovered from file {final_output_fname}.")
+            return result, cache
+        except RuntimeError:
+            pass
 
     # SECTION: Run prologue to construct basic data structures
     cache = Namespace()
@@ -127,11 +138,11 @@ def run_training_experiments(
     )
 
     # Result setup
-    if save_experiment and os.path.exists(output_fname):
+    if save_experiment and os.path.exists(caching_output_fname):
         try:
-            result = torch.load(output_fname, map_location=DEVICE)
+            result = torch.load(caching_output_fname, map_location=DEVICE)
         except RuntimeError:
-            result = torch.load(output_fname_backup, map_location=DEVICE)
+            result = torch.load(caching_output_fname_backup, map_location=DEVICE)
     else:
         # Set up new result DimRecarray
         result = DimArray(
@@ -180,16 +191,19 @@ def run_training_experiments(
             if save_experiment:
                 backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
                 if backup_frequency is not None and counter % backup_frequency == 0:
-                    torch.save(result, output_fname_backup)
-                    print(f'{os.path.getsize(output_fname_backup)} bytes written to {output_fname_backup}')
-                torch.save(result, output_fname)
-                print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
+                    torch.save(result, caching_output_fname_backup)
+                    print(f'{os.path.getsize(caching_output_fname_backup)} bytes written to {caching_output_fname_backup}')
+                torch.save(result, caching_output_fname)
+                print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
             print("#" * 160 + "\n")
 
             counter += 1
 
     # SECTION: Save relevant information
     if save_experiment:
+        # Save full results to final output file
+        torch.save((result, cache), final_output_fname)
+
         # Save code to for experiment reproducibility
         code_base_dir = f"{output_dir}/code"
         os.makedirs(code_base_dir, exist_ok=True)
@@ -209,8 +223,8 @@ def run_training_experiments(
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
         # Clean up result_backup
-        if os.path.exists(output_fname_backup):
-            os.remove(output_fname_backup)
+        if os.path.exists(caching_output_fname_backup):
+            os.remove(caching_output_fname_backup)
 
     return result, cache
 
@@ -236,14 +250,25 @@ def run_testing_experiments(
         output_dir = f"{root_dir}/{HP.experiment.exp_name}"
         if save_experiment:
             os.makedirs((test_output_dir := f"{output_dir}/{output_kwargs['testing_dir']}"), exist_ok=True)
-            output_fname = f"{test_output_dir}/{output_kwargs['fname']}.pt"
+            caching_output_fname = f"{test_output_dir}/_{output_kwargs['fname']}.pt"
+            final_output_fname = f"{test_output_dir}/{output_kwargs['fname']}.pt"
         else:
-            test_output_dir = output_fname = None
+            test_output_dir = caching_output_fname = final_output_fname = None
     else:
-        output_dir = test_output_dir = output_fname = None
+        output_dir = test_output_dir = caching_output_fname = final_output_fname = None
 
-    if save_experiment and os.path.exists(output_fname):
-        result = torch.load(output_fname, map_location=DEVICE)
+    # Check if the entire experiment has already been run
+    if save_experiment and os.path.exists(final_output_fname):
+        try:
+            result, test_systems, test_dataset = torch.load(final_output_fname, map_location=DEVICE)
+            print(f"Complete result recovered from file {final_output_fname}.")
+            return result, test_systems, test_dataset
+        except RuntimeError:
+            pass
+
+    # Result setup
+    if save_experiment and os.path.exists(caching_output_fname):
+        result = torch.load(caching_output_fname, map_location=DEVICE)
     elif result is None:
         train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
         assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
@@ -329,21 +354,25 @@ def run_testing_experiments(
                 backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
                 if (backup_frequency is not None and counter % backup_frequency == 0) or (done.sum().item() + 1 == done.size):
                     print("\n" + "#" * 160)
-                    torch.save(result, output_fname)
-                    print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
+                    torch.save(result, caching_output_fname)
+                    print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
                     print("#" * 160 + "\n")
 
             counter += 1
 
     # SECTION: Save relevant information
+    test_systems, test_dataset = INFO_DICT[TESTING_DATASET_TYPE]["systems"], INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
     if save_experiment:
+        # Save full results to final output file
+        torch.save((result, test_systems, test_dataset), final_output_fname)
+
         # Write hyperparameters to JSON
         hp_fname = f"{test_output_dir}/hparams.json"
         if not os.path.exists(hp_fname):
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-    return result, INFO_DICT[TESTING_DATASET_TYPE]["systems"], INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
+    return result, test_systems, test_dataset
 
 
 def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:

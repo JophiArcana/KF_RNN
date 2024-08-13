@@ -92,6 +92,7 @@ if __name__ == "__main__":
         type="exponential",
         epochs=2000, lr_decay=1.0,
     )
+    ARGS_TRANSFORMER.training.iterations_per_epoch = 50
 
 
     ARGS_TRANSFORMER.experiment.n_experiments = 1
@@ -128,8 +129,12 @@ if __name__ == "__main__":
 
     print(expected_zero_predictor_loss)
     print(expected_irreducible_loss)
+    print(get_result_attr(result_transformer, "time"))
 
-    x = torch.arange(ARGS_TRANSFORMER.training.scheduler.epochs) + 1
+
+    # SECTION: Plot over gradient descent steps
+    x = ARGS_TRANSFORMER.training.iterations_per_epoch * torch.arange(ARGS_TRANSFORMER.training.scheduler.epochs) + 1
+    clip = x >= 1000
     for model_name, output in zip(
             configurations_transformer[0][1]["name"],
             get_result_attr(result_transformer, "output")
@@ -139,9 +144,9 @@ if __name__ == "__main__":
 
         # for sys_idx in range(n_test_systems):
         #     plt.plot(x, noiseless_normalized_validation_error[:, sys_idx].detach(), label=f"{model_name}_sys{sys_idx}")
-        plt.plot(x, noiseless_normalized_validation_error.mean(dim=-1).detach(), label=model_name)
+        plt.plot(x[clip], noiseless_normalized_validation_error.mean(dim=-1).detach()[clip], label=model_name)
 
-    plt.xlabel("training_progression")
+    plt.xlabel("gradient_descent_steps")
     plt.xscale("log")
     plt.ylabel("noiseless_normalized_validation_error")
     plt.yscale("log")
@@ -150,11 +155,28 @@ if __name__ == "__main__":
     plt.show()
 
 
+    # SECTION: Plot over real elapsed time
+    for model_name, output, time in zip(
+            configurations_transformer[0][1]["name"],
+            get_result_attr(result_transformer, "output"),
+            get_result_attr(result_transformer, "time")
+    ):
+        x = torch.linspace(0, time, ARGS_TRANSFORMER.training.scheduler.epochs) + 1
+        clip = x > 100
+        output = output.reshape(-1)
+        noiseless_normalized_validation_error = (output["noiseless_validation"] - noiseless_empirical_irreducible_loss) / (expected_zero_predictor_loss - expected_irreducible_loss)
 
+        # for sys_idx in range(n_test_systems):
+        #     plt.plot(x, noiseless_normalized_validation_error[:, sys_idx].detach(), label=f"{model_name}_sys{sys_idx}")
+        plt.plot(x[clip], noiseless_normalized_validation_error.mean(dim=-1).detach()[clip], label=model_name)
 
+    plt.xlabel("real_elapsed_time (s)")
+    plt.xscale("log")
+    plt.ylabel("noiseless_normalized_validation_error")
+    plt.yscale("log")
 
-
-
+    plt.legend()
+    plt.show()
 
 
 

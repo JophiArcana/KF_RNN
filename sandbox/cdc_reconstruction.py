@@ -441,6 +441,7 @@ if __name__ == "__main__":
         plt.xscale("log")
         plt.xlabel("context_length")
         plt.yscale("log")
+        plt.ylim(bottom=1e-3, top=2e0)
         plt.ylabel(r'normalized_loss: $|| F_\theta(\tau_t) - \tau_t ||^2 - || KF(\tau_t) - \tau_t ||^2$')
     
         plt.legend(framealpha=1.0)
