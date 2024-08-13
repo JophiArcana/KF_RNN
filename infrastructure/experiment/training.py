@@ -374,14 +374,14 @@ def _run_training(
     if len(results) > 0:
         return torch.stack(results, dim=2)
     else:
-        return torch.empty(())
+        return TensorDict({}, batch_size=(*EHP.model_shape, 0))
 
 def _run_unit_training_experiment(
         HP: Namespace,
         info: Namespace,
         checkpoint_paths: List[str],
         initialization: TensorDict[str, torch.Tensor]
-) -> Dict[str, TensorDict]:
+) -> Dict[str, Any]:
 
     SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
 
@@ -427,7 +427,7 @@ def _run_unit_training_experiment(
                 ds_info.systems, dtype=dict
             ))
     return {
-        "output": _run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach(),
+        "output": PTR(_run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach()),
         "learned_kfs": (reference_module, ensembled_learned_kfs),
     }
 
