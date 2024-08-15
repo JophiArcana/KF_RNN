@@ -52,12 +52,12 @@ if __name__ == "__main__":
     if os.path.exists(save_file):
         save = torch.load(save_file, map_location=DEVICE)
     
-        systems, dataset, result_transformer, result_baseline_cnn, result_baseline_rnn = map(vars(save).__getitem__, (
+        systems, dataset, result_transformer, result_cnn, result_rnn = map(vars(save).__getitem__, (
             "systems",
             "dataset",
             "result_transformer",
-            "result_baseline_cnn",
-            "result_baseline_rnn"
+            "result_cnn",
+            "result_rnn"
         ))
     else:
         """ Transformer experiment """
@@ -134,10 +134,10 @@ if __name__ == "__main__":
     
     
         """ Baseline experiment setup """
-        exp_name_baseline_cnn = "CDCReconstruction_baseline_cnn"
-        exp_name_baseline_rnn = "CDCReconstruction_baseline_rnn"
+        exp_name_cnn = "CDCReconstruction_cnn"
+        exp_name_rnn = "CDCReconstruction_rnn"
     
-        for _exp_name_baseline in (exp_name_baseline_cnn, exp_name_baseline_rnn):
+        for _exp_name_baseline in (exp_name_cnn, exp_name_rnn):
             os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/training", exist_ok=True)
             os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/testing", exist_ok=True)
     
@@ -189,9 +189,9 @@ if __name__ == "__main__":
     
         # SECTION: Set CNN exclusive hyperparameters
         ARGS_BASELINE_CNN.model.ridge = 1.0
-        ARGS_BASELINE_CNN.experiment.exp_name = exp_name_baseline_cnn
+        ARGS_BASELINE_CNN.experiment.exp_name = exp_name_cnn
     
-        configurations_baseline_cnn = [
+        configurations_cnn = [
             ("model", {
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
@@ -201,8 +201,8 @@ if __name__ == "__main__":
             })
         ]
     
-        result_baseline_cnn, _, _ = run_experiments(
-            ARGS_BASELINE_CNN, configurations_baseline_cnn, {
+        result_cnn, _, _ = run_experiments(
+            ARGS_BASELINE_CNN, configurations_cnn, {
                 "dir": output_dir,
                 "fname": output_fname
             }, save_experiment=True
@@ -227,17 +227,17 @@ if __name__ == "__main__":
             lr_decay=0.995
         )
         ARGS_BASELINE_RNN.training.iterations_per_epoch = 20
-        ARGS_BASELINE_RNN.experiment.exp_name = exp_name_baseline_rnn
+        ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn
     
-        configurations_baseline_rnn = [
+        configurations_rnn = [
             ("total_trace_length", {
                 "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * ((context_length - 1) // rnn_increment),
                 "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
             })
         ]
     
-        result_baseline_rnn, _, _ = run_experiments(
-            ARGS_BASELINE_RNN, configurations_baseline_rnn, {
+        result_rnn, _, _ = run_experiments(
+            ARGS_BASELINE_RNN, configurations_rnn, {
                 "dir": output_dir,
                 "fname": output_fname
             }, save_experiment=True
@@ -249,15 +249,15 @@ if __name__ == "__main__":
             systems=systems,
             dataset=dataset,
             result_transformer=result_transformer,
-            result_baseline_cnn=result_baseline_cnn,
-            result_baseline_rnn=result_baseline_rnn
+            result_cnn=result_cnn,
+            result_rnn=result_rnn
         )
         torch.save(save, save_file)
     
     
     M_transformer = get_metric_namespace_from_result(result_transformer)
-    M_baseline_cnn = get_metric_namespace_from_result(result_baseline_cnn)
-    M_baseline_rnn = get_metric_namespace_from_result(result_baseline_rnn)
+    M_cnn = get_metric_namespace_from_result(result_cnn)
+    M_rnn = get_metric_namespace_from_result(result_rnn)
     
     
     
@@ -288,13 +288,13 @@ if __name__ == "__main__":
         # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]
         # -> [n_firs x n_test_systems x test_dataset_size x context_length x O_D]
-        cnn_output = torch.diagonal(M_baseline_cnn.output.environment.observation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
+        cnn_output = torch.diagonal(M_cnn.output.environment.observation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
         cnn_l = loss(cnn_output)
         # [n_firs x context_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
         # -> [n_firs x context_length x n_test_systems x test_dataset_size]
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
-        cnn_al = M_baseline_cnn.al.squeeze(5).squeeze(4).permute(0, 2, 3, 1)
+        cnn_al = M_cnn.al.squeeze(5).squeeze(4).permute(0, 2, 3, 1)
     
     
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
@@ -302,11 +302,11 @@ if __name__ == "__main__":
         # -> [train.sequence_length x n_test_systems x test_dataset_size x O_D]
         # -> [n_test_systems x test_dataset_size x train.sequence_length x O_D]
         rnn_sequence_lengths = [*range(0, context_length, rnn_increment),]
-        rnn_output = M_baseline_rnn.output.environment.observation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
+        rnn_output = M_rnn.output.environment.observation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
         # -> [train.sequence_length x n_test_systems x test_dataset_size]
         # -> [n_test_systems x test_dataset_size x train.sequence_length]
-        rnn_al = M_baseline_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
+        rnn_al = M_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
     
     
         rnn_indices = torch.tensor(rnn_sequence_lengths)

@@ -1,5 +1,7 @@
 import copy
+import itertools
 import os
+import shutil
 import sys
 from argparse import Namespace
 
@@ -12,6 +14,7 @@ if os.getcwd() not in sys.path:
 
 from infrastructure import loader, utils
 from infrastructure.settings import DEVICE
+from infrastructure.static import *
 from infrastructure.utils import PTR
 from infrastructure.experiment import *
 from system.linear_time_invariant import LTISystem, MOPDistribution
@@ -20,120 +23,75 @@ from model.sequential import RnnPredictor, RnnPredictorPretrainAnalytical
 
 
 if __name__ == "__main__":
-    output_dir = "in_context_rnn_chaining"
+    output_dir = "in_context"
     output_fname = "result"
 
     context_length = 250
     n_test_systems = 3
-    test_dataset_size = 16
+    test_dataset_size = 256
 
-    SHP = Namespace(S_D=10, problem_shape=Namespace(
-        environment=Namespace(observation=5),
+    S_D, O_D = 10, 5
+    SHP = Namespace(S_D=S_D, problem_shape=Namespace(
+        environment=Namespace(observation=O_D),
         controller=Namespace()
     ))
+    exp_name_exemplar = "CDCReconstruction_rnn"
+    result_exemplar, _, _ = torch.load(f"output/{output_dir}/{exp_name_exemplar}/testing/result.pt", map_location=DEVICE)
 
-    os.makedirs(f"output/{output_dir}", exist_ok=True)
-    shared_systems_fname, shared_dataset_fname = f"output/{output_dir}/systems.pt", f"output/{output_dir}/dataset.pt"
-    if not os.path.exists(shared_systems_fname):
-        dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-        systems = dist.sample(SHP, (n_test_systems, 1))
-        torch.save(systems, shared_systems_fname)
-    else:
-        systems = torch.load(shared_systems_fname, map_location=DEVICE)
+    """ Chaining experiment setup """
+    exp_name_chain_initialization = "Chaining_rnn"
+    for dir_type in ("training", "testing"):
+        os.makedirs(f"output/{output_dir}/{exp_name_chain_initialization}/{dir_type}", exist_ok=True)
+        for info_type in INFO_DTYPE.names:
+            shutil.copy(
+                f"output/{output_dir}/{exp_name_exemplar}/{dir_type}/{info_type}.pt",
+                f"output/{output_dir}/{exp_name_chain_initialization}/{dir_type}/{info_type}.pt"
+            )
 
-    if not os.path.exists(shared_dataset_fname):
-        dataset = systems.generate_dataset(test_dataset_size, context_length).transpose(1, 2).unsqueeze(3)
-        torch.save(dataset, shared_dataset_fname)
-    else:
-        dataset = torch.load(shared_dataset_fname, map_location=DEVICE)
-
-
-    """ Baseline experiment setup """
-    exp_name_analytical_initialization = "AnalyticalInitialization"
-    exp_name_chain_initialization = "ChainInitialization"
-
-    systems_dimarr = DimArray(utils.array_of(systems))
-    dataset_dimarr = DimArray(utils.array_of(PTR(dataset)))
-
-    for _exp_name_baseline in (exp_name_analytical_initialization, exp_name_chain_initialization):
-        os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/training", exist_ok=True)
-        os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/testing", exist_ok=True)
-
-        for (exp_systems_fname, key) in [
-            (f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt", "train"),
-            (f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt", "test")
-        ]:
-            if not os.path.exists(exp_systems_fname):
-                torch.save({key: systems_dimarr}, exp_systems_fname)
-
-        for (exp_dataset_fname, key) in [
-            (f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt", "train"),
-            (f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt", "test")
-        ]:
-            if not os.path.exists(exp_dataset_fname):
-                torch.save({key: dataset_dimarr}, exp_dataset_fname)
-
-
-
-    # SECTION: RNN Experiment
-    rnn_increment = 5
-
-    ARGS_ANALYTICAL_INITIALIZATION = loader.generate_args(SHP)
-    ARGS_ANALYTICAL_INITIALIZATION.model.S_D = SHP.S_D
-
-    ARGS_ANALYTICAL_INITIALIZATION.dataset.train = Namespace(
-        dataset_size=1,
-        system=Namespace(n_systems=1)
-    )
-    ARGS_ANALYTICAL_INITIALIZATION.dataset.valid = ARGS_ANALYTICAL_INITIALIZATION.dataset.test = Namespace(
-        total_sequence_length=context_length
-    )
-
-    ARGS_ANALYTICAL_INITIALIZATION.train.sampling.method = "full"
-    ARGS_ANALYTICAL_INITIALIZATION.train.optimizer.max_lr = 1e-3
-    ARGS_ANALYTICAL_INITIALIZATION.train.scheduler.epochs = 2000
-
-    ARGS_ANALYTICAL_INITIALIZATION.experiment.n_experiments = n_test_systems
-    ARGS_ANALYTICAL_INITIALIZATION.experiment.ensemble_size = test_dataset_size
-    ARGS_ANALYTICAL_INITIALIZATION.experiment.metrics = {"validation_analytical"}
-    ARGS_ANALYTICAL_INITIALIZATION.experiment.exp_name = exp_name_analytical_initialization
-
-    rnn_sequence_lengths = [*range(rnn_increment, context_length, rnn_increment),]
-    configurations_analytical_initialization = [
-        ("total_trace_length", {
-            "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * len(rnn_sequence_lengths),
-            "dataset.train.total_sequence_length": [0] + rnn_sequence_lengths
-        })
-    ]
-
-    result_analytical_initialization, systems, dataset = run_experiments(
-        ARGS_ANALYTICAL_INITIALIZATION, configurations_analytical_initialization, {
-            "dir": output_dir,
-            "fname": output_fname
-        }, save_experiment=True
-    )
-
-
-
-    # SECTION: Chain initialization experiment setup
-    ARGS_CHAIN_INITIALIZATION = copy.deepcopy(ARGS_ANALYTICAL_INITIALIZATION)
+    # SECTION: Experiment hyperparameters
+    ARGS_CHAIN_INITIALIZATION = loader.generate_args(SHP)
     ARGS_CHAIN_INITIALIZATION.model.model = RnnPredictor
+    ARGS_CHAIN_INITIALIZATION.model.S_D = S_D
+
+    ARGS_CHAIN_INITIALIZATION.dataset.n_systems.reset(train=1)
+    ARGS_CHAIN_INITIALIZATION.dataset.dataset_size.reset(train=1)
+    ARGS_CHAIN_INITIALIZATION.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
+
+    ARGS_CHAIN_INITIALIZATION.training.sampling = Namespace(method="full")
+    ARGS_CHAIN_INITIALIZATION.training.optimizer = Namespace(
+        type="SGD",
+        max_lr=1e-3, min_lr=1e-6,
+        weight_decay=0.0,
+        momentum=0.9
+    )
+    ARGS_CHAIN_INITIALIZATION.training.scheduler = Namespace(
+        type="exponential",
+        epochs=300,
+        lr_decay=0.98
+    )
+
+    ARGS_CHAIN_INITIALIZATION.experiment.n_experiments = n_test_systems
+    ARGS_CHAIN_INITIALIZATION.experiment.ensemble_size = test_dataset_size
+    ARGS_CHAIN_INITIALIZATION.experiment.metrics = Namespace(training={"validation_analytical"})
     ARGS_CHAIN_INITIALIZATION.experiment.exp_name = exp_name_chain_initialization
 
+    utils.print_namespace(ARGS_CHAIN_INITIALIZATION)
 
+    # SECTION: Chain initialization setup
     output_fname_formatter = "result_{0}"
-    results_chain_initialization = [DimArray(result_analytical_initialization[0])]
-    for idx, rnn_sequence_length in enumerate(rnn_sequence_lengths):
-        args = copy.deepcopy(ARGS_CHAIN_INITIALIZATION)
-        args.dataset.train.total_sequence_length = rnn_sequence_length
+    min_eqs = (S_D * (S_D + 2 * O_D) - 1) // O_D + 1
+    results_chain_initialization = [*map(DimArray, result_exemplar[:min_eqs])]  # DimArray uses 1-indexing, include both the zero-predictor and the minimum number of observations to fully constrain RNN parameters
 
-        if idx == 0:
-            initialization = DimArray(utils.array_of(PTR(systems.values[()].td())))
-        else:
-            initialization = utils.multi_map(
-                lambda pair: PTR(pair[1]),
-                DimArray(get_result_attr(results_chain_initialization[-1], "learned_kfs")), dtype=PTR
-            )
+    for rnn_sequence_length in range(min_eqs + 1, context_length):
+        args = utils.deepcopy_namespace(ARGS_CHAIN_INITIALIZATION)
+        args.dataset.total_sequence_length.train = rnn_sequence_length
+
+        initialization = utils.multi_map(
+            lambda pair: PTR(pair[1]), DimArray(
+                get_result_attr(results_chain_initialization[-1], "learned_kfs"),
+                dims=results_chain_initialization[-1].dims
+            ), dtype=PTR
+        )
 
         results_chain_initialization.append(run_experiments(
             args, [], {
@@ -142,7 +100,7 @@ if __name__ == "__main__":
             }, initialization=initialization, save_experiment=True
         )[0])
 
-
+    raise Exception()
 
 
     """ Result processing """
