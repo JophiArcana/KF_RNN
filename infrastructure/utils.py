@@ -163,6 +163,9 @@ def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tens
     fn = lambda t_: torch.complex(t_, torch.zeros_like(t_))
     return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
 
+def ceildiv(a: int, b: int) -> int:
+    return -(-a // b)
+
 def hadamard_conjugation(
         A: torch.Tensor,        # [B... x m x n]
         B: torch.Tensor,        # [B... x p x q]

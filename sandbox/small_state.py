@@ -47,7 +47,7 @@ if __name__ == "__main__":
     args = loader.generate_args(SHP)
     getattr(args.system.auxiliary, hp_name).update(valid=hp_values[0], test=hp_values[0])
 
-    d_model = ((S_D + 1) // 2) * 2
+    d_model = utils.ceildiv(S_D, 2) * 2
     n_layer = 6
     n_head = 1
     d_inner = 2 * d_model

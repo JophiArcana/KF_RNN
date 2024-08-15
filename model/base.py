@@ -42,7 +42,7 @@ class Predictor(Observer):
         _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size - 1) // split_size + 2)).to(torch.int)
+        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int)
         splits = torch.tensor(sorted(set(splits.tolist())))
 
         _result_list = []
@@ -73,7 +73,7 @@ class Predictor(Observer):
         _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, (_dataset_size - 1) // split_size + 2)).to(torch.int)
+        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int)
         splits = torch.tensor(sorted(set(splits.tolist())))
 
         _result_list = []

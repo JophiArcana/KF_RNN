@@ -216,9 +216,6 @@ if __name__ == "__main__":
     """
 
 
-<<<<<<< HEAD
-    optimal_states = datasets[1]["environment", "state"].flatten(1, -2)
-=======
     # LQG system visualization
     zero_controller_group = NNControllerGroup(problem_shape, *utils.stack_module_arr(utils.array_of(ZeroController(Namespace(problem_shape=problem_shape)))))
     batch_size, horizon = 128, 200
@@ -244,7 +241,6 @@ if __name__ == "__main__":
     learned_traces = _datasets[:, len(hp_values) + 1:]
 
     optimal_states = optimal_trace["environment", "state"].flatten(-3, -2)
->>>>>>> 52a7894de458a0119342e1db42539413be5d4ba5
     U, S, Vh = torch.linalg.svd(optimal_states, full_matrices=False)
     S = S / ((batch_size * horizon) ** 0.5)
     s0, s1 = S[0, 0, :, :2].mT

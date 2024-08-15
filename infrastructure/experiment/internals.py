@@ -230,7 +230,7 @@ def _construct_info_dict(
                 _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.dataset_size.{ds_type}", dtype=int),
                 _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
             )
-            sequence_length_arr = (total_sequence_length_arr - 1) // dataset_size_arr + 1
+            sequence_length_arr = utils.ceildiv(total_sequence_length_arr, dataset_size_arr)
 
             max_dataset_size = dataset_size_arr.max()
             max_sequence_length = sequence_length_arr.max()
@@ -308,7 +308,7 @@ def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
 def _populate_values(HP: Namespace) -> None:
     total_sequence_length = HP.dataset.total_sequence_length.train
     dataset_size = HP.dataset.dataset_size.train
-    HP.dataset.sequence_length = utils.DefaultingParameter(train=(total_sequence_length - 1) // dataset_size + 1)
+    HP.dataset.sequence_length = utils.DefaultingParameter(train=utils.ceildiv(total_sequence_length, dataset_size))
 
 
 

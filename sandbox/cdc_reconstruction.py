@@ -231,7 +231,7 @@ if __name__ == "__main__":
     
         configurations_rnn = [
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * ((context_length - 1) // rnn_increment),
+                "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * (utils.ceildiv(context_length, rnn_increment) - 1),
                 "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
             })
         ]

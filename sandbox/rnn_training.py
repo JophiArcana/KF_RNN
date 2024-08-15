@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
     # SECTION: Chain initialization setup
     output_fname_formatter = "result_{0}"
-    min_eqs = (S_D * (S_D + 2 * O_D) - 1) // O_D + 1
+    min_eqs = utils.ceildiv(S_D * (S_D + 2 * O_D), O_D)
     results_chain_initialization = [*map(DimArray, result_exemplar[:min_eqs])]  # DimArray uses 1-indexing, include both the zero-predictor and the minimum number of observations to fully constrain RNN parameters
 
     for rnn_sequence_length in range(min_eqs + 1, context_length):
