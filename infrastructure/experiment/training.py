@@ -236,7 +236,7 @@ def _run_training(
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
         checkpoint_frequency: int = 100,
-        print_frequency: int = 10,
+        print_frequency: int = 1,
 ) -> TensorDict:
 
     SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
@@ -350,7 +350,7 @@ def _run_training(
             # DONE: Print losses
             if ((cache.t - 1) % print_frequency == 0) or (training_func is not DEFAULT_TRAINING_FUNC):
                 mean_losses = [
-                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
+                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean())
                     for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics), "learning_rate")
                 ]
                 print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
@@ -380,13 +380,14 @@ def _run_unit_training_experiment(
         HP: Namespace,
         info: Namespace,
         checkpoint_paths: List[str],
-        initialization: TensorDict[str, torch.Tensor]
+        initialization: TensorDict[str, torch.Tensor],
+        print_hyperparameters: bool = False
 ) -> Dict[str, Any]:
 
     SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
-
-    print("-" * 160)
-    print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
+    if print_hyperparameters:
+        print("-" * 160)
+        print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
     print("=" * 160)
 
     # Ensemble learned Kalman Filters to be trained

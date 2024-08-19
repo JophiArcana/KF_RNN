@@ -223,7 +223,7 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN.training.scheduler = Namespace(
             type="exponential",
             warmup_duration=100,
-            epochs=2000,
+            epochs=1200,
             lr_decay=0.995
         )
         ARGS_BASELINE_RNN.training.iterations_per_epoch = 20
@@ -442,7 +442,7 @@ if __name__ == "__main__":
         plt.xlabel("context_length")
         plt.yscale("log")
         plt.ylim(bottom=1e-3, top=2e0)
-        plt.ylabel(r'normalized_loss: $|| F_\theta(\tau_t) - \tau_t ||^2 - || KF(\tau_t) - \tau_t ||^2$')
+        plt.ylabel(r"normalized_loss: $|| F_\theta(\tau_t) - \tau_t ||^2 - || KF(\tau_t) - \tau_t ||^2$")
     
         plt.legend(framealpha=1.0)
         plt.show()

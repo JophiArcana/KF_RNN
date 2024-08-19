@@ -11,10 +11,10 @@ from model.convolutional import CnnPredictorLeastSquares, CnnPredictorAnalytical
 
 if __name__ == "__main__":
     base_exp_name = "ImpulseResponseLengthAnalytical"
-    output_dir = "system2_CNN"
+    output_dir = "system6_CNN"
     output_fname = "result"
 
-    system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
+    system2, args = loader.load_system_and_args("data/6dim_scalar_system_matrices")
 
     args.dataset.total_sequence_length.reset(train=10000)
     args.experiment.metrics = Namespace(
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     )
     args.experiment.exp_name = base_exp_name
 
-    max_ir_length = 40
+    max_ir_length = 64
     configurations = [
         ("model", {
             "model.model": [
@@ -43,7 +43,7 @@ if __name__ == "__main__":
             "fname": output_fname
         }, system2, save_experiment=False
     )
-    plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical", lstsq=False, xscale="log")
+    plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical", lstsq=False, xscale="linear")
 
 
 

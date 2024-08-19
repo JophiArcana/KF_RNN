@@ -5,8 +5,10 @@ import shutil
 import sys
 from argparse import Namespace
 
+import tensordict.utils
 import torch
 from dimarray import DimArray
+from matplotlib import pyplot as plt
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -17,6 +19,7 @@ from infrastructure.settings import DEVICE
 from infrastructure.static import *
 from infrastructure.utils import PTR
 from infrastructure.experiment import *
+from infrastructure.experiment.plotting import COLOR_LIST
 from system.linear_time_invariant import LTISystem, MOPDistribution
 from model.zero_predictor import ZeroPredictor
 from model.sequential import RnnPredictor, RnnPredictorPretrainAnalytical
@@ -36,7 +39,8 @@ if __name__ == "__main__":
         controller=Namespace()
     ))
     exp_name_exemplar = "CDCReconstruction_rnn"
-    result_exemplar, _, _ = torch.load(f"output/{output_dir}/{exp_name_exemplar}/testing/result.pt", map_location=DEVICE)
+    result_exemplar, systems, _ = torch.load(f"output/{output_dir}/{exp_name_exemplar}/testing/result.pt", map_location=DEVICE)
+
 
     """ Chaining experiment setup """
     exp_name_chain_initialization = "Chaining_rnn"
@@ -60,29 +64,31 @@ if __name__ == "__main__":
     ARGS_CHAIN_INITIALIZATION.training.sampling = Namespace(method="full")
     ARGS_CHAIN_INITIALIZATION.training.optimizer = Namespace(
         type="SGD",
-        max_lr=1e-3, min_lr=1e-6,
+        max_lr=1e-6, min_lr=1e-6,
         weight_decay=0.0,
         momentum=0.9
     )
     ARGS_CHAIN_INITIALIZATION.training.scheduler = Namespace(
         type="exponential",
-        epochs=300,
-        lr_decay=0.98
+        epochs=1000,
+        lr_decay=0.995
     )
 
     ARGS_CHAIN_INITIALIZATION.experiment.n_experiments = n_test_systems
     ARGS_CHAIN_INITIALIZATION.experiment.ensemble_size = test_dataset_size
     ARGS_CHAIN_INITIALIZATION.experiment.metrics = Namespace(training={"validation_analytical"})
     ARGS_CHAIN_INITIALIZATION.experiment.exp_name = exp_name_chain_initialization
+    ARGS_CHAIN_INITIALIZATION.experiment.backup_frequency = 50
 
-    utils.print_namespace(ARGS_CHAIN_INITIALIZATION)
+    al_exemplar = get_metric_namespace_from_result(result_exemplar).al.flatten(1, -1).mean(dim=-1)
 
     # SECTION: Chain initialization setup
     output_fname_formatter = "result_{0}"
-    min_eqs = utils.ceildiv(S_D * (S_D + 2 * O_D), O_D)
+    min_eqs = utils.ceildiv(S_D * (S_D + 2 * O_D), O_D) * 3
     results_chain_initialization = [*map(DimArray, result_exemplar[:min_eqs])]  # DimArray uses 1-indexing, include both the zero-predictor and the minimum number of observations to fully constrain RNN parameters
 
     for rnn_sequence_length in range(min_eqs + 1, context_length):
+        print(f"Sequence length {rnn_sequence_length} target: {al_exemplar[rnn_sequence_length - 1].item()} -> {al_exemplar[rnn_sequence_length].item()} " + "-" * 120)
         args = utils.deepcopy_namespace(ARGS_CHAIN_INITIALIZATION)
         args.dataset.total_sequence_length.train = rnn_sequence_length
 

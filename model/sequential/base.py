@@ -117,11 +117,18 @@ class SequentialPredictor(Predictor):
         Predictor.__init__(self, modelArgs)
         self.S_D: int = modelArgs.S_D
 
+    def sample_initial_as_observations(self, observations: torch.Tensor, shape: Tuple[int, ...]):
+        if self.training:
+            scale = (observations.norm(dim=-1) ** 2).mean() / self.S_D
+            return torch.randn(shape) * (scale ** 0.5)
+        else:
+            return torch.zeros(shape)
+
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, Dict[str, torch.Tensor]]:
         trace = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment"]["observation"]
 
-        state_estimation = (torch.randn if self.training else torch.zeros)((*observations.shape[:-2], self.S_D))
+        state_estimation = self.sample_initial_as_observations(observations, (*observations.shape[:-2], self.S_D))
         return self.forward_with_initial(state_estimation, actions, observations, mode)
 
     def forward_with_initial(self,
@@ -337,7 +344,7 @@ class SequentialController(Controller, SequentialPredictor):
         trace = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment"]["observation"]
 
-        state_estimation = (torch.randn if self.training else torch.zeros)((*observations.shape[:-2], self.S_D))
+        state_estimation = self.sample_initial_as_observations(observations, (*observations.shape[:-2], self.S_D))
         result = self.forward_with_initial(state_estimation, actions, observations, mode)
 
         state_estimation_history = torch.cat([

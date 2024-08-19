@@ -79,7 +79,8 @@ def run_training_experiments(
         output_kwargs: Dict[str, Any],
         systems: Dict[str, DimArray] = None,
         initialization: DimArray = None,
-        save_experiment: bool = True
+        save_experiment: bool = True,
+        print_hyperparameters: bool = False,
 ) -> Tuple[DimArray, Namespace]:
     HP = utils.deepcopy_namespace(HP)
 
@@ -152,8 +153,9 @@ def run_training_experiments(
 
     print("=" * 160)
     print(HP.experiment.exp_name)
-    print("=" * 160)
-    print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
+    if print_hyperparameters:
+        print("=" * 160)
+        print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
 
     counter = 0
     for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, cache.train_dimensions, params_dataset):
