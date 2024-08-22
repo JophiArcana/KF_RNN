@@ -84,7 +84,7 @@ if __name__ == "__main__":
         batch_size=32
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
-        type="Adam",
+        type="AdamW",
         max_lr=3e-4, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9
     )

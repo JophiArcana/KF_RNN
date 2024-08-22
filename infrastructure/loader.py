@@ -28,7 +28,7 @@ BaseTrainArgs = Namespace(
 
     # Optimizer
     optimizer=Namespace(
-        type="Adam",                        # {"SGD", "Adam"}
+        type="AdamW",                        # {"SGD", "AdamW"}
         max_lr=2e-2, min_lr=1e-6,
         weight_decay=0.0,
 

@@ -73,7 +73,7 @@ if __name__ == "__main__":
         subsequence_length=200
     )
     args.training.optimizer = Namespace(
-        type="Adam",
+        type="AdamW",
         max_lr=3e-4, min_lr=1e-9,
         weight_decay=1e2
     )

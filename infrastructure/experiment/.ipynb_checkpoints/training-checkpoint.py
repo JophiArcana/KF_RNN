@@ -22,7 +22,7 @@ from model.base import Predictor
 # Optimizer configuration
 OptimDict: OrderedDict[str, type] = collections.OrderedDict([
     ("SGD", optim.SGD),
-    ("Adam", optim.AdamW),
+    ("AdamW", optim.AdamW),
     ("LBFGS", optim.LBFGS),
 ])
 

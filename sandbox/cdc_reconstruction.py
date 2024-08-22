@@ -103,7 +103,7 @@ if __name__ == "__main__":
             batch_size=32
         )
         ARGS_TRANSFORMER.training.optimizer = Namespace(
-            type="Adam",
+            type="AdamW",
             max_lr=3e-4, min_lr=1e-6,
             weight_decay=1e-2, momentum=0.9
         )
@@ -218,14 +218,15 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN.training.sampling = Namespace(method="full")
         ARGS_BASELINE_RNN.training.optimizer = Namespace(
             type="SGD",
-            max_lr=1e-3, min_lr=1e-6,
+            max_lr=1e-2, min_lr=1e-6,
             weight_decay=0.0, momentum=0.0
         )
         ARGS_BASELINE_RNN.training.scheduler = Namespace(
-            type="exponential",
-            warmup_duration=100,
+            type="reduce_on_plateau",
+            factor=0.1, patience=100, warmup_duration=0,
+            # type="exponential",
+            # lr_decay=0.995, warmup_duration=100,
             epochs=2000, gradient_cutoff=1e-6,
-            lr_decay=0.995
         )
         ARGS_BASELINE_RNN.training.iterations_per_epoch = 20
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn

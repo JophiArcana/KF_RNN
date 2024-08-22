@@ -33,9 +33,9 @@ if __name__ == "__main__":
     from model.sequential.rnn_predictor import RnnPredictor, RnnPredictorPretrainAnalytical
     configurations = [
         ("optimizer", {
-            "name": ["adam", "adam_analytical_initialization", "gd_analytical_initialization"],
+            "name": ["AdamW", "adam_analytical_initialization", "gd_analytical_initialization"],
             "model.model": [RnnPredictor, RnnPredictorPretrainAnalytical, RnnPredictorPretrainAnalytical],
-            "train.optim_type": ["Adam", "Adam", "GD"],
+            "train.optim_type": ["AdamW", "AdamW", "GD"],
             "train.max_lr": [2e-2, 2e-2, 1e-3]
         }),
         ("total_trace_length", {

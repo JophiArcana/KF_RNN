@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     args.training.sampling = Namespace(method="full")
     args.training.optimizer = Namespace(
-        type="Adam",
+        type="AdamW",
         max_lr=3e-4, min_lr=1e-9,
         weight_decay=0.0
     )

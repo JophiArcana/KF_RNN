@@ -1,11 +1,9 @@
-import collections
 import copy
 import json
 from argparse import Namespace
 from inspect import signature
 from typing import *
 
-import ignite.handlers.param_scheduler
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
@@ -13,27 +11,21 @@ import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import PTR
-from infrastructure.settings import *
 from infrastructure.experiment.metrics import Metrics
+from infrastructure.settings import *
+from infrastructure.utils import PTR
 from model.base import Predictor
 
 
 # Optimizer configuration
-OptimDict: OrderedDict[str, type] = collections.OrderedDict([
-    ("SGD", optim.SGD),
-    ("Adam", optim.AdamW),
-    ("LBFGS", optim.LBFGS),
-])
-
 def _get_optimizer_and_scheduler(
         params: Iterable[torch.Tensor],
         THP: Namespace
-) -> Tuple[optim.Optimizer, ignite.handlers.LRScheduler | ignite.handlers.ConcatScheduler]:
+) -> Tuple[optim.Optimizer, optim.lr_scheduler.LRScheduler]:
 
     optimizer_params = THP.optimizer
     optimizer = utils.call_func_with_kwargs(
-        OptimDict[optimizer_params.type],
+        getattr(optim, optimizer_params.type),
         (params, optimizer_params.max_lr), vars(optimizer_params)
     )
 
@@ -50,16 +42,25 @@ def _get_optimizer_and_scheduler(
             optim.lr_scheduler.ExponentialLR,
             (optimizer, scheduler_params.lr_decay), vars(scheduler_params)
         )
+    elif scheduler_type == "reduce_on_plateau":
+        scheduler = utils.call_func_with_kwargs(
+            optim.lr_scheduler.ReduceLROnPlateau,
+            (optimizer,), vars(scheduler_params)
+        )
     else:
         raise ValueError(scheduler_type)
 
+
     if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
-        return optimizer, ignite.handlers.param_scheduler.LRScheduler(scheduler)
+        return optimizer, scheduler
     else:
-        if scheduler_params.epochs is not None:
-            scheduler_params.epochs += (warmup_duration - 1)
-        return optimizer, ignite.handlers.param_scheduler.create_lr_scheduler_with_warmup(
-            scheduler, optimizer_params.min_lr, warmup_duration
+        warmup = optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=optimizer_params.min_lr / optimizer_params.max_lr,
+            total_iters=warmup_duration,
+        )
+        return optimizer, optim.lr_scheduler.SequentialLR(
+            optimizer, [warmup, scheduler],
+            milestones=[warmup_duration]
         )
 
 # Training
@@ -197,8 +198,6 @@ def _train_default(
             if isinstance(v, nn.Parameter)
         ), THP)
 
-    cache.scheduler(None)
-
     # SECTION: Iterate through train indices and run gradient descent
     result = []
     for batch, indices in enumerate(_sample_dataset_indices(
@@ -243,6 +242,7 @@ def _train_default(
 
         cache.optimizer.step(closure)
 
+    utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result[-1].mean().item()})
     cache.t += 1
     return torch.stack(result, dim=0), terminate_condition()
 
@@ -253,7 +253,7 @@ def _run_training(
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
         checkpoint_frequency: int = 200,
-        print_frequency: int = 20,
+        print_frequency: int = 1,
 ) -> TensorDict:
 
     MHP, _THP, EHP = map(vars(HP).__getitem__, ("model", "training", "experiment"))
