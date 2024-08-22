@@ -450,13 +450,14 @@ def call_func_with_kwargs(func: Callable, args: Tuple[Any, ...], kwargs: Dict[st
         kwargs[k] if k in kwargs else args[i] for i, (k, v) in enumerate(params.items())
         if v.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD and v.default is inspect.Parameter.empty
     ]
+    additional_args = args[len(required_args):]
 
     allow_var_keywords = any(v.kind is inspect.Parameter.VAR_KEYWORD for v in params.values())
     valid_kwargs = {
         k: v for k, v in kwargs.items()
         if ((params[k].default is not inspect.Parameter.empty) if k in params else allow_var_keywords)
     }
-    return func(*required_args, **valid_kwargs)
+    return func(*required_args, *additional_args, **valid_kwargs)
 
 
 """ Plotting code """
