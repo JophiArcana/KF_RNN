@@ -7,11 +7,10 @@ from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.discrete_are import solve_discrete_are
+from model.zero_predictor import ZeroController
 from system.base import SystemGroup, SystemDistribution
 from system.controller import LinearControllerGroup
 from system.environment import LTIEnvironment
-from model.zero_predictor import ZeroController
-from model.sequential.base import SequentialController
 
 
 class LQGController(LinearControllerGroup):
@@ -81,17 +80,9 @@ class LTISystem(SystemGroup):
         self.register_module("L_augmented", L_augmented)
 
         # SECTION: Register irreducible loss
-        kalman_filter = TensorDict.from_dict({
-            **self.environment.td(),
-            **self.controller.td(),
-        }, batch_size=self.group_shape)
-        # self.register_module("irreducible_loss", utils.buffer_dict(SequentialController.analytical_error(
-        #     kalman_filter, self.td()
-        # )))
-
         zero_predictor_loss = ZeroController.analytical_error(None, self.td())
         self.register_module("zero_predictor_loss", utils.buffer_dict(zero_predictor_loss))
-        
+
         irreducible_loss = TensorDict.from_dict({
             "environment": {"observation": self.environment.irreducible_loss.clone()},
             "controller": zero_predictor_loss["controller"].apply(torch.zeros_like)

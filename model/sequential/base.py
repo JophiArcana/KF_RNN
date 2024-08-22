@@ -52,6 +52,9 @@ class SequentialPredictor(Predictor):
         Dh, Vh = torch.linalg.eig(Mh)                                                                   # [B... x S_Dh], [B... x S_Dh x S_Dh]
         Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                               # [B... x 2S_D x 2S_D], [B... x S_Dh x S_Dh]
 
+        # if torch.any(Dh.abs() > 1.0):
+        #     print(f"Eigenvalues of Fh {Dh[Dh.abs() > 1.0]} exceed magnitude 1.")
+
         Has, Hhs = Ha @ V, Hh @ Vh                                                                      # [B... x O_D x 2S_D], [B... x O_D x S_Dh]
         Las = La.apply(lambda t: t @ V)                                                                 # [B... x I_D? x 2S_D]
         sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
@@ -116,11 +119,13 @@ class SequentialPredictor(Predictor):
     def __init__(self, modelArgs: Namespace):
         Predictor.__init__(self, modelArgs)
         self.S_D: int = modelArgs.S_D
+        self.initial_state_scale = getattr(modelArgs, "initial_state_scale", 1.0)
 
     def sample_initial_as_observations(self, observations: torch.Tensor, shape: Tuple[int, ...]):
         if self.training:
-            scale = (observations.norm(dim=-1) ** 2).mean() / self.S_D
-            return torch.randn(shape) * (scale ** 0.5)
+            return self.initial_state_scale * torch.randn(shape)
+            # scale = (observations.norm(dim=-1) ** 2).mean() / self.S_D
+            # return self.initial_state_scale * torch.randn(shape) * (scale ** 0.5)
         else:
             return torch.zeros(shape)
 

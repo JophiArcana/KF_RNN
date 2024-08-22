@@ -56,7 +56,8 @@ def _get_optimizer_and_scheduler(
     if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
         return optimizer, ignite.handlers.param_scheduler.LRScheduler(scheduler)
     else:
-        scheduler_params.epochs += (warmup_duration - 1)
+        if scheduler_params.epochs is not None:
+            scheduler_params.epochs += (warmup_duration - 1)
         return optimizer, ignite.handlers.param_scheduler.create_lr_scheduler_with_warmup(
             scheduler, optimizer_params.min_lr, warmup_duration
         )
@@ -162,7 +163,23 @@ def _train_default(
         cache: Namespace
 ) -> Tuple[torch.Tensor, bool]:
     def terminate_condition() -> bool:
-        return cache.t >= THP.scheduler.epochs
+        if THP.scheduler.epochs is None:
+            reference_module = exclusive.reference_module.eval()
+            with torch.set_grad_enabled(True):
+                run = Predictor.run(reference_module, ensembled_learned_kfs, cache.padded_train_dataset)
+                loss = Predictor.evaluate_run(
+                    run["environment", "observation"],
+                    cache.padded_train_dataset, ("environment", "observation")
+                )
+            grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
+            grad_norm = torch.Tensor(sum(
+                grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
+                for grad in grads
+            )).mean()
+            print(grad_norm)
+            return grad_norm < THP.scheduler.gradient_cutoff
+        else:
+            return cache.t >= THP.scheduler.epochs
 
     # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
     if not hasattr(cache, "optimizer"):
@@ -235,11 +252,11 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 100,
-        print_frequency: int = 1,
+        checkpoint_frequency: int = 200,
+        print_frequency: int = 20,
 ) -> TensorDict:
 
-    SHP, MHP, _THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
+    MHP, _THP, EHP = map(vars(HP).__getitem__, ("model", "training", "experiment"))
 
     # TODO: Check if checkpoint exists and if so, load the stored information
     checkpoint = None
@@ -319,8 +336,6 @@ def _run_training(
                 "impulse_target",
                 "overfit_gradient_norm"
             } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
-            if THP.scheduler.epochs is None:
-                metrics.add("overfit_gradient_norm")
 
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
             exclusive.reference_module.eval()
@@ -350,19 +365,11 @@ def _run_training(
             # DONE: Print losses
             if ((cache.t - 1) % print_frequency == 0) or (training_func is not DEFAULT_TRAINING_FUNC):
                 mean_losses = [
-                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean())
+                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
+                    # (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean())
                     for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics), "learning_rate")
                 ]
                 print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
-
-            # DONE: Check for divergence
-            if "overfit" in metrics:
-                ol = torch.Tensor(r["overfit"])
-                divergences = torch.isnan(ol) + torch.isinf(ol)
-            else:
-                divergences = torch.full(EHP.model_shape, False)
-            if torch.any(divergences):
-                raise RuntimeError("Model diverged")
 
             counter += 1
 
@@ -384,7 +391,7 @@ def _run_unit_training_experiment(
         print_hyperparameters: bool = False
 ) -> Dict[str, Any]:
 
-    SHP, MHP, THP, DHP, EHP = map(vars(HP).__getitem__, ("system", "model", "training", "dataset", "experiment"))
+    MHP, DHP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "experiment"))
     if print_hyperparameters:
         print("-" * 160)
         print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))

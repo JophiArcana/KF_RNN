@@ -4,14 +4,13 @@ import re
 from argparse import Namespace
 from collections import OrderedDict
 
-import numpy as np
 import torch
 from dimarray import DimArray, Dataset
 
 from infrastructure import utils
-from infrastructure.utils import PTR
-from infrastructure.static import *
 from infrastructure.settings import DEVICE
+from infrastructure.static import *
+from infrastructure.utils import PTR
 from system.base import SystemGroup
 
 

@@ -163,7 +163,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
-        raise NotImplementedError("This metric is outdated, and we need to derive a new way of determining convergence.")
+        # raise NotImplementedError("This metric is outdated, and we need to derive a new way of determining convergence.")
         exclusive, ensembled_learned_kfs = mv
 
         reset_ensembled_learned_kfs = Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs)
@@ -183,7 +183,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
         def gradient_norm(loss: torch.Tensor) -> torch.Tensor:
             grads = torch.autograd.grad(loss.sum(), params, allow_unused=True)
             return _unsqueeze_if(torch.Tensor(sum(
-                torch.norm(torch.flatten(grad, start_dim=2, end_dim=-1), dim=2)
+                torch.norm(torch.flatten(grad, start_dim=2, end_dim=-1), dim=2) ** 2
                 for grad in grads if grad is not None
             )), with_batch_dim)
 
