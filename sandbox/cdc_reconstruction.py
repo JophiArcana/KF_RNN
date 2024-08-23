@@ -222,10 +222,10 @@ if __name__ == "__main__":
             weight_decay=0.0, momentum=0.0
         )
         ARGS_BASELINE_RNN.training.scheduler = Namespace(
-            type="reduce_on_plateau",
-            factor=0.1, patience=100, warmup_duration=0,
-            # type="exponential",
-            # lr_decay=0.995, warmup_duration=100,
+            # type="reduce_on_plateau",
+            # factor=0.5, patience=10, warmup_duration=0,
+            type="exponential",
+            lr_decay=0.995, warmup_duration=100,
             epochs=2000, gradient_cutoff=1e-6,
         )
         ARGS_BASELINE_RNN.training.iterations_per_epoch = 20

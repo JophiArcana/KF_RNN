@@ -242,9 +242,11 @@ def _train_default(
 
         cache.optimizer.step(closure)
 
-    utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result[-1].mean().item()})
+    result = torch.stack(result, dim=0)
+    utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
+
     cache.t += 1
-    return torch.stack(result, dim=0), terminate_condition()
+    return result, terminate_condition()
 
 # Full training scheme
 def _run_training(
@@ -252,7 +254,7 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 200,
+        checkpoint_frequency: int = 10000,
         print_frequency: int = 1,
 ) -> TensorDict:
 
