@@ -218,8 +218,8 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN.training.sampling = Namespace(method="full")
         ARGS_BASELINE_RNN.training.optimizer = Namespace(
             type="SGD",
-            max_lr=1e-2, min_lr=1e-6,
-            weight_decay=0.0, momentum=0.0
+            max_lr=1e-3, min_lr=1e-6,
+            weight_decay=0.0, momentum=0.9
         )
         ARGS_BASELINE_RNN.training.scheduler = Namespace(
             # type="reduce_on_plateau",

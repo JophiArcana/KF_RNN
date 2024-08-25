@@ -6,14 +6,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.data
-import tensordict.utils
 from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.utils import PTR
 from model.base import Predictor
 from system.base import SystemGroup
-
 
 MetricVars = Tuple[Namespace, TensorDict[str, torch.Tensor]]
 

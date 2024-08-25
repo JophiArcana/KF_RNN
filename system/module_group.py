@@ -8,7 +8,7 @@ from tensordict import TensorDict
 class ModuleGroup(nn.Module):
     def __init__(self, group_shape: Tuple[int, ...]):
         super().__init__()
-        self.group_shape = group_shape
+        self.group_shape = (*map(int, group_shape),)
 
     def td(self) -> TensorDict[str, torch.Tensor]:
         return TensorDict({

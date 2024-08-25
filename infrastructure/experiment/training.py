@@ -54,6 +54,7 @@ def _get_optimizer_and_scheduler(
     if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
         return optimizer, scheduler
     else:
+        scheduler_params.epochs += warmup_duration
         warmup = optim.lr_scheduler.LinearLR(
             optimizer, start_factor=optimizer_params.min_lr / optimizer_params.max_lr,
             total_iters=warmup_duration,
@@ -381,7 +382,7 @@ def _run_training(
             os.remove(checkpoint_path)
 
     if len(results) > 0:
-        return torch.stack(results, dim=2)
+        return TensorDict.maybe_dense_stack(results, dim=2)
     else:
         return TensorDict({}, batch_size=(*EHP.model_shape, 0))
 

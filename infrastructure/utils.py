@@ -28,13 +28,12 @@ _T = TypeVar("_T")
 System and model functions
 """
 def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
-    result = torch.stack((*tensor_arr.ravel(),), dim=dim)
-    if tensor_arr.ndim > 1:
-        return result.unflatten(dim, tensor_arr.shape)
-    elif tensor_arr.ndim == 1:
-        return result
+    tensor_list = [*tensor_arr.ravel()]
+    if isinstance(t := tensor_list[0], torch.Tensor):
+        result = torch.stack(tensor_list, dim=dim)
     else:
-        return result.squeeze(dim)
+        result = TensorDict.maybe_dense_stack(tensor_list, dim=dim)
+    return result.reshape(*tensor_arr.shape, *t.shape)
 
 def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, TensorDict[str, torch.Tensor]]:
     params, buffers = torch.func.stack_module_state(module_arr.ravel().tolist())
@@ -56,13 +55,13 @@ def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, Tens
     return module_arr.ravel()[0].to(DEVICE), td.to(DEVICE)
 
 def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, TensorDict[str, torch.Tensor]]:
-    flattened_td = torch.stack([
+    flattened_td = TensorDict.maybe_dense_stack([
         TensorDict({
             k: v
             for k in dir(module) if isinstance((v := getattr(module, k)), torch.Tensor)
         }, batch_size=())
         for module in module_arr.ravel()
-    ])
+    ], dim=0)
     td = flattened_td.reshape(module_arr.shape)
     return module_arr.ravel()[0], td.to(DEVICE)
 

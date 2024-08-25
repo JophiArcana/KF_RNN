@@ -39,7 +39,7 @@ class Predictor(Observer):
         L = dataset.shape[-1]
 
         # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
+        _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
         splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int)
@@ -70,7 +70,7 @@ class Predictor(Observer):
         L = dataset.shape[-1]
 
         # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        _dataset = dataset.view(*ensembled_kfs.shape, -1, L)
+        _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
         splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int)
