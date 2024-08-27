@@ -30,7 +30,7 @@ class RnnPredictorAnalytical(RnnPredictor):
                          exclusive: Namespace,
                          ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                          cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs,

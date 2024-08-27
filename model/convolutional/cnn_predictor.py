@@ -32,7 +32,7 @@ class CnnPredictorLeastSquares(CnnPredictor):
                             exclusive: Namespace,
                             ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                             cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs,
             CnnPredictorLeastSquares.vmap_train_least_squares, cache
@@ -130,7 +130,7 @@ class CnnPredictorAnalytical(CnnPredictor):
                          exclusive: Namespace,
                          ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                          cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: utils.double_vmap(exclusive_.reference_module._analytical_initialization)(
@@ -167,7 +167,7 @@ class CnnPredictorAnalyticalLeastSquares(CnnPredictor):
                                               exclusive: Namespace,
                                               ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                                               cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         def newton_analytical(exclusive_: Namespace) -> Tuple[Dict[str, Dict[str, torch.Tensor]], torch.Tensor]:
             # DONE: Remove parameters that do not require gradients before flattening
@@ -219,7 +219,7 @@ class CnnPredictorLeastSquaresRandomStep(CnnPredictorLeastSquares):
                           exclusive: Namespace,
                           ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                           cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: ({
                 k: v + torch.normal(0., torch.abs(ensembled_learned_kfs[k].data - v))
@@ -238,7 +238,7 @@ class CnnPredictorLeastSquaresNegation(CnnPredictorLeastSquares):
                        exclusive: Namespace,
                        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                        cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: ({
                 k: 2 * v - ensembled_learned_kfs[k].data

@@ -152,7 +152,7 @@ class SequentialPredictor(Predictor):
             for l in range(L):
                 result.append(r := self._forward(state_estimation, actions[:, l], observations[:, l]))
                 state_estimation = r["environment", "state"]
-            return torch.stack(result, dim=-1).to_dict()
+            return TensorDict.maybe_dense_stack(result, dim=-1).to_dict()
         else:
             state_estimations, observation_estimations = [], []
             result_generic = self._forward_generic(actions, observations, mode)

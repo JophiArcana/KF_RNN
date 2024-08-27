@@ -229,6 +229,7 @@ if __name__ == "__main__":
             epochs=2000, gradient_cutoff=1e-6,
         )
         ARGS_BASELINE_RNN.training.iterations_per_epoch = 20
+
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn
     
         configurations_rnn = [

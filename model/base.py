@@ -123,9 +123,9 @@ class Predictor(Observer):
                                              ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                                              initialization_func: Callable[[
                                                  Namespace
-                                             ], Tuple[Dict[str, torch.Tensor], torch.Tensor]],
+                                             ], Tuple[Dict[str, Any], torch.Tensor]],
                                              cache: Namespace
-    ) -> Tuple[torch.Tensor, bool]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         def terminate_condition() -> bool:
             return getattr(cache, "done", False)
         assert not terminate_condition()
@@ -140,7 +140,7 @@ class Predictor(Observer):
             cache.done = True
             error = cache.initialization_error
         cache.t += 1
-        return error[None], terminate_condition()
+        return error[None], {}, terminate_condition()
 
     """ forward
         :parameter {

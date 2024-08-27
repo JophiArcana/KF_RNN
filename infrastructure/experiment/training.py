@@ -54,7 +54,7 @@ def _get_optimizer_and_scheduler(
     if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
         return optimizer, scheduler
     else:
-        scheduler_params.epochs += warmup_duration
+        scheduler_params.epochs += (warmup_duration - 1)
         warmup = optim.lr_scheduler.LinearLR(
             optimizer, start_factor=optimizer_params.min_lr / optimizer_params.max_lr,
             total_iters=warmup_duration,
@@ -69,7 +69,7 @@ TrainFunc = Callable[[
     Namespace,
     TensorDict[str, torch.Tensor],
     Namespace
-], Tuple[torch.Tensor, bool]]
+], Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]]
 
 def _sample_dataset_indices(
         dataset: TensorDict[str, torch.Tensor],
@@ -163,7 +163,7 @@ def _train_default(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],
         cache: Namespace
-) -> Tuple[torch.Tensor, bool]:
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
     def terminate_condition() -> bool:
         if THP.scheduler.epochs is None:
             reference_module = exclusive.reference_module.eval()
@@ -242,12 +242,15 @@ def _train_default(
         result.append(_losses)
 
         cache.optimizer.step(closure)
+    cache.t += 1
 
     result = torch.stack(result, dim=0)
-    utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
+    log = {"learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"])}
 
-    cache.t += 1
-    return result, terminate_condition()
+    if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
+        utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
+
+    return result, log, terminate_condition()
 
 # Full training scheme
 def _run_training(
@@ -352,15 +355,12 @@ def _run_training(
 
             # DONE: Train on train dataset, passing in only train dataset and dataloader, and save the learning rate
             exclusive.reference_module.train()
-            train_result, done = training_func(exclusive, ensembled_learned_kfs, cache)
+            train_result, log, done = training_func(exclusive, ensembled_learned_kfs, cache)
             r["training"] = train_result.detach()[0]
 
             # DONE: Check if training uses an LR scheduler, otherwise log the LR as NaN
-            if hasattr(cache, "optimizer"):
-                lr = cache.optimizer.param_groups[0]["lr"]
-            else:
-                lr = torch.nan
-            r["learning_rate"] = torch.full(r.shape, lr)
+            for k, v in log.items():
+                r[k] = v.expand(r.shape)
 
             # DONE: Reshape the result and append to results
             results.append(r)
@@ -368,9 +368,9 @@ def _run_training(
             # DONE: Print losses
             if ((cache.t - 1) % print_frequency == 0) or (training_func is not DEFAULT_TRAINING_FUNC):
                 mean_losses = [
-                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(-1).median(-1).values.mean())
+                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(dim=-1).median(dim=-1).values.mean())
                     # (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean())
-                    for loss_type in ("training", *(lt for lt in Metrics.keys() if lt in metrics), "learning_rate")
+                    for loss_type in ("training", *metrics, *log.keys())
                 ]
                 print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
 
