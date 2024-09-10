@@ -33,7 +33,7 @@ if __name__ == "__main__":
     n_test_systems = 3
     test_dataset_size = 256
 
-    rnn_increment = 5
+    rnn_increment = 1
 
     S_D, O_D = 10, 5
     SHP = Namespace(S_D=S_D, problem_shape=Namespace(
@@ -66,17 +66,17 @@ if __name__ == "__main__":
     ARGS_CHAIN_INITIALIZATION.training.sampling = Namespace(method="full")
     ARGS_CHAIN_INITIALIZATION.training.optimizer = Namespace(
         type="SGD",
-        max_lr=1e-5, min_lr=1e-8,
+        min_lr=0.0,
         weight_decay=0.0, momentum=0.9
     )
     ARGS_CHAIN_INITIALIZATION.training.scheduler = Namespace(
         # type="reduce_on_plateau",
         # factor=0.5, patience=10, warmup_duration=0,
         type="exponential",
-        lr_decay=0.995, warmup_duration=0,
-        epochs=2000, gradient_cutoff=1e-6,
+        lr_decay=0.98, warmup_duration=0,
+        epochs=200, gradient_cutoff=1e-6,
     )
-    ARGS_CHAIN_INITIALIZATION.training.iterations_per_epoch = 20
+    ARGS_CHAIN_INITIALIZATION.training.iterations_per_epoch = 200
 
     ARGS_CHAIN_INITIALIZATION.experiment.n_experiments = n_test_systems
     ARGS_CHAIN_INITIALIZATION.experiment.ensemble_size = test_dataset_size
@@ -96,14 +96,18 @@ if __name__ == "__main__":
 
     # SECTION: Chain initialization setup
     output_fname_formatter = "result_{0}"
-    min_eqs = utils.ceildiv(S_D * (S_D + 2 * O_D), O_D) * 3
+
+    s = 0.25
+    min_eqs = 1 # int(s * utils.ceildiv(S_D * (S_D + 2 * O_D), O_D))
     results_chain_initialization = [*map(DimArray, result_exemplar[:utils.ceildiv(min_eqs, rnn_increment)])]  # DimArray uses 1-indexing, include both the zero-predictor and the minimum number of observations to fully constrain RNN parameters
 
+    scaling_lr, scaling_lr_decay = 1e-3, 0.95
     running_context_length = rnn_increment * (utils.ceildiv(min_eqs, rnn_increment) + 1)
     while running_context_length < context_length:
-        print(f"Sequence length {running_context_length} target: {al_exemplar[len(results_chain_initialization) - 1].item()} -> {al_exemplar[len(results_chain_initialization)].item()} " + "-" * 120)
+        print(f"Sequence length {running_context_length} target: {al_exemplar[running_context_length - 1].item()} -> {al_exemplar[running_context_length].item()} " + "-" * 120)
         args = utils.deepcopy_namespace(ARGS_CHAIN_INITIALIZATION)
         args.dataset.total_sequence_length.train = running_context_length
+        args.training.optimizer.max_lr = scaling_lr
 
         initialization = utils.multi_map(
             lambda pair: PTR(pair[1]), DimArray(
@@ -118,6 +122,9 @@ if __name__ == "__main__":
                 "fname": output_fname_formatter.format(running_context_length)
             }, initialization=initialization, save_experiment=True
         )[0])
+
+        running_context_length += 1
+        scaling_lr *= scaling_lr_decay
 
     raise Exception()
 
