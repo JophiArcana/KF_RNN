@@ -1,3 +1,4 @@
+import math
 from argparse import Namespace
 from typing import *
 
@@ -52,6 +53,33 @@ class RnnPredictorPretrainAnalytical(RnnPredictorAnalytical):
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return RnnPredictorAnalytical.train_analytical, default_train_func
+
+
+class RnnPredictorDiagonalState(SequentialPredictor):
+    def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
+        SequentialPredictor.__init__(self, modelArgs)
+        self.S_D = modelArgs.S_D
+
+        self._C = nn.Parameter(initialization.get("F", torch.tensor([
+            math.comb(self.S_D, k) * ((-1 + 0.) ** k)
+            for k in range(self.S_D, 0, -1)
+        ])))
+        self.B = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((self.S_D, d)))
+            for k, d in vars(self.problem_shape.controller).items()
+        })
+        self.H = nn.Parameter(initialization.get('H', torch.zeros((self.O_D, self.S_D))))
+        self.K = nn.Parameter(initialization.get('K', torch.zeros((self.S_D, self.O_D))))
+
+    @property
+    def F(self):
+        companion_matrix = torch.diag(torch.ones((self.S_D - 1,)), diagonal=-1)
+        companion_matrix[:, -1] = -self._C
+
+
+        print(companion_matrix)
+        return torch.diag(torch.linalg.eigvals(companion_matrix))
+
 
 
 
