@@ -46,7 +46,7 @@ if __name__ == "__main__":
     test_dataset_size = 256
     
     n_firs = 5
-    rnn_increment = 5
+    rnn_increment = 1
     
     save_file = f"output/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
@@ -207,7 +207,7 @@ if __name__ == "__main__":
                 "fname": output_fname
             }, save_experiment=True
         )
-    
+
     
     
         """ RNN Experiment """
@@ -218,7 +218,7 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN.training.sampling = Namespace(method="full")
         ARGS_BASELINE_RNN.training.optimizer = Namespace(
             type="SGD",
-            max_lr=1e-3, min_lr=1e-6,
+            max_lr=1e-3, min_lr=1e-7,
             weight_decay=0.0, momentum=0.9
         )
         ARGS_BASELINE_RNN.training.scheduler = Namespace(
@@ -255,8 +255,8 @@ if __name__ == "__main__":
             result_rnn=result_rnn
         )
         torch.save(save, save_file)
-    
-    
+    torch.cuda.empty_cache()
+
     M_transformer = get_metric_namespace_from_result(result_transformer)
     M_cnn = get_metric_namespace_from_result(result_cnn)
     M_rnn = get_metric_namespace_from_result(result_rnn)
