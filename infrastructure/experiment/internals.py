@@ -237,7 +237,7 @@ def _construct_info_dict(
 
             def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> PTR:
                 sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
-                dataset = sg.generate_dataset(max_batch_size, max_sequence_length)
+                dataset = sg.generate_dataset(max_batch_size, max_sequence_length).detach()
 
                 if ds_type == TRAINING_DATASET_TYPES[0]:
                     return PTR(dataset.unflatten(2, (HP.experiment.ensemble_size, max_dataset_size)).permute(0, 2, 1, 3, 4))

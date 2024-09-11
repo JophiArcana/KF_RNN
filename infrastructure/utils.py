@@ -74,11 +74,7 @@ def run_module_arr(
     if "TensorDict" in type(args).__name__:
         args = args.to_dict()
 
-    module_td = TensorDict({
-        k if isinstance(k, str) else ".".join(k): v
-        for k, v in module_td.items(include_nested=True, leaves_only=True)
-    }, batch_size=module_td.shape)
-
+    module_td = TensorDict(td_items(module_td), batch_size=module_td.shape)
     try:
         def vmap_run(module_d, ags):
             return nn.utils.stateless.functional_call(reference_module, module_d, ags, kwargs)
@@ -86,7 +82,7 @@ def run_module_arr(
             vmap_run = torch.func.vmap(vmap_run, randomness="different")
         return vmap_run(module_td.to_dict(), args)
     except RuntimeError:
-        n = np.prod(module_td.shape)
+        n = int(np.prod(module_td.shape))
         flat_args, args_spec = tree_flatten(args)
         single_flat_args_list = [
             [t.view(n, *t.shape[module_td.ndim:])[idx] for t in flat_args]
@@ -118,6 +114,12 @@ def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
                 parent_module.register_module(k, _buffer_dict(nn.Module(), v))
         return parent_module
     return _buffer_dict(nn.Module(), td)
+
+def td_items(td: TensorDict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    return {
+        k if isinstance(k, str) else ".".join(k): v
+        for k, v in td.items(include_nested=True, leaves_only=True)
+    }
 
 def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], total_sequence_length: int) -> TensorDict[str, torch.Tensor]:
     batch_size, sequence_length = ds.shape[-2:]

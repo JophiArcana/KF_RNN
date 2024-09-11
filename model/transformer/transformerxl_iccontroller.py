@@ -14,13 +14,6 @@ class TransformerXLInContextController(TransformerController):
         TransformerController.__init__(self, modelArgs, self.config.d_model)
 
         self.core = TransfoXLModel(self.config)
-        if modelArgs.bias:
-            b = torch.randn((self.S_D,)) / (self.S_D ** 0.5)
-            self.input_bias = nn.Parameter(b)
-            self.observation_bias = nn.Parameter(-b)
-        else:
-            self.register_buffer("input_bias", torch.zeros((self.S_D,)))
-            self.register_buffer("observation_bias", torch.zeros((self.S_D,)))
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]

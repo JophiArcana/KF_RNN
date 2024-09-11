@@ -24,6 +24,14 @@ class TransformerPredictor(Predictor):
         for v in self.input_in.values():
             nn.init.kaiming_normal_(v)
 
+        if modelArgs.bias:
+            b = torch.randn((self.S_D,)) / (self.S_D ** 0.5)
+            self.input_bias = nn.Parameter(b)
+            self.observation_bias = nn.Parameter(-b)
+        else:
+            self.register_buffer("input_bias", torch.zeros((self.S_D,)))
+            self.register_buffer("observation_bias", torch.zeros((self.S_D,)))
+
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
         # assert L <= self.n_positions, f"Trace length must be at most the context length of the transformer but got {self.n_positions}."

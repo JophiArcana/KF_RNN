@@ -38,39 +38,38 @@ class SystemGroup(ModuleGroup):
                                              sequence_length: int
     ) -> TensorDict[str, torch.Tensor]:
         controller_arr = np.array(controller_arr)
-        with torch.set_grad_enabled(False):
-            group_shape = torch.broadcast_shapes(
-                self.group_shape,
-                *(controller.group_shape for controller in controller_arr.ravel())
-            )
+        group_shape = torch.broadcast_shapes(
+            self.group_shape,
+            *(controller.group_shape for controller in controller_arr.ravel())
+        )
 
-            action = utils.stack_tensor_arr(utils.multi_map(
-                lambda controller: controller.get_zero_knowledge_action(batch_size).expand(*group_shape, batch_size),
-                controller_arr, dtype=TensorDict
-            ))
-            state = self.environment.sample_initial_state(batch_size).expand(*controller_arr.shape, *group_shape, batch_size)
+        action = utils.stack_tensor_arr(utils.multi_map(
+            lambda controller: controller.get_zero_knowledge_action(batch_size).expand(*group_shape, batch_size),
+            controller_arr, dtype=TensorDict
+        ))
+        state = self.environment.sample_initial_state(batch_size).expand(*controller_arr.shape, *group_shape, batch_size)
 
-            def construct_timestep(
-                    ac: TensorDict[str, torch.Tensor],  # [C... x N... x B x ...]
-                    st: TensorDict[str, torch.Tensor]   # [C... x N... x B x ...]
-            ) -> TensorDict[str, torch.Tensor]:         # [C... x N... x B x 1 x ...]
-                return TensorDict({
-                    "environment": st,
-                    "controller": ac
-                }, batch_size=(*controller_arr.shape, *group_shape, batch_size)).unsqueeze(-1)
+        def construct_timestep(
+                ac: TensorDict[str, torch.Tensor],  # [C... x N... x B x ...]
+                st: TensorDict[str, torch.Tensor]   # [C... x N... x B x ...]
+        ) -> TensorDict[str, torch.Tensor]:         # [C... x N... x B x 1 x ...]
+            return TensorDict({
+                "environment": st,
+                "controller": ac
+            }, batch_size=(*controller_arr.shape, *group_shape, batch_size)).unsqueeze(-1)
 
-            history = construct_timestep(action, state)
-            for _ in range(sequence_length - 1):
-                action_arr = np.empty_like(controller_arr)
-                for idx, controller in utils.multi_enumerate(controller_arr):
-                    action_arr[idx] = controller.act(history[idx])
-                action = utils.stack_tensor_arr(action_arr)                                 # [C... x N... x B x ...]
-                state = self.environment.step(history["environment"][..., -1], action)      # [C... x N... x B x ...]
-                history = torch.cat([
-                    history,
-                    construct_timestep(action, state)
-                ], dim=-1)
-            return history
+        history = construct_timestep(action, state)
+        for _ in range(sequence_length - 1):
+            action_arr = np.empty_like(controller_arr)
+            for idx, controller in utils.multi_enumerate(controller_arr):
+                action_arr[idx] = controller.act(history[idx])
+            action = utils.stack_tensor_arr(action_arr)                                 # [C... x N... x B x ...]
+            state = self.environment.step(history["environment"][..., -1], action)      # [C... x N... x B x ...]
+            history = torch.cat([
+                history,
+                construct_timestep(action, state)
+            ], dim=-1)
+        return history
 
 
 class SystemDistribution(object):
