@@ -37,14 +37,13 @@ class Predictor(Observer):
     ) -> TensorDict[str, torch.Tensor]:
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
-
+        
         # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
         _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int)
-        splits = torch.tensor(sorted(set(splits.tolist())))
-
+        splits = torch.unique(torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int))        
+        
         _result_list = []
         for lo, hi in zip(splits[:-1], splits[1:]):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
@@ -55,8 +54,7 @@ class Predictor(Observer):
                 kwargs
             ), batch_size=_dataset_slice.shape))
 
-        _result = torch.cat(_result_list, dim=n)
-        return _result.view(dataset.shape)
+        return torch.cat(_result_list, dim=n).view(dataset.shape)
 
     @classmethod
     def gradient(cls,
@@ -73,8 +71,7 @@ class Predictor(Observer):
         _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int)
-        splits = torch.tensor(sorted(set(splits.tolist())))
+        splits = torch.unique(torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int))
 
         _result_list = []
         for lo, hi in zip(splits[:-1], splits[1:]):
@@ -88,8 +85,7 @@ class Predictor(Observer):
                 torch.autograd.grad(out, (*params.values(),), allow_unused=True)
             )), batch_size=_dataset_slice.shape))
 
-        _result = torch.cat(_result_list, dim=n)
-        return _result.view(dataset.shape)
+        return torch.cat(_result_list, dim=n).view(dataset.shape)
 
     @classmethod
     def evaluate_run(cls,
@@ -109,7 +105,7 @@ class Predictor(Observer):
                               ensembled_learned_kfs: TensorDict[str, torch.Tensor]
     ) -> TensorDict[str, torch.Tensor]:
         reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
-        for k, v in utils.td_items(ensembled_learned_kfs):
+        for k, v in utils.td_items(ensembled_learned_kfs).items():
             t = utils.rgetattr(reference_module, k)
             if isinstance(t, nn.Parameter):
                 reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)

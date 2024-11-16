@@ -258,7 +258,7 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 10000,
+        checkpoint_frequency: int = 20,
         print_frequency: int = 1,
 ) -> TensorDict:
 
