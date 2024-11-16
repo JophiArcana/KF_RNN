@@ -270,7 +270,10 @@ if __name__ == "__main__":
     dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
-        return (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
+        env = systems.environment
+        reducible_error = (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
+        irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
+        return reducible_error + irreducible_error
     
     with torch.set_grad_enabled(False):
         zero_predictor_al = systems.zero_predictor_loss.environment.observation
@@ -383,6 +386,7 @@ if __name__ == "__main__":
             if l.ndim == 1:
                 plt.plot(cd(x_), cd(l), **plt_kwargs, zorder=12)
             else:
+                # plt.plot(cd(x_), cd(l.mean(dim=0)), zorder=12, **plt_kwargs)
                 plt.plot(cd(x_), cd(l.median(dim=0).values), zorder=12, **plt_kwargs)
                 if error_bars:
                     plt.fill_between(
@@ -443,14 +447,14 @@ if __name__ == "__main__":
         plt.xscale("log")
         plt.xlabel("context_length")
         plt.yscale("log")
-        plt.ylim(bottom=1e-3, top=2e0)
+        # plt.ylim(bottom=1e-3, top=2e0)
         plt.ylabel(r"normalized_loss: $|| F_\theta(\tau_t) - \tau_t ||^2 - || KF(\tau_t) - \tau_t ||^2$")
     
         plt.legend(framealpha=1.0)
         plt.show()
     
     for sys_idx in range(n_test_systems):
-        plot(sys_idx, True)
+        plot(sys_idx, False)
 
 
 
