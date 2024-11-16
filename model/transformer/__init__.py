@@ -1,6 +1,9 @@
 from .gpt2_icpredictor import GPT2InContextPredictor
+from .gptneox_icpredictor import GPTNeoXInContextPredictor
+from .llama_icpredictor import LlamaInContextPredictor
 from .transformerxl_icpredictor import TransformerXLInContextPredictor
 from .transformerxl_iccontroller import TransformerXLInContextController
+from .xlnet_icpredictor import XLNetInContextPredictor
 
 
 

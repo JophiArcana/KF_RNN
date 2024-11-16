@@ -19,7 +19,7 @@ class SystemGroup(ModuleGroup):
                  environment: EnvironmentGroup,
                  controller: ControllerGroup
     ):
-        ModuleGroup.__init__(self, torch.broadcast_shapes(
+        ModuleGroup.__init__(self, utils.broadcast_shapes(
             environment.group_shape,
             controller.group_shape
         ))
@@ -38,7 +38,7 @@ class SystemGroup(ModuleGroup):
                                              sequence_length: int
     ) -> TensorDict[str, torch.Tensor]:
         controller_arr = np.array(controller_arr)
-        group_shape = torch.broadcast_shapes(
+        group_shape = utils.broadcast_shapes(
             self.group_shape,
             *(controller.group_shape for controller in controller_arr.ravel())
         )

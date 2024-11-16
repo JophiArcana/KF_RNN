@@ -66,7 +66,7 @@ if __name__ == "__main__":
     ARGS_CHAIN_INITIALIZATION.training.sampling = Namespace(method="full")
     ARGS_CHAIN_INITIALIZATION.training.optimizer = Namespace(
         type="SGD",
-        min_lr=0.0,
+        # min_lr=0.0,
         weight_decay=0.0, momentum=0.9
     )
     ARGS_CHAIN_INITIALIZATION.training.scheduler = Namespace(
@@ -97,17 +97,17 @@ if __name__ == "__main__":
     # SECTION: Chain initialization setup
     output_fname_formatter = "result_{0}"
 
-    s = 0.25
-    min_eqs = 1 # int(s * utils.ceildiv(S_D * (S_D + 2 * O_D), O_D))
+    s = 1.0
+    min_eqs = int(s * utils.ceildiv(S_D * (S_D + 2 * O_D), O_D))
     results_chain_initialization = [*map(DimArray, result_exemplar[:utils.ceildiv(min_eqs, rnn_increment)])]  # DimArray uses 1-indexing, include both the zero-predictor and the minimum number of observations to fully constrain RNN parameters
 
-    scaling_lr, scaling_lr_decay = 1e-3, 0.95
+    scaling_lr, scaling_lr_decay = 1e-5, 0.97
     running_context_length = rnn_increment * (utils.ceildiv(min_eqs, rnn_increment) + 1)
     while running_context_length < context_length:
         print(f"Sequence length {running_context_length} target: {al_exemplar[running_context_length - 1].item()} -> {al_exemplar[running_context_length].item()} " + "-" * 120)
         args = utils.deepcopy_namespace(ARGS_CHAIN_INITIALIZATION)
         args.dataset.total_sequence_length.train = running_context_length
-        args.training.optimizer.max_lr = scaling_lr
+        args.training.optimizer.max_lr = args.training.optimizer.min_lr = scaling_lr
 
         initialization = utils.multi_map(
             lambda pair: PTR(pair[1]), DimArray(

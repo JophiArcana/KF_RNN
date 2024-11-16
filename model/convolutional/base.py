@@ -17,7 +17,7 @@ class ConvolutionalPredictor(Predictor):
     ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
-        shape = torch.broadcast_shapes(kfs.shape, systems.shape)
+        shape = utils.broadcast_shapes(kfs.shape, systems.shape)
         default_td = TensorDict({}, batch_size=shape)
 
         Q = utils.complex(kfs["observation_IR"])                                                        # [B... x O_D x R x O_D]

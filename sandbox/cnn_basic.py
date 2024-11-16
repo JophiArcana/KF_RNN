@@ -1,9 +1,7 @@
-import os
-import sys
-
+#%%
 # This line needs to be added since some terminals will not recognize the current directory
-if os.getcwd() not in sys.path:
-    sys.path.insert(0, os.getcwd())
+import sys
+sys.path.append("/home/wenliao/KF_RNN")
 
 from infrastructure import loader
 from infrastructure.experiment import *
@@ -20,14 +18,14 @@ if __name__ == "__main__":
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
     args.model.S_D = args.system.S_D
 
-    args.train.sampling.batch_size = 64
-    args.train.sampling.subsequence_length = 32
+    args.training.sampling.batch_size = 64
+    args.training.sampling.subsequence_length = 32
 
     # args.train.optimizer.type = "LBFGS"
     # args.train.optimizer.max_lr = 1.0
 
     # del args.train.scheduler.warmup_duration
-    args.train.scheduler.epochs = 2000
+    args.training.scheduler.epochs = 2000
 
 
     args.experiment.exp_name = base_exp_name
@@ -36,10 +34,9 @@ if __name__ == "__main__":
 
     configurations = [
         ("model", {
-            "model.model": [CnnPredictor, CnnPredictorLeastSquares]
+            # "model.model": [CnnPredictor, CnnPredictorLeastSquares]
+            "model.model": [CnnPredictorLeastSquares]
         }),
-
-
         ("total_trace_length", {
             "dataset.train.total_sequence_length": [100, 200, 500, 1000, 2000, 5000, 10000]
         })
@@ -60,3 +57,5 @@ if __name__ == "__main__":
 
 
 
+
+# %%

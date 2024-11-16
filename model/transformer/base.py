@@ -35,7 +35,6 @@ class TransformerPredictor(Predictor):
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
         # assert L <= self.n_positions, f"Trace length must be at most the context length of the transformer but got {self.n_positions}."
-
         embd_dict = self.trace_to_embedding(trace)
 
         observation_embds = torch.cat([
@@ -45,7 +44,11 @@ class TransformerPredictor(Predictor):
         action_embds = sum(embd_dict["controller"].values())    # [B x L x S_D]
         embds = observation_embds + action_embds                # [B x L x S_D]
 
-        out = self.core(inputs_embeds=embds).last_hidden_state  # [B x L x S_D]
+        out = self.core.forward(
+            inputs_embeds=embds[:3],
+            output_hidden_states=True,
+            attention_mask=trace["mask"].to(torch.float) if "mask" in trace else None
+        ).hidden_states[-1]                                     # [B x L x S_D]
         return self.embedding_to_output({"environment": out})
 
     def trace_to_embedding(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:

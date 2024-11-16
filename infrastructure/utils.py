@@ -75,14 +75,15 @@ def run_module_arr(
         args = args.to_dict()
 
     module_td = TensorDict(td_items(module_td), batch_size=module_td.shape)
+    n = int(np.prod(module_td.shape))
     try:
+        assert n > 1
         def vmap_run(module_d, ags):
             return nn.utils.stateless.functional_call(reference_module, module_d, ags, kwargs)
         for _ in range(module_td.ndim):
             vmap_run = torch.func.vmap(vmap_run, randomness="different")
         return vmap_run(module_td.to_dict(), args)
-    except RuntimeError:
-        n = int(np.prod(module_td.shape))
+    except (AssertionError, RuntimeError):
         flat_args, args_spec = tree_flatten(args)
         single_flat_args_list = [
             [t.view(n, *t.shape[module_td.ndim:])[idx] for t in flat_args]
@@ -460,6 +461,10 @@ def call_func_with_kwargs(func: Callable, args: Tuple[Any, ...], kwargs: Dict[st
     }
     return func(*required_args, *additional_args, **valid_kwargs)
 
+def broadcast_shapes(*shapes: Tuple[int, ...]):
+    def to_tuple(shape: Tuple[int, ...]) -> Tuple[int, ...]:
+        return (*map(int, shape),)
+    return to_tuple(torch.broadcast_shapes(*map(to_tuple, shapes)))
 
 """ Plotting code """
 def color(z: float, scale: float = 120.) -> np.ndarray:

@@ -199,10 +199,10 @@ def _construct_info_dict(
     result["system_params"] = system_params_arr
 
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
-    systems_arr = utils.multi_map(
-        lambda sg: type(sg)(sg.problem_shape, sg.auxiliary, sg.td()),
-        systems_arr, dtype=SystemGroup
-    )
+    # systems_arr = utils.multi_map(
+    #     lambda sg: type(sg)(sg.problem_shape, sg.auxiliary, sg.td()),
+    #     systems_arr, dtype=SystemGroup
+    # )
     result["systems"] = systems_arr
 
 

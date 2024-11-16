@@ -26,7 +26,7 @@ class SequentialPredictor(Predictor):
     ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
-        shape = torch.broadcast_shapes(kfs.shape, systems.shape)
+        shape = utils.broadcast_shapes(kfs.shape, systems.shape)
         default_td = TensorDict({}, batch_size=shape)
 
         Fh = utils.complex(kfs["F"])                                                                    # [B... x S_Dh x S_Dh]

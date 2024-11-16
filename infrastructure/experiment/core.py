@@ -354,7 +354,7 @@ def run_testing_experiments(
             if save_experiment:
                 # TODO: Save if backup frequency or if it was the last experiment
                 backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
-                if (backup_frequency is not None and counter % backup_frequency == 0) or (done.sum().item() + 1 == done.size):
+                if (backup_frequency is not None and (counter + 1) % backup_frequency == 0) or (done.sum().item() + 1 == done.size):
                     print("\n" + "#" * 160)
                     torch.save(result, caching_output_fname)
                     print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
