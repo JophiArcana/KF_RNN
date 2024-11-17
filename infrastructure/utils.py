@@ -323,6 +323,9 @@ class DefaultingParameter(Namespace):
 
     def __getattr__(self, item):
         return vars(self).get(item, vars(self)[self._default_key])
+    
+    def default(self):
+        return vars(self)[self._default_key]
 
     def update(self, **kwargs) -> None:
         vars(self).update(kwargs)
