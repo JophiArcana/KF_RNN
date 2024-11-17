@@ -1,7 +1,7 @@
 #%%
 # This line needs to be added since some terminals will not recognize the current directory
 import sys
-sys.path.append("/home/wenliao/KF_RNN")
+sys.path.append("/workspace/KF_RNN")
 
 from argparse import Namespace
 
@@ -28,7 +28,7 @@ if __name__ == "__main__":
     # args = loader.generate_args(SHP)
 
     system2, args = loader.load_system_and_args("data/2dim_scalar_system_matrices")
-    total_dataset_length = 1000
+    total_dataset_length = 2000
 
     args.model.ridge = 1.0
     args.dataset.dataset_size.reset(train=1)
@@ -61,10 +61,8 @@ if __name__ == "__main__":
         }),
         ("total_trace_length", {
             "dataset.total_sequence_length.train": [*range(10, total_dataset_length + 1)]
+            # "dataset.total_sequence_length.train": [10, 20, 50, 100, 200, 500, 1000, 2000]
         }),
-        # ("state_dimension", {
-        #     "model.S_D": list(range(3, max_state_dimension + 1))
-        # })
     ]
 
     result, _, _ = run_experiments(
@@ -73,14 +71,10 @@ if __name__ == "__main__":
             "fname": output_fname
         }, system2, save_experiment=True
     )
-    # result, _, _ = run_experiments(
-    #     args, configurations, {
-    #         "dir": output_dir,
-    #         "fname": output_fname
-    #     }, save_experiment=True
-    # )
     plot_experiment(f"{output_dir}/{base_exp_name}", configurations, result, loss_type="analytical", lstsq=False, xscale="log")
 
 
 
 
+
+# %%
