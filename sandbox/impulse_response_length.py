@@ -5,12 +5,9 @@ sys.path.append("/home/wenliao/KF_RNN")
 
 from argparse import Namespace
 
-import torch
-from matplotlib import pyplot as plt
-
 from infrastructure import loader
 from infrastructure.experiment import run_experiments, plot_experiment, get_result_attr
-from model.convolutional import CnnPredictorLeastSquares, CnnPredictorAnalytical, CnnPredictorAnalyticalLeastSquares
+from model.convolutional import CnnLeastSquaresPredictor, CnnAnalyticalPredictor, CnnAnalyticalLeastSquaresPredictor
 
 
 if __name__ == "__main__":
@@ -20,7 +17,7 @@ if __name__ == "__main__":
 
     system2, args = loader.load_system_and_args("data/6dim_scalar_system_matrices")
 
-    args.dataset.total_sequence_length.reset(train=10000)
+    args.dataset.total_sequence_length.reset(train=100)
     args.experiment.metrics = Namespace(
         training={"validation_analytical"},
         testing={"al", "il"}
@@ -31,9 +28,9 @@ if __name__ == "__main__":
     configurations = [
         ("model", {
             "model.model": [
-                CnnPredictorLeastSquares,
-                CnnPredictorAnalytical,
-                CnnPredictorAnalyticalLeastSquares
+                CnnLeastSquaresPredictor,
+                CnnAnalyticalPredictor,
+                CnnAnalyticalLeastSquaresPredictor,
             ]
         }),
         ("ir_length", {
@@ -52,5 +49,3 @@ if __name__ == "__main__":
 
 
 
-
-# %%

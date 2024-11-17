@@ -12,6 +12,7 @@ from infrastructure import utils
 from infrastructure.experiment.training import TrainFunc
 from model.base import Predictor
 from model.convolutional.base import ConvolutionalPredictor
+from model.least_squares_predictor import LeastSquaresPredictor
 
 
 class CnnPredictor(ConvolutionalPredictor):
@@ -26,25 +27,10 @@ class CnnPredictor(ConvolutionalPredictor):
         self.observation_IR = nn.Parameter(torch.zeros((self.O_D, self.ir_length, self.O_D)))   # [O_D x R x O_D]
 
 
-class CnnPredictorLeastSquares(CnnPredictor):
-    @classmethod
-    def train_least_squares(cls,
-                            exclusive: Namespace,
-                            ensembled_learned_kfs: TensorDict[str, torch.Tensor],
-                            cache: Namespace
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
-        return Predictor._train_with_initialization_and_error(
-            exclusive, ensembled_learned_kfs,
-            CnnPredictorLeastSquares.vmap_train_least_squares, cache
-        )
-
-    @classmethod
-    def vmap_train_least_squares(cls, exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        return utils.double_vmap(exclusive_.reference_module._least_squares_initialization)(exclusive_.train_info.dataset.obj.to_dict())
-
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return CnnPredictorLeastSquares.train_least_squares,
+class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
+    def __init__(self, modelArgs: Namespace):
+        CnnPredictor.__init__(self, modelArgs)
+        LeastSquaresPredictor.__init__(self, modelArgs)
 
     """ forward
         :parameter {
@@ -59,21 +45,16 @@ class CnnPredictorLeastSquares(CnnPredictor):
 
         B, L = observations.shape[:2]
 
-        # DONE: Implement online least squares for memory efficiency
-        split = [0]
-        while split[-1] != L:
-            split.append(min(split[-1] + min(L, 1 << 16), L))
-
         padded_observations = torch.cat([                                                       # [B x L x O_D]
             torch.zeros((B, 1, self.O_D)),
             observations[:, :-1],
             torch.zeros((B, 1, self.O_D))
         ], dim=1)
-        padded_actions = torch.cat([
+        padded_actions = TensorDict.cat([
             actions, actions[:, -1:].apply(torch.zeros_like)
         ], dim=1)                                                                               # [B x L x ...]
 
-        ac_names = list(padded_actions.keys())
+        ac_names = list(actions.keys())
         flattened_padded_data = torch.cat([
             *map(padded_actions.__getitem__, ac_names), padded_observations
         ], dim=-1)                                                                              # [B x L x F]
@@ -83,15 +64,15 @@ class CnnPredictorLeastSquares(CnnPredictor):
         XTy = torch.zeros((r_, self.O_D))                                                       # [RF x O_D]
         yTy = torch.zeros((self.O_D, self.O_D))                                                 # [O_D x O_D]
 
-        for i in range(len(split) - 1):
-            lo, hi = split[i], split[i + 1]
-            l = hi - lo
-
-            indices = (torch.arange(lo, hi)[:, None] - torch.arange(self.ir_length)).clamp_min(-1)  # [l x R]
+        # DONE: Implement online least squares for memory efficiency
+        n_chunks = utils.ceildiv(L, 1 << 16)
+        for chunk_indices in torch.chunk(torch.arange(L), chunks=n_chunks, dim=0):
+            l = len(chunk_indices)
+            indices = (chunk_indices[:, None] - torch.arange(self.ir_length)).clamp_min(-1)     # [l x R]
 
             X = flattened_padded_data[:, indices]                                               # [B x l x R x F]
             flattened_X = X.view((B * l, self.ir_length * cum_lengths[-1]))                     # [Bl x RF]
-            flattened_observations = observations[:, lo:hi].reshape((B * l, self.O_D))          # [Bl x O_D]
+            flattened_observations = observations[:, chunk_indices].reshape((B * l, self.O_D))  # [Bl x O_D]
 
             XTX = XTX + (flattened_X.mT @ flattened_X)
             XTy = XTy + (flattened_X.mT @ flattened_observations)
@@ -103,7 +84,6 @@ class CnnPredictorLeastSquares(CnnPredictor):
         flattened_w = XTX_lI_inv @ XTy
         w = flattened_w.unflatten(0, (self.ir_length, -1)).transpose(0, 1)                      # [F x R x O_D]
 
-
         error = torch.trace(yTy + XTy.mT @ (XTX_lI_inv @ XTX @ XTX_lI_inv - 2 * XTX_lI_inv) @ XTy) / (B * L)
         return {
             "input_IR": {
@@ -113,18 +93,14 @@ class CnnPredictorLeastSquares(CnnPredictor):
             "observation_IR": w[-self.O_D:]
         }, error
 
-    def __init__(self, modelArgs: Namespace):
-        CnnPredictor.__init__(self, modelArgs)
-        self.ridge = getattr(modelArgs, "ridge", 0.)
 
-
-class CnnPredictorPretrainLeastSquares(CnnPredictorLeastSquares):
+class CnnLeastSquaresPretrainPredictor(CnnLeastSquaresPredictor):
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return CnnPredictorLeastSquares.train_least_squares, default_train_func
+        return cls.train_least_squares, default_train_func
 
 
-class CnnPredictorAnalytical(CnnPredictor):
+class CnnAnalyticalPredictor(CnnPredictor):
     @classmethod
     def train_analytical(cls,
                          exclusive: Namespace,
@@ -140,7 +116,7 @@ class CnnPredictorAnalytical(CnnPredictor):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return CnnPredictorAnalytical.train_analytical,
+        return cls.train_analytical,
 
     def _analytical_initialization(self, system_state_dict: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, Dict[str, torch.Tensor]], torch.Tensor]:
         F, H, K = map(system_state_dict["environment"].__getitem__, ("F", "H", "K"))
@@ -161,7 +137,7 @@ class CnnPredictorAnalytical(CnnPredictor):
         self._initialization_error: torch.Tensor = None
 
 
-class CnnPredictorAnalyticalLeastSquares(CnnPredictor):
+class CnnAnalyticalLeastSquaresPredictor(CnnPredictor):
     @classmethod
     def train_analytical_least_squares_newton(cls,
                                               exclusive: Namespace,
@@ -210,10 +186,10 @@ class CnnPredictorAnalyticalLeastSquares(CnnPredictor):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return CnnPredictorAnalyticalLeastSquares.train_analytical_least_squares_newton,
+        return cls.train_analytical_least_squares_newton,
 
 
-class CnnPredictorLeastSquaresRandomStep(CnnPredictorLeastSquares):
+class CnnLeastSquaresRandomStepPredictor(CnnLeastSquaresPredictor):
     @classmethod
     def train_random_step(cls,
                           exclusive: Namespace,
@@ -223,16 +199,16 @@ class CnnPredictorLeastSquaresRandomStep(CnnPredictorLeastSquares):
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: ({
                 k: v + torch.normal(0., torch.abs(ensembled_learned_kfs[k].data - v))
-                for k, v in CnnPredictorLeastSquares.vmap_train_least_squares(exclusive_)[0].items()
+                for k, v in cls.vmap_train_least_squares(exclusive_)[0].items()
             }, torch.full((), torch.nan)), cache
         )
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return CnnPredictorLeastSquares.train_least_squares, default_train_func, CnnPredictorLeastSquaresRandomStep.train_random_step
+        return cls.train_least_squares, default_train_func, cls.train_random_step
 
 
-class CnnPredictorLeastSquaresNegation(CnnPredictorLeastSquares):
+class CnnLeastSquaresNegationPredictor(CnnLeastSquaresPredictor):
     @classmethod
     def train_negation(cls,
                        exclusive: Namespace,
@@ -242,13 +218,13 @@ class CnnPredictorLeastSquaresNegation(CnnPredictorLeastSquares):
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: ({
                 k: 2 * v - ensembled_learned_kfs[k].data
-                for k, v in CnnPredictorLeastSquares.vmap_train_least_squares(exclusive_)[0].items()
+                for k, v in cls.vmap_train_least_squares(exclusive_)[0].items()
             }, torch.full((), torch.nan)), cache
         )
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return CnnPredictorLeastSquares.train_least_squares, default_train_func, CnnPredictorLeastSquaresNegation.train_negation
+        return cls.train_least_squares, default_train_func, cls.train_negation
 
 
 

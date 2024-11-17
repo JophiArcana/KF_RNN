@@ -33,7 +33,7 @@ class Predictor(Observer):
             ensembled_kfs: TensorDict[str, torch.Tensor],
             dataset: TensorDict[str, torch.Tensor],
             kwargs: Dict[str, Any] = MappingProxyType(dict()),
-            split_size: int = 1 << 17
+            split_size: int = 1 << 17,
     ) -> TensorDict[str, torch.Tensor]:
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
@@ -42,19 +42,16 @@ class Predictor(Observer):
         _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.unique(torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int))        
-        
-        _result_list = []
-        for lo, hi in zip(splits[:-1], splits[1:]):
-            _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
+        _result_list, n_chunks = [], utils.ceildiv(_dataset_size, split_size)
+        for chunk_indices in torch.chunk(torch.arange(_dataset_size), chunks=n_chunks, dim=0):
+            _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _result_list.append(TensorDict.from_dict(utils.run_module_arr(
                 reference_module,
                 ensembled_kfs,
                 _dataset_slice,
                 kwargs
             ), batch_size=_dataset_slice.shape))
-
-        return torch.cat(_result_list, dim=n).view(dataset.shape)
+        return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
 
     @classmethod
     def gradient(cls,
@@ -71,11 +68,9 @@ class Predictor(Observer):
         _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
-        splits = torch.unique(torch.round(_dataset.shape[n] * torch.linspace(0, 1, utils.ceildiv(_dataset_size, split_size) + 1)).to(torch.int))
-
-        _result_list = []
-        for lo, hi in zip(splits[:-1], splits[1:]):
-            _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, lo:hi].view(*ensembled_kfs.shape, hi - lo, L)
+        _result_list, n_chunks = [], utils.ceildiv(_dataset_size, split_size)
+        for chunk_indices in torch.chunk(torch.arange(_dataset_size), chunks=n_chunks, dim=0):
+            _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
 
             out = Predictor.run(reference_module, ensembled_kfs, _dataset_slice)[..., -1]["environment", "observation"].norm() ** 2
@@ -84,8 +79,7 @@ class Predictor(Observer):
                 params.keys(),
                 torch.autograd.grad(out, (*params.values(),), allow_unused=True)
             )), batch_size=_dataset_slice.shape))
-
-        return torch.cat(_result_list, dim=n).view(dataset.shape)
+        return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
 
     @classmethod
     def evaluate_run(cls,

@@ -187,7 +187,7 @@ def _train_default(
     if not hasattr(cache, "optimizer"):
         # TODO: Set up the dataset index sampler
         dataset: TensorDict[str, torch.tensor] = exclusive.train_info.dataset.obj
-        cache.padded_train_dataset = torch.cat([
+        cache.padded_train_dataset = TensorDict.cat([
             dataset, dataset[..., -1:].apply(torch.zeros_like)
         ], dim=-1)
 

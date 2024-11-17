@@ -104,7 +104,7 @@ def run_module_arr(
         return tree_unflatten(flat_out, out_spec)
 
 def double_vmap(func: Callable) -> Callable:
-    return torch.vmap(torch.vmap(func))
+    return torch.vmap(torch.vmap(func, randomness="different"), randomness="different")
 
 def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
     def _buffer_dict(parent_module: nn.Module, td: TensorDict[str, torch.Tensor]) -> nn.Module:
@@ -121,6 +121,13 @@ def td_items(td: TensorDict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         k if isinstance(k, str) else ".".join(k): v
         for k, v in td.items(include_nested=True, leaves_only=True)
     }
+
+def parameter_td(m: nn.Module) -> TensorDict[str, torch.Tensor]:
+    result = TensorDict({}, batch_size=())
+    for k, v in m.named_parameters():
+        k_ = (*k.split("."),)
+        result[k_[0] if len(k_) == 1 else k_] = v
+    return result
 
 def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], total_sequence_length: int) -> TensorDict[str, torch.Tensor]:
     batch_size, sequence_length = ds.shape[-2:]
@@ -167,6 +174,9 @@ def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tens
 
 def ceildiv(a: int, b: int) -> int:
     return -(-a // b)
+
+def ceil(a: int) -> int:
+    return ceildiv(a, 1)
 
 def hadamard_conjugation(
         A: torch.Tensor,        # [B... x m x n]
