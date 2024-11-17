@@ -35,7 +35,7 @@ def run_experiments(
     for param_group, params in iterparams:
         _training_params, _testing_params = {}, {}
         for n, v in params.items():
-            (_testing_params if n.startswith("dataset.test.") else _training_params)[n] = v
+            (_testing_params if re.match("dataset(\\..*\\.|\\.)test$", n) else _training_params)[n] = v
         if len(_training_params) > 0:
             training_iterparams.append((param_group, _training_params))
 
@@ -135,9 +135,9 @@ def run_training_experiments(
     # SECTION: Run the experiments for hyperparameter sweeps
     # DONE: Filter out the hyperparameter sweeps that do not influence training
     cache.train_dimensions = _filter_dimensions_if_any_satisfy_condition(
-        dimensions, lambda param: not param.startswith("dataset.") or param.startswith("dataset.train.")
+        dimensions, lambda param: not re.match("dataset\\.", param) or re.match("dataset(\\..*\\.|\\.)train$", param)
     )
-
+    
     # Result setup
     if save_experiment and os.path.exists(caching_output_fname):
         try:

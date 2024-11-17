@@ -19,13 +19,15 @@ if __name__ == "__main__":
     output_fname = "result"
 
     system2, args = loader.load_system_and_args("data/6dim_scalar_system_matrices")
+    total_dataset_length = 10000
     
-    args.dataset.total_sequence_length.reset(train=10000)
+    args.model.S_D = args.system.S_D.default()
+    args.dataset.total_sequence_length.reset(valid=total_dataset_length, test=total_dataset_length)
     args.training.sampling = Namespace(method="full")
     args.training.optimizer = Namespace(
-        type="SGD",
+        type="AdamW",
         max_lr=1e-3, min_lr=1e-7,
-        weight_decay=0.0, momentum=0.9
+        weight_decay=0.0,
     )
     args.training.scheduler = Namespace(
         type="exponential",
