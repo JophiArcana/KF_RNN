@@ -2,6 +2,7 @@ from argparse import Namespace
 from typing import *
 
 import einops
+import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict, NonTensorData
@@ -18,7 +19,7 @@ class RnnPredictor(SequentialPredictor):
         SequentialPredictor.__init__(self, modelArgs)
         self.S_D = modelArgs.S_D
 
-        self.F = nn.Parameter(initialization.get("F", (1 - 1e-6) * torch.eye(self.S_D)))
+        self.F = nn.Parameter(initialization.get("F", (1 - self.eps) * torch.eye(self.S_D)))
         self.B = nn.ParameterDict({
             k: nn.Parameter(torch.zeros((self.S_D, d)))
             for k, d in vars(self.problem_shape.controller).items()
@@ -56,6 +57,33 @@ class RnnAnalyticalPretrainPredictor(RnnAnalyticalPredictor):
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return cls.train_analytical, default_train_func
+
+
+class RnnCompanionPredictor(SequentialPredictor):
+    def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
+        SequentialPredictor.__init__(self, modelArgs)
+        self.S_D = modelArgs.S_D
+
+        if "F" in initialization:
+            eigvals = torch.linalg.eigvals(initialization["F"])
+        else:
+            eigvals = torch.full((self.S_D,), 1 - self.eps)
+        init_coefficients = torch.tensor(np.polynomial.Polynomial.fromroots(eigvals).coef)
+        self.C = nn.Parameter(-init_coefficients[:-1])
+
+        self.B = nn.ParameterDict({
+            k: nn.Parameter(torch.zeros((self.S_D, d)))
+            for k, d in vars(self.problem_shape.controller).items()
+        })
+        self.H = nn.Parameter(initialization.get("H", torch.zeros((self.O_D, self.S_D))))
+        nn.init.kaiming_normal_(self.H)
+        self.K = nn.Parameter(initialization.get("K", torch.zeros((self.S_D, self.O_D))))
+
+    @property
+    def F(self) -> torch.Tensor:
+        F = torch.diag(torch.ones((self.S_D - 1,)), diagonal=-1)
+        F[:, -1] = self.C
+        return F
 
 
 class RnnLeastSquaresPredictor(RnnPredictor, LeastSquaresPredictor):

@@ -11,6 +11,8 @@ from model.base import Predictor, Controller
 
 
 class SequentialPredictor(Predictor):
+    eps: float = 1e-6
+
     @classmethod
     def _evaluate_form(cls,
                        state: torch.Tensor,         # [B x S_D]
