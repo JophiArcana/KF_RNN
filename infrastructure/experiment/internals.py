@@ -221,6 +221,11 @@ def _construct_info_dict(
         )):
             print(f"Generating new dataset for dataset type {ds_type}")
             dataset_dimensions = OrderedDict([*zip(systems_arr.dims, systems_arr.shape)])
+            # TODO: Figure out what I wrote this line for
+            # dataset_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
+            #     dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)
+            # ))
+            
             dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
                 _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.dataset_size.{ds_type}", dtype=int),
                 _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
