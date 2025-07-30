@@ -102,7 +102,11 @@ def load_system_and_args(folder: str):
     }}, batch_size=()).expand(args.dataset.n_systems.train, args.experiment.n_experiments), settings)
     return {"train": DimArray(utils.array_of(system_group), dims=[])}, args_from(args)
 
+
 def generate_args(shp: Namespace) -> Namespace:
+    for k in ("auxiliary", "settings",):
+        if not hasattr(shp, k):
+            setattr(shp, k, Namespace())
     return args_from(utils.deepcopy_namespace(Namespace(
         system=shp,
         dataset=BaseDatasetArgs,
