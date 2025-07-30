@@ -24,7 +24,7 @@ class TransformerPredictor(Predictor):
         for v in self.input_in.values():
             nn.init.kaiming_normal_(v)
 
-        if modelArgs.bias:
+        if getattr(modelArgs, "bias", False):
             b = torch.randn((self.S_D,)) / (self.S_D ** 0.5)
             self.input_bias = nn.Parameter(b)
             self.observation_bias = nn.Parameter(-b)
@@ -45,7 +45,7 @@ class TransformerPredictor(Predictor):
         embds = observation_embds + action_embds                # [B x L x S_D]
 
         out = self.core.forward(
-            inputs_embeds=embds[:3],
+            inputs_embeds=embds,
             output_hidden_states=True,
             attention_mask=trace["mask"].to(torch.float) if "mask" in trace else None
         ).hidden_states[-1]                                     # [B x L x S_D]

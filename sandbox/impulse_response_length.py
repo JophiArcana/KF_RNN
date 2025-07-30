@@ -8,6 +8,7 @@ from argparse import Namespace
 from infrastructure import loader
 from infrastructure.experiment import run_experiments, plot_experiment, get_result_attr
 from model.convolutional import CnnLeastSquaresPredictor, CnnAnalyticalPredictor, CnnAnalyticalLeastSquaresPredictor
+from system.linear_time_invariant import OrthonormalDistribution
 
 
 if __name__ == "__main__":
@@ -16,11 +17,26 @@ if __name__ == "__main__":
     output_fname = "result"
 
     system2, args = loader.load_system_and_args("data/6dim_scalar_system_matrices")
+    # dist = OrthonormalDistribution()
+    # SHP = Namespace(
+    #     distribution=dist, S_D=6,
+    #     problem_shape=Namespace(
+    #         environment=Namespace(observation=6),
+    #         controller=Namespace()
+    #     ),
+    #     auxiliary=Namespace(),
+    #     settings=Namespace(include_analytical=False),
+    # )
+    # args = loader.generate_args(SHP)
+    # system2 = None
+
+
+
 
     args.dataset.total_sequence_length.reset(train=100)
     args.experiment.metrics = Namespace(
         training={"validation_analytical"},
-        testing={"al", "il"}
+        testing={"al", "il"},
     )
     args.experiment.exp_name = base_exp_name
 

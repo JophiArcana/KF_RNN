@@ -19,8 +19,8 @@ from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
-from model.convolutional import CnnPredictorLeastSquares
-from model.sequential import RnnPredictorPretrainAnalytical
+from model.convolutional import CnnLeastSquaresPredictor
+from model.sequential import RnnAnalyticalPretrainPredictor
 from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LTISystem, MOPDistribution
@@ -113,7 +113,6 @@ if __name__ == "__main__":
         )
         ARGS_TRANSFORMER.training.iterations_per_epoch = 50
 
-    
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
@@ -124,15 +123,16 @@ if __name__ == "__main__":
                 "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor],
             })
         ]
-    
+
         result_transformer, systems, dataset = run_experiments(
             ARGS_TRANSFORMER, configurations_transformer, {
                 "dir": output_dir,
                 "fname": output_fname
-            }, save_experiment=True
+            }, save_experiment=True,
         )
-    
-    
+
+
+
         """ Baseline experiment setup """
         exp_name_cnn = "CDCReconstruction_cnn"
         exp_name_rnn = "CDCReconstruction_rnn"
@@ -140,24 +140,22 @@ if __name__ == "__main__":
         for _exp_name_baseline in (exp_name_cnn, exp_name_rnn):
             os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/training", exist_ok=True)
             os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/testing", exist_ok=True)
-    
-    
+
             if not all(map(os.path.exists, (
                 f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt",
-                f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt"
+                f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt",
             ))):
                 baseline_systems = utils.multi_map(
                     lambda lsg: LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().permute(1, 0)),
                     systems, dtype=LTISystem
                 )
                 torch.save({
-                    "train": baseline_systems
+                    "train": baseline_systems,
                 }, f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt")
                 torch.save({
-                    "test": baseline_systems
+                    "test": baseline_systems,
                 }, f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt")
-    
-    
+
             if not all(map(os.path.exists, (
                 f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
                 f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt"
@@ -165,7 +163,7 @@ if __name__ == "__main__":
                 baseline_dataset = utils.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
                 torch.save({
                     "train": baseline_dataset,
-                    "valid": baseline_dataset
+                    "valid": baseline_dataset,
                 }, f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt")
                 torch.save({
                     "test": baseline_dataset,
@@ -196,7 +194,7 @@ if __name__ == "__main__":
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [CnnPredictorLeastSquares] * (context_length - 1),
+                "model.model": [ZeroPredictor] + [CnnLeastSquaresPredictor] * (context_length - 1),
                 "dataset.total_sequence_length.train": [*range(context_length),]
             })
         ]
@@ -205,11 +203,11 @@ if __name__ == "__main__":
             ARGS_BASELINE_CNN, configurations_cnn, {
                 "dir": output_dir,
                 "fname": output_fname
-            }, save_experiment=True
+            }, save_experiment=True,
         )
 
-    
-    
+
+
         """ RNN Experiment """
         # SECTION: Set RNN exclusive hyperparameters
         ARGS_BASELINE_RNN.model.S_D = SHP.S_D
@@ -234,7 +232,7 @@ if __name__ == "__main__":
     
         configurations_rnn = [
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * (utils.ceildiv(context_length, rnn_increment) - 1),
+                "model.model": [ZeroPredictor] + [RnnAnalyticalPretrainPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
                 "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
             })
         ]
@@ -243,7 +241,7 @@ if __name__ == "__main__":
             ARGS_BASELINE_RNN, configurations_rnn, {
                 "dir": output_dir,
                 "fname": output_fname
-            }, save_experiment=True
+            }, save_experiment=True,
         )
     
         # SECTION: Save the collected experiment results

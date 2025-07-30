@@ -1,6 +1,7 @@
 from argparse import Namespace
 from typing import *
 
+import numpy as np
 import torch
 from tensordict import TensorDict
 
@@ -23,7 +24,10 @@ class LeastSquaresPredictor(Predictor):
 
     @classmethod
     def vmap_train_least_squares(cls, exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        return utils.double_vmap(exclusive_.reference_module._least_squares_initialization)(exclusive_.train_info.dataset.obj.to_dict())
+        return utils.multi_vmap(
+            exclusive_.reference_module._least_squares_initialization, 2,
+            randomness="different",
+        )(exclusive_.train_info.dataset.obj.to_dict())
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:

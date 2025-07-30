@@ -31,25 +31,25 @@ def _get_optimizer_and_scheduler(
 
     scheduler_params = THP.scheduler
     scheduler_type = scheduler_params.type
-    if scheduler_type == "cosine":
-        scheduler = utils.call_func_with_kwargs(
-            optim.lr_scheduler.CosineAnnealingWarmRestarts,
-            (optimizer, scheduler_params.T_0), vars(scheduler_params)
-        )
-        scheduler_params.epochs = scheduler_params.T_0 * ((scheduler_params.T_mult ** scheduler_params.num_restarts - 1) // (scheduler_params.T_mult - 1))
-    elif scheduler_type == "exponential":
-        scheduler = utils.call_func_with_kwargs(
-            optim.lr_scheduler.ExponentialLR,
-            (optimizer, scheduler_params.lr_decay), vars(scheduler_params)
-        )
-    elif scheduler_type == "reduce_on_plateau":
-        scheduler = utils.call_func_with_kwargs(
-            optim.lr_scheduler.ReduceLROnPlateau,
-            (optimizer,), vars(scheduler_params)
-        )
-    else:
-        raise ValueError(scheduler_type)
-
+    match scheduler_type:
+        case "cosine":
+            scheduler = utils.call_func_with_kwargs(
+                optim.lr_scheduler.CosineAnnealingWarmRestarts,
+                (optimizer, scheduler_params.T_0), vars(scheduler_params)
+            )
+            scheduler_params.epochs = scheduler_params.T_0 * ((scheduler_params.T_mult ** scheduler_params.num_restarts - 1) // (scheduler_params.T_mult - 1))
+        case "exponential":
+            scheduler = utils.call_func_with_kwargs(
+                optim.lr_scheduler.ExponentialLR,
+                (optimizer, scheduler_params.lr_decay), vars(scheduler_params)
+            )
+        case "reduce_on_plateau":
+            scheduler = utils.call_func_with_kwargs(
+                optim.lr_scheduler.ReduceLROnPlateau,
+                (optimizer,), vars(scheduler_params)
+            )
+        case _:
+            raise ValueError(scheduler_type)
 
     if (warmup_duration := getattr(scheduler_params, "warmup_duration", 0)) == 0:
         return optimizer, scheduler
@@ -87,35 +87,35 @@ def _sample_dataset_indices(
     mask = dataset["mask"].flatten(0, -3)[0]
     train_sequence_lengths = mask.sum(dim=1)
 
-
     sample_method = kwargs["method"]
-    if sample_method == "full":
-        return add_system_indices(TensorDict({
-            "sequence": torch.arange(dataset_size, dtype=torch.int),
-            "start": torch.zeros((dataset_size,), dtype=torch.int),
-            "stop": train_sequence_lengths
-        }, batch_size=(dataset_size,))).expand(*index_outer_shape, n_systems * dataset_size)
+    match sample_method:
+        case "full":
+            return add_system_indices(TensorDict({
+                "sequence": torch.arange(dataset_size, dtype=torch.int),
+                "start": torch.zeros((dataset_size,), dtype=torch.int),
+                "stop": train_sequence_lengths
+            }, batch_size=(dataset_size,))).expand(*index_outer_shape, n_systems * dataset_size)
 
-    elif sample_method == "subsequence_padded":
-        sequence_indices, stop_indices_n1 = torch.where(mask)
-        index_dataset = add_system_indices(TensorDict({
-            "sequence": sequence_indices,
-            "start": stop_indices_n1 - kwargs["subsequence_length"] + 1,
-            "stop": stop_indices_n1 + 1
-        }, batch_size=(len(sequence_indices),)))
-        return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
+        case "subsequence_padded":
+            sequence_indices, stop_indices_n1 = torch.where(mask)
+            index_dataset = add_system_indices(TensorDict({
+                "sequence": sequence_indices,
+                "start": stop_indices_n1 - kwargs["subsequence_length"] + 1,
+                "stop": stop_indices_n1 + 1
+            }, batch_size=(len(sequence_indices),)))
+            return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
 
-    elif sample_method == "subsequence_unpadded":
-        sequence_indices, start_indices = torch.where(mask[:, kwargs["subsequence_length"] - 1:])
-        index_dataset = add_system_indices(TensorDict({
-            "sequence": sequence_indices,
-            "start": start_indices,
-            "stop": start_indices + kwargs["subsequence_length"]
-        }, batch_size=(len(sequence_indices),)))
-        return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
+        case "subsequence_unpadded":
+            sequence_indices, start_indices = torch.where(mask[:, kwargs["subsequence_length"] - 1:])
+            index_dataset = add_system_indices(TensorDict({
+                "sequence": sequence_indices,
+                "start": start_indices,
+                "stop": start_indices + kwargs["subsequence_length"]
+            }, batch_size=(len(sequence_indices),)))
+            return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
 
-    else:
-        raise ValueError(sample_method)
+        case _:
+            raise ValueError(sample_method)
 
 def _extract_dataset_from_indices(
         padded_train_dataset: TensorDict[str, torch.Tensor],
@@ -303,7 +303,8 @@ def _run_training(
             cache_: Namespace
     ):
         return _train_default(THP, exclusive_, ensembled_learned_kfs_, cache_)
-    training_funcs: List[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
+    training_funcs: List[TrainFunc] = exclusive.reference_module.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
+    # training_funcs: List[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
     
     # TODO: Run training functions starting from checkpoint if it exists
     counter = 1
@@ -433,10 +434,13 @@ def _run_unit_training_experiment(
     for loss_type in ("zero_predictor_loss", "irreducible_loss"):
         print(f"Mean {loss_type.replace('_', ' ')} {'-' * 80}")
         for ds_type, ds_info in vars(info).items():
-            print(f"\t{ds_type}:", utils.multi_map(
-                lambda sg: utils.map_dict(sg.td()[loss_type], avg),
-                ds_info.systems, dtype=dict
-            ))
+            try:
+                print(f"\t{ds_type}:", utils.multi_map(
+                    lambda sg: utils.map_dict(sg.td()[loss_type], avg),
+                    ds_info.systems, dtype=dict
+                ))
+            except Exception:
+                pass
     return {
         "output": PTR(_run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach()),
         "learned_kfs": (reference_module, ensembled_learned_kfs),

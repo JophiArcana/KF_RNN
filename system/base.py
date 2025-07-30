@@ -17,11 +17,11 @@ class SystemGroup(ModuleGroup):
                  problem_shape: Namespace,
                  auxiliary: Namespace,
                  environment: EnvironmentGroup,
-                 controller: ControllerGroup
+                 controller: ControllerGroup,
     ):
         ModuleGroup.__init__(self, utils.broadcast_shapes(
             environment.group_shape,
-            controller.group_shape
+            controller.group_shape,
         ))
         self.problem_shape = problem_shape
         self.auxiliary = auxiliary
@@ -32,10 +32,11 @@ class SystemGroup(ModuleGroup):
     def generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict[str, torch.Tensor]:
         return self.generate_dataset_with_controller_arr(utils.array_of(self.controller), batch_size, sequence_length)
 
-    def generate_dataset_with_controller_arr(self,
-                                             controller_arr: np.typing.ArrayLike,
-                                             batch_size: int,
-                                             sequence_length: int
+    def generate_dataset_with_controller_arr(
+        self,
+        controller_arr: np.typing.ArrayLike,
+        batch_size: int,
+        sequence_length: int,
     ) -> TensorDict[str, torch.Tensor]:
         controller_arr = np.array(controller_arr)
         group_shape = utils.broadcast_shapes(
@@ -51,7 +52,7 @@ class SystemGroup(ModuleGroup):
 
         def construct_timestep(
                 ac: TensorDict[str, torch.Tensor],  # [C... x N... x B x ...]
-                st: TensorDict[str, torch.Tensor]   # [C... x N... x B x ...]
+                st: TensorDict[str, torch.Tensor],  # [C... x N... x B x ...]
         ) -> TensorDict[str, torch.Tensor]:         # [C... x N... x B x 1 x ...]
             return TensorDict({
                 "environment": st,
@@ -79,9 +80,10 @@ class SystemDistribution(object):
     def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
         raise NotImplementedError()
 
-    def sample(self,
-               SHP: Namespace,
-               shape: Tuple[int, ...]
+    def sample(
+        self,
+        SHP: Namespace,
+        shape: Tuple[int, ...],
     ) -> SystemGroup:
         return self.system_type(SHP.problem_shape, SHP.auxiliary, self.sample_parameters(SHP, shape))
 

@@ -1,7 +1,9 @@
+import itertools
 from argparse import Namespace
 from collections import OrderedDict
 from typing import *
 
+import einops
 import numpy as np
 import torch
 import torch.nn as nn
@@ -32,66 +34,86 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         CnnPredictor.__init__(self, modelArgs)
         LeastSquaresPredictor.__init__(self, modelArgs)
 
-    """ forward
-        :parameter {
-            "input": [B x L x I_D],
-            "observation": [B x L x O_D]
-        }
-        :returns None
-    """
-    def _least_squares_initialization(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        trace = self.trace_to_td(trace).flatten(0, -2)
-        actions, observations = trace["controller"], trace["environment"]["observation"]
+    def train_func_list(self, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
+        return self.train_least_squares_online,
 
-        B, L = observations.shape[:2]
+    def train_least_squares_online(
+        self,
+        exclusive: Namespace,
+        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+        cache: Namespace
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
+        def terminate_condition() -> bool:
+            return cache.index >= cache.L
 
-        padded_observations = torch.cat([                                                       # [B x L x O_D]
-            torch.zeros((B, 1, self.O_D)),
-            observations[:, :-1],
-            torch.zeros((B, 1, self.O_D))
-        ], dim=1)
-        padded_actions = TensorDict.cat([
-            actions, actions[:, -1:].apply(torch.zeros_like)
-        ], dim=1)                                                                               # [B x L x ...]
+        # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
+        if not hasattr(cache, "index"):
+            # TODO: Set up the dataset index sampler
+            dataset: TensorDict[str, torch.tensor] = exclusive.train_info.dataset.obj
+            dataset = dataset.flatten(2, -2)
+            cache.bsz = dataset.shape[:2]
 
-        ac_names = list(actions.keys())
-        flattened_padded_data = torch.cat([
-            *map(padded_actions.__getitem__, ac_names), padded_observations
-        ], dim=-1)                                                                              # [B x L x F]
-        cum_lengths = [0] + np.cumsum([*map(vars(self.problem_shape.controller).__getitem__, ac_names), self.O_D]).tolist()
+            cache.B, cache.L = dataset.shape[-2:]
+            cache.index = 0
 
-        XTX = torch.zeros((r_ := self.ir_length * cum_lengths[-1], r_))                         # [RF x RF]
-        XTy = torch.zeros((r_, self.O_D))                                                       # [RF x O_D]
-        yTy = torch.zeros((self.O_D, self.O_D))                                                 # [O_D x O_D]
+            actions, observations = dataset["controller"], dataset["environment"]["observation"]
+            cache.observations = observations                                                   # float: [NE... x B x L x O_D]
+            cache.padded_observations = torch.cat([
+                torch.zeros_like(observations[..., :1, :]),
+                observations[..., :-1, :],
+                torch.zeros_like(observations[..., -1:, :]),
+            ], dim=-2)                                                                          # float: [NE... x B x (L + 1) x O_D]
 
-        # DONE: Implement online least squares for memory efficiency
-        n_chunks = utils.ceildiv(L, 1 << 16)
-        for chunk_indices in torch.chunk(torch.arange(L), chunks=n_chunks, dim=0):
-            l = len(chunk_indices)
-            indices = (chunk_indices[:, None] - torch.arange(self.ir_length)).clamp_min(-1)     # [l x R]
+            cache.ac_names = list(actions.keys())
+            padded_actions = TensorDict.cat([actions, actions[..., -1:].apply(torch.zeros_like),], dim=-1)
+            cache.padded_concatenated_data = torch.cat([
+                *map(padded_actions.__getitem__, cache.ac_names),
+                cache.padded_observations,
+            ], dim=-1)                                                                          # float: [NE... x B x L x F]
+            cache.cum_lengths = [0] + np.cumsum([*map(vars(self.problem_shape.controller).__getitem__, cache.ac_names), self.O_D]).tolist()
 
-            X = flattened_padded_data[:, indices]                                               # [B x l x R x F]
-            flattened_X = X.view((B * l, self.ir_length * cum_lengths[-1]))                     # [Bl x RF]
-            flattened_observations = observations[:, chunk_indices].reshape((B * l, self.O_D))  # [Bl x O_D]
+            cache.rf = self.ir_length * cache.cum_lengths[-1]
+            cache.X = torch.zeros((*cache.bsz, 0, cache.rf,))                                   # float: [NE... x 0 x RF]
+            cache.y = torch.zeros((*cache.bsz, 0, self.O_D,))                                   # float: [NE... x 0 x O_D]
+            cache.XTX = torch.zeros((*cache.bsz, cache.rf, cache.rf,))                          # float: [NE... x RF x RF]
+            cache.XTy = torch.zeros((*cache.bsz, cache.rf, self.O_D,))                          # float: [NE... x RF x O_D]
+            cache.yTy = torch.zeros((*cache.bsz, self.O_D, self.O_D,))                          # float: [NE... x O_D x O_D]
 
-            XTX = XTX + (flattened_X.mT @ flattened_X)
-            XTy = XTy + (flattened_X.mT @ flattened_observations)
-            yTy = yTy + (flattened_observations.mT @ flattened_observations)
+        increment = 1
+        old_index = cache.index
+        cache.index = min(cache.index + increment, cache.L)
 
-            torch.cuda.empty_cache()
+        chunk_indices = torch.arange(old_index, cache.index)                                    # int: [l]
+        indices = (chunk_indices[:, None] - torch.arange(self.ir_length)).clamp_min(-1)         # int: [l x R]
 
-        XTX_lI_inv = torch.inverse(XTX + self.ridge * torch.eye(r_))                            # [RF x RF]
-        flattened_w = XTX_lI_inv @ XTy
-        w = flattened_w.unflatten(0, (self.ir_length, -1)).transpose(0, 1)                      # [F x R x O_D]
+        X = cache.padded_concatenated_data[..., indices, :]                                     # float: [NE... x B x l x R x F]
+        y = cache.observations[..., chunk_indices, :]                                           # float: [NE... x B x l x O_D]
+        flattened_X = einops.rearrange(X, "... b l r f -> ... (b l) (r f)")                     # float: [NE... x Bl x RF]
+        flattened_y = einops.rearrange(y, "... b l d -> ... (b l) d")                           # float: [NE... x Bl x O_D]
 
-        error = torch.trace(yTy + XTy.mT @ (XTX_lI_inv @ XTX @ XTX_lI_inv - 2 * XTX_lI_inv) @ XTy) / (B * L)
-        return {
-            "input_IR": {
-                ac_name: w[cum_lengths[idx]:cum_lengths[idx + 1]]
-                for idx, ac_name in enumerate(ac_names)
-            },
-            "observation_IR": w[-self.O_D:]
-        }, error
+        cache.XTX = cache.XTX + (flattened_X.mT @ flattened_X)
+        cache.XTy = cache.XTy + (flattened_X.mT @ flattened_y)
+        cache.yTy = cache.yTy + (flattened_y.mT @ flattened_y)
+        try:
+            XTX_lI_inv = torch.inverse(cache.XTX + self.ridge * torch.eye(cache.rf))            # float: [NE... x RF x RF]
+            flattened_w = XTX_lI_inv @ cache.XTy                                                # float: [NE... x RF x O_D]
+            error = utils.batch_trace(
+                cache.yTy + cache.XTy.mT @ (XTX_lI_inv @ cache.XTX @ XTX_lI_inv - 2 * XTX_lI_inv) @ cache.XTy
+            ) / (cache.B * cache.L)                                                             # float: [NE...]
+        except Exception:
+            cache.X = torch.cat((cache.X, flattened_X,), dim=-2)
+            cache.y = torch.cat((cache.y, flattened_y,), dim=-2)
+            flattened_w = torch.linalg.pinv(cache.X) @ cache.y                                  # float: [NE... x RF x O_D]
+            error = torch.zeros(cache.bsz)                                                      # float: [NE...]
+
+        w = einops.rearrange(flattened_w, "... (r f) d -> ... f r d", r=self.ir_length)         # float: [NE... x F x R x O_D]
+        weights = [w[..., lo:hi, :, :] for lo, hi in itertools.pairwise(cache.cum_lengths)]
+        weights_dict = {"input_IR": dict(zip(cache.ac_names, weights[:-1])), "observation_IR": weights[-1],}
+        for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
+            ensembled_learned_kfs[k] = utils.rgetitem(weights_dict, k if isinstance(k, str) else ".".join(k)).expand_as(v)
+
+        cache.t += 1
+        return error[None], {}, terminate_condition()
 
 
 class CnnLeastSquaresPretrainPredictor(CnnLeastSquaresPredictor):
@@ -109,9 +131,10 @@ class CnnAnalyticalPredictor(CnnPredictor):
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return Predictor._train_with_initialization_and_error(
-            exclusive, ensembled_learned_kfs, lambda exclusive_: utils.double_vmap(exclusive_.reference_module._analytical_initialization)(
-                exclusive_.train_info.systems.td().to_dict()
-            ), cache
+            exclusive, ensembled_learned_kfs, lambda exclusive_: utils.multi_vmap(
+                exclusive_.reference_module._analytical_initialization, 2,
+                randomness="different",
+            )(exclusive_.train_info.systems.td().to_dict()), cache
         )
 
     @classmethod

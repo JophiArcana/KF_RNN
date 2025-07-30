@@ -15,20 +15,22 @@ class EnvironmentGroup(ModuleGroup):
         ModuleGroup.__init__(self, group_shape)
         self.problem_shape = problem_shape
 
-    def sample_initial_state(self,
-                             batch_size: int                # B
-    ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
+    def sample_initial_state(
+        self,
+        batch_size: int                             # B
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
         raise NotImplementedError()
 
-    def step(self,
-             state: TensorDict[str, torch.Tensor],          # [N... x B x ...]
-             action: TensorDict[str, torch.Tensor]          # [N... x B x ...]
-    ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
+    def step(
+        self,
+        state: TensorDict[str, torch.Tensor],       # [N... x B x ...]
+        action: TensorDict[str, torch.Tensor]       # [N... x B x ...]
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
         raise NotImplementedError()
 
 
 class LTIEnvironment(EnvironmentGroup):
-    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float):
+    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float, settings: Namespace,):
         EnvironmentGroup.__init__(self, problem_shape, params.shape)
 
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V"):
@@ -42,11 +44,11 @@ class LTIEnvironment(EnvironmentGroup):
             for k in vars(self.problem_shape.controller)
         })
 
-        if not torch.all(torch.linalg.eigvals(self.F).abs() < 1):
+        if not torch.all(torch.linalg.eigvals(self.F).abs() < 1 + 1e-9):
             raise RuntimeError(f"Eigenvalues of F matrix {self.F.clone().detach()} are unstable.")
 
         # SECTION: Define system group dimensions
-        self.S_D = self.F.shape[-1]                                                 # State dimension
+        self.S_D = self.F.shape[-1]                 # State dimension
         self.O_D = self.H.shape[-2]
 
         # SECTION: Compute all the system matrices
@@ -59,16 +61,19 @@ class LTIEnvironment(EnvironmentGroup):
             (Vinv @ torch.complex(self.S_W, torch.zeros_like(self.S_W)) @ Vinv.mT) / (1 - L.unsqueeze(-1) * L.unsqueeze(-2))
         ) @ V.mT).real)                                                                                             # [N... x S_D x S_D]
 
-        S_state_inf_intermediate = solve_discrete_are(self.F.mT, self.H.mT, self.S_W, self.S_V)                     # [N... x S_D x S_D]
-        self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
-        self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
-        self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
+        self.include_analytical: bool = getattr(settings, "include_analytical", True)
+        if self.include_analytical:
+            S_state_inf_intermediate = solve_discrete_are(self.F.mT, self.H.mT, self.S_W, self.S_V)                     # [N... x S_D x S_D]
+            self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
+            self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
+            self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
 
         self.initial_state_scale = initial_state_scale
 
-    def sample_initial_state(self,
-                             batch_size: int                # B
-    ) -> TensorDict[str, torch.Tensor]:                     # [N... x B x ...]
+    def sample_initial_state(
+        self,
+        batch_size: int                             # B
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
@@ -76,46 +81,57 @@ class LTIEnvironment(EnvironmentGroup):
         y = x @ self.H.mT + v
         noiseless_y = torch.zeros_like(y)
 
-        target_yh = torch.zeros_like(y)                                                                             # [C... x N... x B x O_D]
-        target_xh = y @ self.K.mT                                                                                   # [C... x N... x B x S_D]
+        if self.include_analytical:
+            target = {
+                "target_observation_estimation": torch.zeros_like(y),                                               # [C... x N... x B x O_D]
+                "target_state_estimation": y @ self.K.mT,                                                           # [C... x N... x B x S_D]
+            }
+        else:
+            target = {}
 
         return TensorDict({
             "state": x,
             "observation": y,
             "noiseless_observation": noiseless_y,
             # "w": w, "v": v,
-            "target_state_estimation": target_xh,
-            "target_observation_estimation": target_yh
+            **target,
         }, batch_size=(*self.group_shape, batch_size))
 
-    def step(self,
-             state: TensorDict[str, torch.Tensor],          # [C... x N... x B x ...]
-             action: TensorDict[str, torch.Tensor]          # [C... x N... x B x ...]
-    ) -> TensorDict[str, torch.Tensor]:                     # [C... x N... x B x ...]
+    def step(
+        self,
+        state: TensorDict[str, torch.Tensor],       # [C... x N... x B x ...]
+        action: TensorDict[str, torch.Tensor]       # [C... x N... x B x ...]
+    ) -> TensorDict[str, torch.Tensor]:             # [C... x N... x B x ...]
         batch_size = state.shape[-1]
 
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
-        x_, target_xh_ = state["state"], state["target_state_estimation"]                                           # [C... x N... x B x S_D]
-
+        x_ = state["state"]                                                                                         # [C... x N... x B x S_D]
         u = sum(action[ac_name] @ self.B[ac_name].mT for ac_name in vars(self.problem_shape.controller))            # [C... x N... x B x S_D]
 
         x = x_ @ self.F.mT + u + w
         y = x @ self.H.mT + v
         noiseless_y = (x_ @ self.F.mT + u) @ self.H.mT
 
-        target_xh = target_xh_ @ self.F.mT + u                                                                      # [C... x N... x B x S_D]
-        target_yh = target_xh @ self.H.mT                                                                           # [C... x N... x B x O_D]
-        target_xh = target_xh + (y - target_yh) @ self.K.mT                                                         # [C... x N... x B x S_D]
+        if self.include_analytical:
+            target_xh_ = state["target_state_estimation"]                                                           # [C... x N... x B x S_D]
+            target_xh = target_xh_ @ self.F.mT + u                                                                  # [C... x N... x B x S_D]
+            target_yh = target_xh @ self.H.mT                                                                       # [C... x N... x B x O_D]
+            target_xh = target_xh + (y - target_yh) @ self.K.mT                                                     # [C... x N... x B x S_D]
+            target = {
+                "target_state_estimation": target_xh,
+                "target_observation_estimation": target_yh,
+            }
+        else:
+            target = {}
 
         return TensorDict({
             "state": x,
             "observation": y,
             "noiseless_observation": noiseless_y,
             # "w": w, "v": v,
-            "target_state_estimation": target_xh,
-            "target_observation_estimation": target_yh
+            **target,
         }, batch_size=x.shape[:-1])
 
 

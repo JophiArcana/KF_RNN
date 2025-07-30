@@ -91,8 +91,9 @@ def run_module_arr(
         ]
         single_args_list = [tree_unflatten(single_flat_args, args_spec) for single_flat_args in single_flat_args_list]
 
+        # TODO: If this line breaks, replace `torch.func.functional_call` with `nn.utils.stateless.functional_call`
         single_out_list = [
-            nn.utils.stateless.functional_call(reference_module, module_td.view(n)[idx].to_dict(), single_args)
+            torch.func.functional_call(reference_module, module_td.view(n)[idx].to_dict(), single_args)
             for idx, single_args in enumerate(single_args_list)
         ]
         _, out_spec = tree_flatten(single_out_list[0])
@@ -103,8 +104,11 @@ def run_module_arr(
         ]
         return tree_unflatten(flat_out, out_spec)
 
-def double_vmap(func: Callable) -> Callable:
-    return torch.vmap(torch.vmap(func, randomness="different"), randomness="different")
+def multi_vmap(func: Callable, n: int, **kwargs: Any) -> Callable:
+    f = func
+    for _ in range(n):
+        f = torch.vmap(f, **kwargs)
+    return f
 
 def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
     def _buffer_dict(parent_module: nn.Module, td: TensorDict[str, torch.Tensor]) -> nn.Module:

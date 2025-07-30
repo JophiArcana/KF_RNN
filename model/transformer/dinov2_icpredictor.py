@@ -2,25 +2,25 @@ from argparse import Namespace
 
 import torch
 import torch.nn as nn
-from transformers import LlamaModel, LlamaForCausalLM
+from transformers import Dinov2Model
 
 from model.transformer.base import TransformerPredictor
 
 
-class LlamaInContextPredictor(TransformerPredictor):
+class Dinov2InContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config = modelArgs.llama
+        self.config = modelArgs.dinov2
         TransformerPredictor.__init__(self, modelArgs, self.config.hidden_size)
 
-        self.core = LlamaForCausalLM(self.config)
+        self.core = Dinov2Model(self.config)
 
 
-class LlamaAssociativeInContextPredictor(LlamaInContextPredictor):
+class Dinov2AssociativeInContextPredictor(Dinov2InContextPredictor):
     def __init__(self, modelArgs: Namespace):
-        LlamaInContextPredictor.__init__(self, modelArgs)
+        Dinov2InContextPredictor.__init__(self, modelArgs)
 
         self.cls_token = nn.Parameter(torch.randn((self.config.hidden_size,)) / (self.config.hidden_size ** 0.5))
-        self.layers = nn.Sequential(*self.core.model.layers)
+        self.obs_token = nn.Parameter(torch.randn((self.config.hidden_size,)) / (self.config.hidden_size ** 0.5))
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
@@ -37,10 +37,10 @@ class LlamaAssociativeInContextPredictor(LlamaInContextPredictor):
         attention_mask = trace["mask"].to(torch.float) if "mask" in trace else None
         out: list[torch.Tensor] = []
         for i, embd in enumerate(torch.unbind(embds, dim=-2)):
-            next_x = self.core.forward(
-                inputs_embeds=torch.stack((embd, x,), dim=-2),
-                output_hidden_states=True,
-            ).hidden_states[-1][..., -1, :]                     # [B x S_D]
+            next_x = self.core.encoder.forward(
+                torch.stack((embd + self.obs_token, x,), dim=-2),
+                return_dict=True,
+            ).last_hidden_state[..., -1, :]                     # [B x S_D]
             x = next_x if attention_mask is None else torch.where(attention_mask[..., i], next_x, x)
             out.append(x)
         out: torch.Tensor = torch.stack(out, dim=-2)            # [B x L x S_D]

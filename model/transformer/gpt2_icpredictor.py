@@ -1,5 +1,7 @@
 from argparse import Namespace
 
+import torch
+import torch.nn as nn
 from transformers import GPT2Model
 
 from model.transformer.base import TransformerPredictor

@@ -43,7 +43,7 @@ class Predictor(Observer):
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
         _result_list, n_chunks = [], utils.ceildiv(_dataset_size, split_size)
-        for chunk_indices in torch.chunk(torch.arange(_dataset_size), chunks=n_chunks, dim=0):
+        for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _result_list.append(TensorDict.from_dict(utils.run_module_arr(
                 reference_module,
@@ -69,7 +69,7 @@ class Predictor(Observer):
         _dataset_size = sum(v.numel() for _, v in _dataset.items())
 
         _result_list, n_chunks = [], utils.ceildiv(_dataset_size, split_size)
-        for chunk_indices in torch.chunk(torch.arange(_dataset_size), chunks=n_chunks, dim=0):
+        for chunk_indices in torch.chunk(torch.arange(_dataset_size.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
 
@@ -89,7 +89,7 @@ class Predictor(Observer):
                      batch_mean: bool = True
     ) -> torch.Tensor:
         losses = torch.norm(result - target_dict[target_key], dim=-1) ** 2  # [B... x N x B x L]
-        mask = target_dict.get("mask", torch.full((target_dict.shape[-1],), True))
+        mask = target_dict.get("mask", torch.full(target_dict.shape[-1:], True))
         result_ = torch.sum(losses * mask, dim=-1) / torch.sum(mask, dim=-1)
         return result_.mean(dim=-1) if batch_mean else result_
 

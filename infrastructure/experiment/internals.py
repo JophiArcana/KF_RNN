@@ -175,11 +175,11 @@ def _construct_info_dict(
                 system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
 
                 sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
-                return dist.system_type(sub_HP.system.problem_shape, sub_HP.system.auxiliary, system_params)
+                return dist.system_type(sub_HP.system.problem_shape, sub_HP.system.auxiliary, system_params, sub_HP.system.settings)
 
             systems_arr = _map_HP_with_params(
                 HP, system_dimensions, params_dataset,
-                construct_system_with_sub_hyperparameters, dtype=SystemGroup
+                construct_system_with_sub_hyperparameters, dtype=SystemGroup,
             )
         else:
             print(f"Defaulting to train systems for dataset type {ds_type}")
@@ -201,10 +201,9 @@ def _construct_info_dict(
     # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
     # systems_arr = utils.multi_map(
     #     lambda sg: type(sg)(sg.problem_shape, sg.auxiliary, sg.td()),
-    #     systems_arr, dtype=SystemGroup
+    #     systems_arr, dtype=SystemGroup,
     # )
     result["systems"] = systems_arr
-
 
     # DONE: Check for saved dataset, otherwise sample and save datasets
     dataset_support_hyperparameters = utils.nested_vars(HP.dataset).keys()

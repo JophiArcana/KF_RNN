@@ -42,11 +42,14 @@ class LinearControllerGroup(ControllerGroup):
     def act(self,
             history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
     ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
-        state = history[..., -1]["environment", "target_state_estimation"]  # [N... x B x S_D]
-        return TensorDict({
-            k: state @ -getattr(self.L, k).mT
-            for k in vars(self.problem_shape.controller)
-        }, batch_size=history.shape[:-1])
+        if len(vars(self.problem_shape.controller)) == 0:
+            return TensorDict({}, batch_size=history.shape[:-1])
+        else:
+            state = history[..., -1]["environment", "target_state_estimation"]  # [N... x B x S_D]
+            return TensorDict({
+                k: state @ -getattr(self.L, k).mT
+                for k in vars(self.problem_shape.controller)
+            }, batch_size=history.shape[:-1])
 
 
 class NNControllerGroup(ControllerGroup):
