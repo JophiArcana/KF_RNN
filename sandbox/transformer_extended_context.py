@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
     save_file = f"output/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
-        save = torch.load(save_file, map_location=DEVICE)
+        save = utils.torch_load(save_file)
 
         systems = save.systems
         dataset = save.dataset

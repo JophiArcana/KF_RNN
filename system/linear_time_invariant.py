@@ -46,12 +46,14 @@ class LTISystem(SystemGroup):
         def __init__(self):
             SystemDistribution.__init__(self, LTISystem)
 
-    def __init__(self, problem_shape: Namespace, auxiliary: Namespace, params: TensorDict[str, torch.tensor], settings: Namespace):
+    def __init__(self, hyperparameters: Namespace, params: TensorDict[str, torch.tensor]):
         # SECTION: Set up controller
+        problem_shape = hyperparameters.problem_shape
+        auxiliary = hyperparameters.auxiliary
+        settings = hyperparameters.settings
         SystemGroup.__init__(
             self,
-            problem_shape,
-            auxiliary,
+            hyperparameters,
             LTIEnvironment(problem_shape, params["environment"], getattr(auxiliary, "initial_state_scale", 1.0), settings,),
             LQGController(problem_shape, params, getattr(auxiliary, "control_noise_std", 0.0)),
         )
@@ -66,7 +68,7 @@ class LTISystem(SystemGroup):
             KH = K @ H
             BL = zeros + sum(
                 self.environment.B[k] @ getattr(self.controller.L, k)
-                for k in vars(self.problem_shape.controller)
+                for k in vars(self.hyperparameters.problem_shape.controller)
             )
             F_BL, I_KH = F - BL, I - KH
 
@@ -77,7 +79,7 @@ class LTISystem(SystemGroup):
             ], dim=-2))
             self.register_buffer("H_augmented", torch.cat([H, torch.zeros_like(H)], dim=-1))
             L_augmented = nn.Module()
-            for k in vars(self.problem_shape.controller):
+            for k in vars(self.hyperparameters.problem_shape.controller):
                 L = getattr(self.controller.L, k)
                 L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH], dim=-1))
             self.register_module("L_augmented", L_augmented)

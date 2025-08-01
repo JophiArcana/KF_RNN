@@ -44,11 +44,19 @@ class TransformerPredictor(Predictor):
         action_embds = sum(embd_dict["controller"].values())    # [B x L x S_D]
         embds = observation_embds + action_embds                # [B x L x S_D]
 
+        import time
+        start_t = time.perf_counter()
+
         out = self.core.forward(
             inputs_embeds=embds,
             output_hidden_states=True,
             attention_mask=trace["mask"].to(torch.float) if "mask" in trace else None
         ).hidden_states[-1]                                     # [B x L x S_D]
+
+        end_t = time.perf_counter()
+        print(f"forward: {end_t - start_t}s")
+        # raise Exception()
+
         return self.embedding_to_output({"environment": out})
 
     def trace_to_embedding(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:

@@ -1,4 +1,5 @@
 import functools
+import gc
 import hashlib
 import inspect
 import json
@@ -403,6 +404,71 @@ def hash_namespace(n: Namespace) -> str:
 """
 Miscellaneous
 """
+class Timer:
+    _start_t: float = None
+    
+    @classmethod
+    def start(cls):
+        cls._start_t = time.perf_counter()
+    
+    @classmethod
+    def stop(cls) -> float:
+        return time.perf_counter() - cls._start_t
+    
+def reset_seed():
+    if SEED is None:
+        torch.seed()
+        np.random.seed()
+    else:
+        torch.manual_seed(SEED)
+        np.random.seed(SEED)
+
+def torch_load(f: torch.types.FileLike, **kwargs) -> Any:
+    return torch.load(f, map_location=DEVICE, weights_only=False,)
+
+def empty_cache():
+    gc.collect()
+    torch.cuda.empty_cache()
+
+def print_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)):
+    for obj in gc.get_objects():
+        try:
+            if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None))):
+                print(type(obj), obj.size())
+        except:
+            pass
+
+def get_all_hooks(module: nn.Module) -> Dict[str, Dict[int, Callable]]:
+    """
+    Retrieves all forward and backward hooks, including pre-hooks, from a module and its submodules.
+
+    Args:
+        module: The nn.Module to inspect.
+
+    Returns:
+        A dictionary where keys are module names (or "" for the input module itself),
+        and values are dictionaries of hook IDs to hook functions.
+    """
+    all_hooks = {}
+    def _get_hooks(m: nn.Module, prefix=""):
+        hooks = {}
+        if hasattr(m, "_forward_hooks") and m._forward_hooks != OrderedDict():
+            hooks.update({"forward_hooks": m._forward_hooks})
+        if hasattr(m, "_forward_pre_hooks") and m._forward_pre_hooks != OrderedDict():
+            hooks.update({"forward_pre_hooks": m._forward_pre_hooks})
+        if hasattr(m, "_backward_hooks") and m._backward_hooks != OrderedDict():
+             hooks.update({"backward_hooks": m._backward_hooks})
+        if hasattr(m, "_full_backward_hooks") and m._full_backward_hooks != OrderedDict():
+            hooks.update({"full_backward_hooks": m._full_backward_hooks})
+        if hooks:
+            all_hooks[prefix] = hooks
+
+        for name, child in m.named_children():
+            _get_hooks(child, prefix=f"{prefix}.{name}" if prefix else name)
+
+    _get_hooks(module)
+    return all_hooks
+
 class PTR(object):
     def __init__(self, obj: object) -> None:
         self.obj = obj

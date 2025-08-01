@@ -49,7 +49,7 @@ class Predictor(Observer):
                 reference_module,
                 ensembled_kfs,
                 _dataset_slice,
-                kwargs
+                kwargs,
             ), batch_size=_dataset_slice.shape))
         return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
 

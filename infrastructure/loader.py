@@ -85,7 +85,8 @@ def load_system_and_args(folder: str):
     settings = Namespace(include_analytical=True,)
     args = utils.deepcopy_namespace(Namespace(
         system=Namespace(
-            S_D=S_D, problem_shape=problem_shape,
+            S_D=S_D,
+            problem_shape=problem_shape,
             auxiliary=auxiliary,
             settings=settings,
         ),

@@ -175,7 +175,7 @@ def _construct_info_dict(
                 system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
 
                 sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
-                return dist.system_type(sub_HP.system.problem_shape, sub_HP.system.auxiliary, system_params, sub_HP.system.settings)
+                return dist.system_type(sub_HP.system, system_params)
 
             systems_arr = _map_HP_with_params(
                 HP, system_dimensions, params_dataset,
@@ -280,7 +280,7 @@ def _construct_info_dict_from_dataset_types(
     save_dict = {}
     if output_dir is not None:
         for attr, fname in saved_fname_dict.items():
-            save_dict[attr] = torch.load(fname, map_location=DEVICE)
+            save_dict[attr] = utils.torch_load(fname)
             print(f"Loaded {fname} from disk.")
 
     for ds_type in dataset_types:

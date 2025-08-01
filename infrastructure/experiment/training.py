@@ -258,8 +258,8 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: List[str],
-        checkpoint_frequency: int = 10000,
-        print_frequency: int = 10,
+        checkpoint_frequency: int = 5,
+        print_frequency: int = 1,
 ) -> TensorDict:
 
     MHP, _THP, EHP = map(vars(HP).__getitem__, ("model", "training", "experiment"))
@@ -269,7 +269,7 @@ def _run_training(
     if checkpoint_paths is not None:
         for checkpoint_path in filter(os.path.exists, checkpoint_paths):
             try:
-                checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+                checkpoint = utils.torch_load(checkpoint_path)
                 break
             except RuntimeError:
                 pass

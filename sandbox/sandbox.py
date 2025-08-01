@@ -808,7 +808,7 @@ if __name__ == '__main__':
         # controller=Namespace(),
         controller=Namespace(input=2),
     ), auxiliary=Namespace(control_noise_std=2.0))
-    # systems = torch.load("output/imitation_learning/ControlNoiseComparison/training/systems.pt", map_location=DEVICE)["train"].values[()][0]
+    # systems = utils.torch_load("output/imitation_learning/ControlNoiseComparison/training/systems.pt")["train"].values[()][0]
     # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)

@@ -41,7 +41,7 @@ if __name__ == "__main__":
         controller=Namespace()
     ))
     exp_name_exemplar = "CDCReconstruction_rnn"
-    result_exemplar, systems, _ = torch.load(f"output/{output_dir}/{exp_name_exemplar}/testing/result.pt", map_location=DEVICE)
+    result_exemplar, systems, _ = utils.torch_load(f"output/{output_dir}/{exp_name_exemplar}/testing/result.pt")
 
 
     """ Chaining experiment setup """

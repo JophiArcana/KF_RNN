@@ -3,7 +3,7 @@ from .rnn_predictor import (
     RnnPredictor,
     RnnAnalyticalPredictor,
     RnnAnalyticalPretrainPredictor,
-    RnnLeastSquaresPredictor,
+    # RnnLeastSquaresPredictor,
 )
 
 

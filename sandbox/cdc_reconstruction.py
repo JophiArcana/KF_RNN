@@ -3,12 +3,17 @@ import sys
 from argparse import Namespace
 from typing import *
 
+import einops
 import numpy as np
 import tensordict.utils
 import torch
 from matplotlib import colors
 from matplotlib import pyplot as plt
-from transformers import GPT2Config, TransfoXLConfig
+from transformers import (
+    GPT2Config,
+    TransfoXLConfig,
+    Dinov2Config,
+)
 
 # This line needs to be added since some terminals will not recognize the current directory
 if os.getcwd() not in sys.path:
@@ -21,7 +26,12 @@ from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnLeastSquaresPredictor
 from model.sequential import RnnAnalyticalPretrainPredictor
-from model.transformer import GPT2InContextPredictor, TransformerXLInContextPredictor
+from model.transformer import (
+    GPT2InContextPredictor,
+    GPT2AssociativeInContextPredictor,
+    TransformerXLInContextPredictor,
+    Dinov2AssociativeInContextPredictor,
+)
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LTISystem, MOPDistribution
 
@@ -50,7 +60,7 @@ if __name__ == "__main__":
     
     save_file = f"output/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
-        save = torch.load(save_file, map_location=DEVICE)
+        save = utils.torch_load(save_file)
     
         systems, dataset, result_transformer, result_cnn, result_rnn = map(vars(save).__getitem__, (
             "systems",
@@ -69,7 +79,8 @@ if __name__ == "__main__":
         d_embed = 256
         n_layer = 12
         n_head = 8
-        d_inner = 4 * d_embed
+        mlp_ratio = 4
+        d_inner = mlp_ratio * d_embed
     
         ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
             n_positions=context_length,
@@ -87,6 +98,12 @@ if __name__ == "__main__":
             d_head=d_embed // n_head,
             d_inner=d_inner,
             dropout=0.0,
+        )
+        ARGS_TRANSFORMER.model.dinov2 = Dinov2Config(
+            hidden_size=d_embed,
+            num_hidden_layers=n_layer,
+            num_attention_heads=n_head,
+            mlp_ratio=mlp_ratio,
         )
     
         # SECTION: Dataset hyperparameters
@@ -120,7 +137,13 @@ if __name__ == "__main__":
     
         configurations_transformer = [
             ("model", {
-                "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor],
+                # "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor,],
+                "model.model": [GPT2AssociativeInContextPredictor, Dinov2AssociativeInContextPredictor,],
+                # "model.model": [GPT2InContextPredictor, Dinov2AssociativeInContextPredictor,],
+                "training": {
+                    "optimizer.max_lr": [3e-4, 3e-3,],
+                    "scheduler.lr_decay": [1.0, 0.99,],
+                }
             })
         ]
 
@@ -146,7 +169,7 @@ if __name__ == "__main__":
                 f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt",
             ))):
                 baseline_systems = utils.multi_map(
-                    lambda lsg: LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().permute(1, 0)),
+                    lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
                     systems, dtype=LTISystem
                 )
                 torch.save({
@@ -264,7 +287,7 @@ if __name__ == "__main__":
     """ Result processing """
     print("Result processing" + "\n" + "-" * 120)
     lsg = systems.values[()]
-    systems = LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().squeeze(0))
+    systems = LTISystem(lsg.hyperparameters, lsg.td().squeeze(0))
     dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
@@ -278,15 +301,15 @@ if __name__ == "__main__":
         zero_predictor_l = loss(torch.zeros_like(dataset["environment", "observation"]))
         il = systems.irreducible_loss.environment.observation
         eil = loss(dataset["environment", "target_observation_estimation"])
-    
-    
+
+
         # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_test_systems x test_dataset_size x context_length x O_D]
-        gpt2_output, transfoxl_output = M_transformer.output.environment.observation.squeeze(2).squeeze(1)
+        gpt2_output, transfoxl_output = einops.rearrange(M_transformer.output.environment.observation, "n 1 1 b l d -> n b l d",)
         # -> [n_test_systems x test_dataset_size x context_length]
         gpt2_l, transfoxl_l = loss(gpt2_output), loss(transfoxl_output)
-    
-        
+
+
         # [n_firs x train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
         # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]
@@ -295,11 +318,10 @@ if __name__ == "__main__":
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
         cnn_l = loss(cnn_output)
         # [n_firs x context_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [n_firs x context_length x n_test_systems x test_dataset_size]
         # -> [n_firs x n_test_systems x test_dataset_size x context_length]
-        cnn_al = M_cnn.al.squeeze(5).squeeze(4).permute(0, 2, 3, 1)
-    
-    
+        cnn_al = einops.rearrange(M_cnn.al, "r l s b 1 1 -> r s b l")
+
+
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
         # -> [train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
         # -> [train.sequence_length x n_test_systems x test_dataset_size x O_D]
@@ -307,9 +329,8 @@ if __name__ == "__main__":
         rnn_sequence_lengths = [*range(0, context_length, rnn_increment),]
         rnn_output = M_rnn.output.environment.observation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
         # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [train.sequence_length x n_test_systems x test_dataset_size]
         # -> [n_test_systems x test_dataset_size x train.sequence_length]
-        rnn_al = M_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
+        rnn_al = einops.rearrange(M_rnn.al, "l s b 1 1 -> s b l")
     
     
         rnn_indices = torch.tensor(rnn_sequence_lengths)
@@ -320,10 +341,7 @@ if __name__ == "__main__":
     
     
     
-    # SECTION: Transformer impulse response
-    def cd(t: torch.Tensor) -> torch.Tensor:
-        return t.cpu().detach()
-    
+    # SECTION: Transformer impulse response    
     def to_rgb(c: Any) -> np.ndarray:
         return np.array(colors.to_rgb(c))
     
@@ -382,13 +400,13 @@ if __name__ == "__main__":
                 l = l[system_idx]
 
             if l.ndim == 1:
-                plt.plot(cd(x_), cd(l), **plt_kwargs, zorder=12)
+                plt.plot(x_.numpy(force=True), l.numpy(force=True), **plt_kwargs, zorder=12)
             else:
                 # plt.plot(cd(x_), cd(l.mean(dim=0)), zorder=12, **plt_kwargs)
-                plt.plot(cd(x_), cd(l.median(dim=0).values), zorder=12, **plt_kwargs)
+                plt.plot(x_.numpy(force=True), l.median(dim=0).values.numpy(force=True), zorder=12, **plt_kwargs)
                 if error_bars:
                     plt.fill_between(
-                        cd(x_), *cd(torch.quantile(l, torch.tensor([0.25, 0.75]), dim=0)),
+                        x_.numpy(force=True), *torch.quantile(l, torch.tensor([0.25, 0.75]), dim=0).numpy(force=True),
                         alpha=0.1, **plt_kwargs
                     )
     
@@ -411,10 +429,10 @@ if __name__ == "__main__":
             else:
                 l = l[system_idx]
 
-            plt.plot(cd(x_), cd(l.mean(dim=0)), label=name, **plt_kwargs)
+            plt.plot(x_.numpy(force=True), l.mean(dim=0).numpy(force=True), label=name, **plt_kwargs)
             if error_bars:
                 plt.fill_between(
-                    cd(x_), *cd(torch.quantile(l, torch.tensor([0.25, 0.75]), dim=0)),
+                    x_.numpy(force=True), *torch.quantile(l, torch.tensor([0.25, 0.75]), dim=0).numpy(force=True),
                     alpha=0.1, **plt_kwargs
                 )
     

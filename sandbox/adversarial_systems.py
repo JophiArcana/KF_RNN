@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     weights = TensorDict({
         (*k.split("."),): v
-        for k, v in torch.load(f"data/transformer_weights/{system_type}_state_dict.pt", map_location=DEVICE).items()
+        for k, v in utils.torch_load(f"data/transformer_weights/{system_type}_state_dict.pt").items()
     }, batch_size=())
 
     S_D, O_D = 10, 5
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         log = TensorDict.maybe_dense_stack(log, dim=0)
         torch.save(log, save_fname)
     else:
-        log = torch.load(save_fname, map_location=DEVICE)
+        log = utils.torch.load(save_fname)
     log = log.detach()
 
 

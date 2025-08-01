@@ -107,7 +107,7 @@ def run_training_experiments(
     # Check if the entire experiment has already been run
     if save_experiment and os.path.exists(final_output_fname):
         try:
-            result, cache = torch.load(final_output_fname, map_location=DEVICE)
+            result, cache = utils.torch_load(final_output_fname)
             print(f"Complete result recovered from file {final_output_fname}.")
             return result, cache
         except RuntimeError:
@@ -137,13 +137,13 @@ def run_training_experiments(
     cache.train_dimensions = _filter_dimensions_if_any_satisfy_condition(
         dimensions, lambda param: not re.match("dataset\\.", param) or re.match("dataset(\\..*\\.|\\.)train$", param)
     )
-    
+
     # Result setup
     if save_experiment and os.path.exists(caching_output_fname):
         try:
-            result = torch.load(caching_output_fname, map_location=DEVICE)
+            result = utils.torch_load(caching_output_fname)
         except RuntimeError:
-            result = torch.load(caching_output_fname_backup, map_location=DEVICE)
+            result = utils.torch_load(caching_output_fname_backup)
     else:
         # Set up new result DimRecarray
         result = DimArray(
@@ -262,7 +262,7 @@ def run_testing_experiments(
     # Check if the entire experiment has already been run
     if save_experiment and os.path.exists(final_output_fname):
         try:
-            result, test_systems, test_dataset = torch.load(final_output_fname, map_location=DEVICE)
+            result, test_systems, test_dataset = utils.torch_load(final_output_fname)
             print(f"Complete result recovered from file {final_output_fname}.")
             return result, test_systems, test_dataset
         except RuntimeError:
@@ -270,16 +270,16 @@ def run_testing_experiments(
 
     # Result setup
     if save_experiment and os.path.exists(caching_output_fname):
-        result = torch.load(caching_output_fname, map_location=DEVICE)
+        result = utils.torch_load(caching_output_fname)
     elif result is None:
         train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
         assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
-        result = torch.load(train_output_fname, map_location=DEVICE)
+        result = utils.torch_load(train_output_fname)
 
     if cache is None:
         training_cache_fname = f"{output_dir}/{output_kwargs['training_dir']}/cache.pt"
         assert os.path.exists(training_cache_fname), f"Training cache was not provided, and could not be found at {training_cache_fname}."
-        cache = torch.load(training_cache_fname, map_location=DEVICE)
+        cache = utils.torch_load(training_cache_fname)
 
     # SECTION: Run prologue to construct basic data structures
     conditions = (

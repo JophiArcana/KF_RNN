@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     cache_fname = f"output/{output_dir}/{exp_name}/result_cache.pt"
     if os.path.exists(cache_fname):
-        result_cache = torch.load(cache_fname, map_location=DEVICE)
+        result_cache = utils.torch_load(cache_fname)
     else:
         result_cache = run_experiments(args, configurations, {
             "dir": output_dir,
@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     datasets_cache_fname = f"output/{output_dir}/{exp_name}/datasets_cache.pt"
     if os.path.exists(datasets_cache_fname):
-        _datasets = torch.load(datasets_cache_fname, map_location=DEVICE)
+        _datasets = utils.torch_load(datasets_cache_fname)
     else:
         _datasets = lqg.generate_dataset_with_controller_arr(np.concatenate([
             np.tile(np.array([zero_controller_group] + [lqg_.controller for lqg_ in lqg_list]), reps=(len(configurations[0][1]["name"]), 1)),

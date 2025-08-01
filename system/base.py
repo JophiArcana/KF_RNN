@@ -14,8 +14,7 @@ from system.module_group import ModuleGroup
 
 class SystemGroup(ModuleGroup):
     def __init__(self,
-                 problem_shape: Namespace,
-                 auxiliary: Namespace,
+                 hyperparameters: Namespace,
                  environment: EnvironmentGroup,
                  controller: ControllerGroup,
     ):
@@ -23,9 +22,7 @@ class SystemGroup(ModuleGroup):
             environment.group_shape,
             controller.group_shape,
         ))
-        self.problem_shape = problem_shape
-        self.auxiliary = auxiliary
-
+        self.hyperparameters = hyperparameters
         self.environment = environment
         self.controller = controller
 
@@ -57,19 +54,34 @@ class SystemGroup(ModuleGroup):
             return TensorDict({
                 "environment": st,
                 "controller": ac
-            }, batch_size=(*controller_arr.shape, *group_shape, batch_size)).unsqueeze(-1)
+            }, batch_size=(*controller_arr.shape, *group_shape, batch_size))[..., None]
 
-        history = construct_timestep(action, state)
+        # history = construct_timestep(action, state)
+        # for _ in range(sequence_length - 1):
+        #     action_arr = np.empty_like(controller_arr)
+        #     for idx, controller in utils.multi_enumerate(controller_arr):
+        #         action_arr[idx] = controller.act(history[idx])
+        #     action = utils.stack_tensor_arr(action_arr)                                 # [C... x N... x B x ...]
+        #     state = self.environment.step(history["environment"][..., -1], action)      # [C... x N... x B x ...]
+        #     history = torch.cat([
+        #         history,
+        #         construct_timestep(action, state)
+        #     ], dim=-1)
+            
+        #     utils.empty_cache()
+        
+        history = [construct_timestep(action, state)]
         for _ in range(sequence_length - 1):
             action_arr = np.empty_like(controller_arr)
             for idx, controller in utils.multi_enumerate(controller_arr):
-                action_arr[idx] = controller.act(history[idx])
+                action_arr[idx] = controller.act(history[-1][idx])
             action = utils.stack_tensor_arr(action_arr)                                 # [C... x N... x B x ...]
-            state = self.environment.step(history["environment"][..., -1], action)      # [C... x N... x B x ...]
-            history = torch.cat([
-                history,
-                construct_timestep(action, state)
-            ], dim=-1)
+            state = self.environment.step(history[-1]["environment"][..., 0], action)   # [C... x N... x B x ...]
+            history.append(construct_timestep(action, state))
+            
+            utils.empty_cache()
+        history = torch.cat(history, dim=-1)
+
         return history
 
 

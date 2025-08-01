@@ -107,16 +107,16 @@ if __name__ == "__main__":
         })
     ]
 
-    result_transformer = torch.load(f"output/{output_dir}/{exp_name_transformer}/testing/result.pt", map_location=DEVICE)
+    result_transformer = utils.torch_load(f"output/{output_dir}/{exp_name_transformer}/testing/result.pt")
 
     output = get_result_attr(result_transformer, "output")
     time = get_result_attr(result_transformer, "time")
 
-    valid_systems = torch.load(f"output/{output_dir}/{exp_name_transformer}/training/systems.pt", map_location=DEVICE)["valid"].values[()]
+    valid_systems = utils.torch_load(f"output/{output_dir}/{exp_name_transformer}/training/systems.pt")["valid"].values[()]
     valid_systems = LTISystem(valid_systems.problem_shape, valid_systems.auxiliary, valid_systems.td().squeeze(0))
     valid_env = valid_systems.environment
 
-    valid_dataset = torch.load(f"output/{output_dir}/{exp_name_transformer}/training/dataset.pt", map_location=DEVICE)["valid"].values[()].obj
+    valid_dataset = utils.torch_load(f"output/{output_dir}/{exp_name_transformer}/training/dataset.pt")["valid"].values[()].obj
     valid_dataset = valid_dataset.reshape(*valid_dataset.shape[2:])
 
     noiseless_empirical_irreducible_loss = Predictor.evaluate_run(

@@ -36,13 +36,22 @@ class Dinov2AssociativeInContextPredictor(Dinov2InContextPredictor):
         x = self.cls_token.expand((B, self.config.hidden_size,))
         attention_mask = trace["mask"].to(torch.float) if "mask" in trace else None
         out: list[torch.Tensor] = []
+
+        import time
+        start_t = time.perf_counter()
+
         for i, embd in enumerate(torch.unbind(embds, dim=-2)):
             next_x = self.core.encoder.forward(
                 torch.stack((embd + self.obs_token, x,), dim=-2),
                 return_dict=True,
             ).last_hidden_state[..., -1, :]                     # [B x S_D]
-            x = next_x if attention_mask is None else torch.where(attention_mask[..., i], next_x, x)
+            x = next_x if attention_mask is None else torch.where(attention_mask[..., i, None].to(torch.bool), next_x, x)
             out.append(x)
+        
+        end_t = time.perf_counter()
+        print(f"forward: {end_t - start_t}s")
+        # raise Exception()
+        
         out: torch.Tensor = torch.stack(out, dim=-2)            # [B x L x S_D]
 
         return self.embedding_to_output({"environment": out})
