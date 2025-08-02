@@ -2,7 +2,7 @@ import copy
 import json
 from argparse import Namespace
 from inspect import signature
-from typing import Any, Callable, Generator, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 import torch.nn as nn
@@ -74,11 +74,11 @@ TrainFunc = Callable[[
 def _sample_dataset_indices(
         dataset: TensorDict[str, torch.Tensor],                         # [N x E x S x B x L x ...]
         kwargs: dict[str, Any],
-) -> Generator[TensorDict[str, torch.Tensor]]:
+) -> Iterable[TensorDict[str, torch.Tensor]]:
     n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
     model_shape = dataset.shape[:2]
 
-    if kwargs["sample_method"] == "full":
+    if kwargs["sampl    e_method"] == "full":
         kwargs.update(dict(
             sample_method="subsequence_unpadded",
             subsequence_length=None,
