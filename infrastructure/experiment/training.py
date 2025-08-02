@@ -78,7 +78,7 @@ def _sample_dataset_indices(
     n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
     model_shape = dataset.shape[:2]
 
-    if kwargs["sampl    e_method"] == "full":
+    if kwargs["sample_method"] == "full":
         kwargs.update(dict(
             sample_method="subsequence_unpadded",
             subsequence_length=None,
