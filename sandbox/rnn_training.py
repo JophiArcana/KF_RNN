@@ -22,7 +22,7 @@ from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
 from system.linear_time_invariant import LTISystem, MOPDistribution
 from model.zero_predictor import ZeroPredictor
-from model.sequential import RnnPredictor, RnnPredictorPretrainAnalytical
+from model.sequential import RnnPredictor, RnnAnalyticalPretrainPredictor
 
 
 if __name__ == "__main__":
@@ -31,7 +31,7 @@ if __name__ == "__main__":
 
     context_length = 250
     n_test_systems = 3
-    test_dataset_size = 256
+    n_test_traces = 256
 
     rnn_increment = 1
 
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     ARGS_CHAIN_INITIALIZATION.model.S_D = S_D
 
     ARGS_CHAIN_INITIALIZATION.dataset.n_systems.reset(train=1)
-    ARGS_CHAIN_INITIALIZATION.dataset.dataset_size.reset(train=1)
+    ARGS_CHAIN_INITIALIZATION.dataset.n_traces.reset(train=1)
     ARGS_CHAIN_INITIALIZATION.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
 
     ARGS_CHAIN_INITIALIZATION.training.sampling = Namespace(method="full")
@@ -79,12 +79,12 @@ if __name__ == "__main__":
     ARGS_CHAIN_INITIALIZATION.training.iterations_per_epoch = 200
 
     ARGS_CHAIN_INITIALIZATION.experiment.n_experiments = n_test_systems
-    ARGS_CHAIN_INITIALIZATION.experiment.ensemble_size = test_dataset_size
+    ARGS_CHAIN_INITIALIZATION.experiment.ensemble_size = n_test_traces
     ARGS_CHAIN_INITIALIZATION.experiment.metrics = Namespace(training={"validation_analytical"})
     ARGS_CHAIN_INITIALIZATION.experiment.exp_name = exp_name_chain_initialization
     ARGS_CHAIN_INITIALIZATION.experiment.backup_frequency = 50
 
-    # al_exemplar = get_metric_namespace_from_result(result_exemplar).al.reshape(utils.ceildiv(context_length, rnn_increment), n_test_systems, test_dataset_size, -1)
+    # al_exemplar = get_metric_namespace_from_result(result_exemplar).al.reshape(utils.ceildiv(context_length, rnn_increment), n_test_systems, n_test_traces, -1)
     # plt.plot(al_exemplar.mean(dim=-1).median(dim=-1).values.mean(dim=-1).cpu(), label="median")
     # plt.plot(al_exemplar.mean(dim=[-3, -2, -1]).cpu(), label="mean")
     # plt.legend()
@@ -159,42 +159,42 @@ if __name__ == "__main__":
         eil = loss(dataset["target"])
 
 
-        # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [n_test_systems x test_dataset_size x context_length x O_D]
+        # [n_experiments x ensemble_size x n_test_systems x n_test_traces x context_length x O_D]
+        # -> [n_test_systems x n_test_traces x context_length x O_D]
         gpt2_output, transfoxl_output = M_transformer.output.observation_estimation.squeeze(2).squeeze(1)
-        # -> [n_test_systems x test_dataset_size x context_length]
+        # -> [n_test_systems x n_test_traces x context_length]
         gpt2_l, transfoxl_l = loss(gpt2_output), loss(transfoxl_output)
 
 
-        # [n_firs x train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
-        # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]
-        # -> [n_firs x n_test_systems x test_dataset_size x context_length x O_D]
+        # [n_firs x train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size x context_length x O_D]
+        # -> [n_firs x train.sequence_length x n_test_systems x n_test_traces x context_length x O_D]
+        # -> [n_firs x n_test_systems x n_test_traces x O_D x context_length]
+        # -> [n_firs x n_test_systems x n_test_traces x context_length x O_D]
         cnn_output = torch.diagonal(M_baseline_cnn.output.observation_estimation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
-        # -> [n_firs x n_test_systems x test_dataset_size x context_length]
+        # -> [n_firs x n_test_systems x n_test_traces x context_length]
         cnn_l = loss(cnn_output)
-        # [n_firs x context_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [n_firs x context_length x n_test_systems x test_dataset_size]
-        # -> [n_firs x n_test_systems x test_dataset_size x context_length]
+        # [n_firs x context_length x n_test_systems x n_test_traces x n_experiments x ensemble_size]
+        # -> [n_firs x context_length x n_test_systems x n_test_traces]
+        # -> [n_firs x n_test_systems x n_test_traces x context_length]
         cnn_al = M_baseline_cnn.al.squeeze(5).squeeze(4).permute(0, 2, 3, 1)
 
 
-        # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
-        # -> [train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [train.sequence_length x n_test_systems x test_dataset_size x O_D]
-        # -> [n_test_systems x test_dataset_size x train.sequence_length x O_D]
+        # [train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size x context_length x O_D]
+        # -> [train.sequence_length x n_test_systems x n_test_traces x context_length x O_D]
+        # -> [train.sequence_length x n_test_systems x n_test_traces x O_D]
+        # -> [n_test_systems x n_test_traces x train.sequence_length x O_D]
         rnn_sequence_lengths = [*range(0, context_length, rnn_increment),]
         rnn_output = M_baseline_rnn.output.observation_estimation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
-        # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [train.sequence_length x n_test_systems x test_dataset_size]
-        # -> [n_test_systems x test_dataset_size x train.sequence_length]
+        # [train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size]
+        # -> [train.sequence_length x n_test_systems x n_test_traces]
+        # -> [n_test_systems x n_test_traces x train.sequence_length]
         rnn_al = M_baseline_rnn.al.squeeze(4).squeeze(3).permute(1, 2, 0)
 
 
         rnn_indices = torch.tensor(rnn_sequence_lengths)
-        padded_rnn_output = torch.zeros((n_test_systems, test_dataset_size, context_length, SHP.O_D))
+        padded_rnn_output = torch.zeros((n_test_systems, n_test_traces, context_length, SHP.O_D))
         padded_rnn_output[:, :, rnn_indices] = rnn_output
-        # -> [n_test_systems x test_dataset_size x context_length]
+        # -> [n_test_systems x n_test_traces x context_length]
         rnn_l = loss(padded_rnn_output)[:, :, rnn_indices]
 
 

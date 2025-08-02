@@ -22,7 +22,7 @@ if __name__ == "__main__":
     args = loader.generate_args(SHP)
 
     args.system.auxiliary.control_noise_std.update(valid=0.0, test=0.0)
-    args.dataset.dataset_size.update(valid=1, test=1)
+    args.dataset.n_traces.update(valid=1, test=1)
     args.dataset.total_sequence_length.update(train=20000, valid=10000, test=10000)
 
     args.experiment.metrics = Namespace(
@@ -37,7 +37,7 @@ if __name__ == "__main__":
         }),
         # ("n_train_systems", {
         #     "dataset.n_systems.train": [2, 12, 20],
-        #     "dataset.dataset_size.train": [2, 12, 20],
+        #     "dataset.n_traces.train": [2, 12, 20],
         # }),
         ("system_dimension", {
             "system.S_D.train": [5, 7],

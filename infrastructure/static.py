@@ -12,7 +12,7 @@ TRAINING_DATASET_TYPES: List[str] = [
 ]
 TESTING_DATASET_TYPE: str = "test"
 DATASET_SUPPORT_PARAMS: List[str] = [
-    "dataset_size",
+    "n_traces",
     "total_sequence_length",
     "system.n_systems"
 ]

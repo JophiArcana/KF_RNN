@@ -52,8 +52,8 @@ if __name__ == "__main__":
     context_length = 250
     n_train_systems = 40000
     n_test_systems = 3
-    valid_dataset_size = 256
-    test_dataset_size = 256
+    n_valid_traces = 256
+    n_test_traces = 256
     
     n_firs = 5
     rnn_increment = 1
@@ -110,14 +110,14 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
         
         ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
-        ARGS_TRANSFORMER.dataset.dataset_size.update(train=1, valid=valid_dataset_size, test=test_dataset_size)
-        ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=valid_dataset_size * context_length, test=test_dataset_size * context_length)
+        ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
+        ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
 
         # SECTION: Training hyperparameters
         ARGS_TRANSFORMER.training.sampling = Namespace(
             method="subsequence_padded",
             subsequence_length=context_length,
-            batch_size=32
+            batch_size=32,
         )
         ARGS_TRANSFORMER.training.optimizer = Namespace(
             type="AdamW",
@@ -126,9 +126,8 @@ if __name__ == "__main__":
         )
         ARGS_TRANSFORMER.training.scheduler = Namespace(
             type="exponential",
-            epochs=2000, lr_decay=1.0,
+            epochs=100, lr_decay=1.0,
         )
-        ARGS_TRANSFORMER.training.iterations_per_epoch = 50
 
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
@@ -138,8 +137,8 @@ if __name__ == "__main__":
         configurations_transformer = [
             ("model", {
                 # "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor,],
-                "model.model": [GPT2AssociativeInContextPredictor, Dinov2AssociativeInContextPredictor,],
-                # "model.model": [GPT2InContextPredictor, Dinov2AssociativeInContextPredictor,],
+                # "model.model": [GPT2AssociativeInContextPredictor, Dinov2AssociativeInContextPredictor,],
+                "model.model": [GPT2InContextPredictor, Dinov2AssociativeInContextPredictor,],
                 "training": {
                     "optimizer.max_lr": [3e-4, 3e-3,],
                     "scheduler.lr_decay": [1.0, 0.99,],
@@ -198,11 +197,11 @@ if __name__ == "__main__":
         ARGS_BASELINE_CNN = loader.generate_args(SHP)
 
         ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
-        ARGS_BASELINE_CNN.dataset.dataset_size.reset(train=1)
+        ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
         ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
 
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
-        ARGS_BASELINE_CNN.experiment.ensemble_size = test_dataset_size
+        ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
         ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
     
         # SECTION: Make a copy for RNN args after setting shared parameters
@@ -303,40 +302,40 @@ if __name__ == "__main__":
         eil = loss(dataset["environment", "target_observation_estimation"])
 
 
-        # [n_experiments x ensemble_size x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [n_test_systems x test_dataset_size x context_length x O_D]
+        # [n_experiments x ensemble_size x n_test_systems x n_test_traces x context_length x O_D]
+        # -> [n_test_systems x n_test_traces x context_length x O_D]
         gpt2_output, transfoxl_output = einops.rearrange(M_transformer.output.environment.observation, "n 1 1 b l d -> n b l d",)
-        # -> [n_test_systems x test_dataset_size x context_length]
+        # -> [n_test_systems x n_test_traces x context_length]
         gpt2_l, transfoxl_l = loss(gpt2_output), loss(transfoxl_output)
 
 
-        # [n_firs x train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
-        # -> [n_firs x train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [n_firs x n_test_systems x test_dataset_size x O_D x context_length]
-        # -> [n_firs x n_test_systems x test_dataset_size x context_length x O_D]
+        # [n_firs x train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size x context_length x O_D]
+        # -> [n_firs x train.sequence_length x n_test_systems x n_test_traces x context_length x O_D]
+        # -> [n_firs x n_test_systems x n_test_traces x O_D x context_length]
+        # -> [n_firs x n_test_systems x n_test_traces x context_length x O_D]
         cnn_output = torch.diagonal(M_cnn.output.environment.observation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
-        # -> [n_firs x n_test_systems x test_dataset_size x context_length]
+        # -> [n_firs x n_test_systems x n_test_traces x context_length]
         cnn_l = loss(cnn_output)
-        # [n_firs x context_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [n_firs x n_test_systems x test_dataset_size x context_length]
+        # [n_firs x context_length x n_test_systems x n_test_traces x n_experiments x ensemble_size]
+        # -> [n_firs x n_test_systems x n_test_traces x context_length]
         cnn_al = einops.rearrange(M_cnn.al, "r l s b 1 1 -> r s b l")
 
 
-        # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size x context_length x O_D]
-        # -> [train.sequence_length x n_test_systems x test_dataset_size x context_length x O_D]
-        # -> [train.sequence_length x n_test_systems x test_dataset_size x O_D]
-        # -> [n_test_systems x test_dataset_size x train.sequence_length x O_D]
+        # [train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size x context_length x O_D]
+        # -> [train.sequence_length x n_test_systems x n_test_traces x context_length x O_D]
+        # -> [train.sequence_length x n_test_systems x n_test_traces x O_D]
+        # -> [n_test_systems x n_test_traces x train.sequence_length x O_D]
         rnn_sequence_lengths = [*range(0, context_length, rnn_increment),]
         rnn_output = M_rnn.output.environment.observation.squeeze(4).squeeze(3)[torch.arange(len(rnn_sequence_lengths)), :, :, torch.tensor(rnn_sequence_lengths)].permute(1, 2, 0, 3)
-        # [train.sequence_length x n_test_systems x test_dataset_size x n_experiments x ensemble_size]
-        # -> [n_test_systems x test_dataset_size x train.sequence_length]
+        # [train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size]
+        # -> [n_test_systems x n_test_traces x train.sequence_length]
         rnn_al = einops.rearrange(M_rnn.al, "l s b 1 1 -> s b l")
     
     
         rnn_indices = torch.tensor(rnn_sequence_lengths)
-        padded_rnn_output = torch.zeros((n_test_systems, test_dataset_size, context_length, SHP.problem_shape.environment.observation))
+        padded_rnn_output = torch.zeros((n_test_systems, n_test_traces, context_length, SHP.problem_shape.environment.observation))
         padded_rnn_output[:, :, rnn_indices] = rnn_output
-        # -> [n_test_systems x test_dataset_size x context_length]
+        # -> [n_test_systems x n_test_traces x context_length]
         rnn_l = loss(padded_rnn_output)[:, :, rnn_indices]
     
     

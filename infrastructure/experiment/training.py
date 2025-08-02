@@ -2,7 +2,7 @@ import copy
 import json
 from argparse import Namespace
 from inspect import signature
-from typing import *
+from typing import Any, Callable, Generator, Iterable
 
 import numpy as np
 import torch.nn as nn
@@ -21,7 +21,7 @@ from model.base import Predictor
 def _get_optimizer_and_scheduler(
         params: Iterable[torch.Tensor],
         THP: Namespace
-) -> Tuple[optim.Optimizer, optim.lr_scheduler.LRScheduler]:
+) -> tuple[optim.Optimizer, optim.lr_scheduler.LRScheduler]:
 
     optimizer_params = THP.optimizer
     optimizer = utils.call_func_with_kwargs(
@@ -69,53 +69,52 @@ TrainFunc = Callable[[
     Namespace,
     TensorDict[str, torch.Tensor],
     Namespace
-], Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]]
+], tuple[torch.Tensor, dict[str, torch.Tensor], bool]]
 
 def _sample_dataset_indices(
-        dataset: TensorDict[str, torch.Tensor],
-        iterations: int, **kwargs: Any
-) -> TensorDict[str, torch.Tensor]:
+        dataset: TensorDict[str, torch.Tensor],                         # [N x E x S x B x L x ...]
+        kwargs: dict[str, Any],
+) -> Generator[TensorDict[str, torch.Tensor]]:
+    n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
+    model_shape = dataset.shape[:2]
 
-    n_systems, dataset_size, sequence_length = dataset.shape[-3:]
-    index_outer_shape = (iterations, *dataset.shape[:2])
+    mask = dataset["mask"][0, 0]                                        # bool: [S x B x L]
+    sequence_lengths = torch.sum(mask, dim=-1)                          # int: [S x B]
 
-    def add_system_indices(indices: TensorDict[str, torch.Tensor]) -> TensorDict[str, torch.Tensor]:
-        indices = indices.expand(n_systems, *indices.shape)
-        indices["system"] = torch.arange(n_systems)[:, None].expand(*indices.shape)
-        return indices.flatten()
+    if kwargs["subsequence_length"] is None:
+        subsequence_length = sequence_lengths                           # int: [S x B]
+    else:
+        subsequence_length = torch.full_like(sequence_lengths, kwargs["subsequence_length"])
 
-    mask = dataset["mask"].flatten(0, -3)[0]
-    train_sequence_lengths = mask.sum(dim=1)
+    stop_index_mask = mask                                              # bool: [S x B x L]
+    if kwargs["sample_method"] == "subsequence_unpadded":
+        stop_index_mask *= (torch.arange(max_sequence_length) >= (subsequence_length - 1)[..., None])
 
-    sample_method = kwargs["method"]
-    match sample_method:
-        case "full":
-            return add_system_indices(TensorDict({
-                "sequence": torch.arange(dataset_size, dtype=torch.int),
-                "start": torch.zeros((dataset_size,), dtype=torch.int),
-                "stop": train_sequence_lengths
-            }, batch_size=(dataset_size,))).expand(*index_outer_shape, n_systems * dataset_size)
+    weights = stop_index_mask.to(torch.float) + torch.rand(model_shape + stop_index_mask.shape) # float: [N x E x S x B x L]
+    stop_indices = torch.argmax(weights, dim=-1) + 1                                            # int: [N x E x S x B]
+    start_indices = stop_indices - subsequence_length                                           # int; [N x E x S x B]
+    system_indices, sequence_indices = torch.meshgrid(torch.arange(n_systems), torch.arange(n_traces))
 
-        case "subsequence_padded":
-            sequence_indices, stop_indices_n1 = torch.where(mask)
-            index_dataset = add_system_indices(TensorDict({
-                "sequence": sequence_indices,
-                "start": stop_indices_n1 - kwargs["subsequence_length"] + 1,
-                "stop": stop_indices_n1 + 1
-            }, batch_size=(len(sequence_indices),)))
-            return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
+    shape = (*model_shape, n_systems, n_traces,)
+    index_td = TensorDict({
+        "system": system_indices.expand(shape),
+        "sequence": sequence_indices.expand(shape),
+        "start": start_indices,
+        "stop": stop_indices,
+    }, batch_size=shape)                                                # int: [N x E x S x B]
+    index_td = index_td.reshape((*model_shape, n_systems * n_traces,))  # int: [N x E x SB]
 
-        case "subsequence_unpadded":
-            sequence_indices, start_indices = torch.where(mask[:, kwargs["subsequence_length"] - 1:])
-            index_dataset = add_system_indices(TensorDict({
-                "sequence": sequence_indices,
-                "start": start_indices,
-                "stop": start_indices + kwargs["subsequence_length"]
-            }, batch_size=(len(sequence_indices),)))
-            return index_dataset[torch.randint(0, index_dataset.shape[0], (*index_outer_shape, kwargs["batch_size"]))]
+    permutation = torch.argsort(torch.rand(index_td.shape), dim=-1)     # int: [N x E x SB]
+    index_td = TensorDict.gather(index_td, -1, permutation,)            # int: [N x E x SB]
 
-        case _:
-            raise ValueError(sample_method)
+    batch_size: int = kwargs["batch_size"]
+    if batch_size is None:
+        batch_size = n_systems * n_traces
+    lo, hi = 0, n_systems * n_traces
+    while lo < hi:
+        yield index_td[..., lo:min(hi, lo + batch_size)]
+        lo += batch_size
+
 
 def _extract_dataset_from_indices(
         padded_train_dataset: TensorDict[str, torch.Tensor],
@@ -155,7 +154,7 @@ def _extract_dataset_from_indices(
         ensemble_size_idx,
         system_idx,
         sequence_idx,
-        subsequence_idx
+        subsequence_idx,
     ]
 
 def _train_default(
@@ -163,7 +162,7 @@ def _train_default(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],
         cache: Namespace
-) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], bool]:
     def terminate_condition() -> bool:
         if THP.scheduler.epochs is None:
             reference_module = exclusive.reference_module.eval()
@@ -201,17 +200,14 @@ def _train_default(
 
     # SECTION: Iterate through train indices and run gradient descent
     result = []
-    for batch, indices in enumerate(_sample_dataset_indices(
-        exclusive.train_info.dataset.obj,
-        THP.iterations_per_epoch, **vars(THP.sampling)
-    )):
+    for batch, indices in enumerate(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
         
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
 
-        pre_runs: List[torch.Tensor] = []
+        pre_runs: list[torch.Tensor] = []
         def compute_losses() -> torch.Tensor:
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
@@ -257,7 +253,7 @@ def _run_training(
         HP: Namespace,
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
-        checkpoint_paths: List[str],
+        checkpoint_paths: list[str],
         checkpoint_frequency: int = 5,
         print_frequency: int = 1,
 ) -> TensorDict:
@@ -303,8 +299,8 @@ def _run_training(
             cache_: Namespace
     ):
         return _train_default(THP, exclusive_, ensembled_learned_kfs_, cache_)
-    training_funcs: List[TrainFunc] = exclusive.reference_module.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
-    # training_funcs: List[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
+    training_funcs: list[TrainFunc] = exclusive.reference_module.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
+    # training_funcs: list[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
     
     # TODO: Run training functions starting from checkpoint if it exists
     counter = 1
@@ -390,10 +386,10 @@ def _run_training(
 def _run_unit_training_experiment(
         HP: Namespace,
         info: Namespace,
-        checkpoint_paths: List[str],
+        checkpoint_paths: list[str],
         initialization: TensorDict[str, torch.Tensor],
         print_hyperparameters: bool = False
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
 
     MHP, DHP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "experiment"))
     if print_hyperparameters:
@@ -416,7 +412,7 @@ def _run_unit_training_experiment(
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(
         lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
-            dataset.obj[..., :DHP.n_systems.train, :DHP.dataset_size.train, :DHP.sequence_length.train],
+            dataset.obj[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
             DHP.total_sequence_length.train
         )), info.train.dataset, dtype=PTR
     )

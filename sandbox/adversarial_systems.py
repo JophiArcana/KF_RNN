@@ -73,7 +73,7 @@ if __name__ == "__main__":
     n_adversarial_systems = 1
 
     if not os.path.exists(save_fname):
-        test_dataset_size = 64
+        n_test_traces = 64
         lsg = MOPDistribution("gaussian", "gaussian", 0.1, 0.1).sample(Namespace(
             S_D=S_D, problem_shape=problem_shape, auxiliary=Namespace()
         ), (n_adversarial_systems,))
@@ -82,11 +82,11 @@ if __name__ == "__main__":
         log = []
         for _ in range(100):
             try:
-                ds = lsg.generate_dataset(test_dataset_size, context_length)
+                ds = lsg.generate_dataset(n_test_traces, context_length)
                 out = TensorDict.from_dict(
                     model(ds.flatten(0, 1).to_dict()),
-                    batch_size=(n_adversarial_systems * test_dataset_size, context_length)
-                ).unflatten(0, (n_adversarial_systems, test_dataset_size))
+                    batch_size=(n_adversarial_systems * n_test_traces, context_length)
+                ).unflatten(0, (n_adversarial_systems, n_test_traces))
 
                 target = ("environment", "observation")
                 loss = Predictor.evaluate_run(out[target], ds, target)

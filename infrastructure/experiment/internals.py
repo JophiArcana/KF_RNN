@@ -225,28 +225,28 @@ def _construct_info_dict(
             #     dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)
             # ))
             
-            dataset_size_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
-                _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.dataset_size.{ds_type}", dtype=int),
+            n_traces_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
+                _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_traces.{ds_type}", dtype=int),
                 _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
             )
-            sequence_length_arr = utils.ceildiv(total_sequence_length_arr, dataset_size_arr)
+            sequence_length_arr = utils.ceildiv(total_sequence_length_arr, n_traces_arr)
 
-            max_dataset_size = dataset_size_arr.max()
+            max_n_traces = n_traces_arr.max()
             max_sequence_length = sequence_length_arr.max()
-            max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_dataset_size
+            max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_n_traces
 
             def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> PTR:
                 sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
                 dataset = sg.generate_dataset(max_batch_size, max_sequence_length).detach()
 
                 if ds_type == TRAINING_DATASET_TYPES[0]:
-                    return PTR(dataset.unflatten(2, (HP.experiment.ensemble_size, max_dataset_size)).permute(0, 2, 1, 3, 4))
+                    return PTR(dataset.unflatten(2, (HP.experiment.ensemble_size, max_n_traces)).permute(0, 2, 1, 3, 4))
                 else:
                     return PTR(dataset.unsqueeze(1).expand(
                         HP.experiment.n_experiments,
                         HP.experiment.ensemble_size,
                         sg.group_shape[1],
-                        max_dataset_size,
+                        max_n_traces,
                         max_sequence_length
                     ))
 
@@ -306,8 +306,8 @@ def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
 
 def _populate_values(HP: Namespace) -> None:
     total_sequence_length = HP.dataset.total_sequence_length.train
-    dataset_size = HP.dataset.dataset_size.train
-    HP.dataset.sequence_length = utils.DefaultingParameter(train=utils.ceildiv(total_sequence_length, dataset_size))
+    n_traces = HP.dataset.n_traces.train
+    HP.dataset.sequence_length = utils.DefaultingParameter(train=utils.ceildiv(total_sequence_length, n_traces))
 
 
 

@@ -66,7 +66,7 @@ if __name__ == "__main__":
         dropout=0.0,
     )
 
-    args.dataset.dataset_size.update(train=1, valid=10, test=10)
+    args.dataset.n_traces.update(train=1, valid=10, test=10)
     args.dataset.total_sequence_length.update(train=2000, valid=20000, test=20000)
 
     args.training.sampling = Namespace(method="full")

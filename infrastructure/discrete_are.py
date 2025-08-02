@@ -17,10 +17,10 @@ def _torch_schur(A: torch.Tensor, vectors_only: bool) -> Tuple[torch.Tensor, Opt
     if vectors_only:
         return Q.real
     else:
-        D = torch.diagonal(R, dim1=-2, dim2=-1)                     # [B... x N]
-        R = R / D.unsqueeze(-2)                                     # [B... x N x N] / [B... x 1 x N]
+        D = torch.diagonal(R, dim1=-2, dim2=-1)                 # [B... x N]
+        R = R / D.unsqueeze(-2)                                 # [B... x N x N] / [B... x 1 x N]
 
-        T = R @ torch.diag_embed(L) @ torch.inverse(R)              # [B... x N x N]
+        T = R @ torch.diag_embed(L) @ torch.inverse(R)          # [B... x N x N]
         return T.real, Q.real
 
 

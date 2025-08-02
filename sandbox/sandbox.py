@@ -767,7 +767,7 @@ if __name__ == '__main__':
     #     n_layer=2
     # )
     # args.dataset.train = Namespace(
-    #     dataset_size=1,
+    #     n_traces=1,
     #     total_sequence_length=200,
     #     system=Namespace(
     #         n_systems=1,
@@ -775,7 +775,7 @@ if __name__ == '__main__':
     #     )
     # )
     # args.dataset.valid = args.dataset.test = Namespace(
-    #     dataset_size=5,
+    #     n_traces=5,
     #     total_sequence_length=10000,
     # )
     #

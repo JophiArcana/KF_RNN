@@ -15,7 +15,7 @@ Loading and generating args
 """
 BaseDatasetArgs = Namespace(
     n_systems=Namespace(train=1),
-    dataset_size=Namespace(train=1, valid=100, test=500),
+    n_traces=Namespace(train=1, valid=100, test=500),
     total_sequence_length=Namespace(train=2000, valid=20000, test=800000),
 )
 BaseTrainArgs = Namespace(
@@ -43,9 +43,6 @@ BaseTrainArgs = Namespace(
         epochs=2500, lr_decay=0.995,        # SECTION: Used for exponential scheduler
         T_0=10, T_mult=2, num_restarts=8,   # SECTION: Used for cosine scheduler
     ),
-
-    # Iteration
-    iterations_per_epoch=20,
 
     # Loss
     control_coefficient=1.0,

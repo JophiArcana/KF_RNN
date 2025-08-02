@@ -31,7 +31,7 @@ if __name__ == "__main__":
     total_dataset_length = 2000
 
     args.model.ridge = 1.0
-    args.dataset.dataset_size.reset(train=1)
+    args.dataset.n_traces.reset(train=1)
     args.dataset.total_sequence_length.reset(train=total_dataset_length)
     args.training.sampling = Namespace(method="full")
     args.training.optimizer = Namespace(

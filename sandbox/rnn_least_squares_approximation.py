@@ -5,8 +5,9 @@ from matplotlib import pyplot as plt
 
 from infrastructure import loader, utils
 from infrastructure.experiment import run_experiments, get_result_attr
-from model.convolutional import CnnPredictorLeastSquares
+from model.convolutional import CnnLeastSquaresPredictor
 from system.linear_time_invariant import MOPDistribution
+
 
 if __name__ == "__main__":
     base_exp_name = "RNNLeastSquaresApproximation"
@@ -19,13 +20,13 @@ if __name__ == "__main__":
     ))
     args = loader.generate_args(SHP)
 
-    args.model.model = CnnPredictorLeastSquares
+    args.model.model = CnnLeastSquaresPredictor
     args.model.ir_length = 64
 
     args.dataset.train.total_sequence_length = 10000
     args.dataset.train.system.distribution = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     args.dataset.valid = args.dataset.test = Namespace(
-        dataset_size=1,
+        n_traces=1,
         total_sequence_length=10000
     )
     args.experiment.metrics = Namespace(

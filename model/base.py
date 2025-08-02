@@ -38,11 +38,11 @@ class Predictor(Observer):
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
         
-        # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
+        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
         _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
-        _dataset_size = sum(v.numel() for _, v in _dataset.items())
+        numel = sum(v.numel() for _, v in _dataset.items())
 
-        _result_list, n_chunks = [], utils.ceildiv(_dataset_size, split_size)
+        _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _result_list.append(TensorDict.from_dict(utils.run_module_arr(
@@ -64,12 +64,12 @@ class Predictor(Observer):
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
 
-        # assert d == 3, f"Expected three batch dimensions (n_systems, dataset_size, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
+        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
         _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
-        _dataset_size = sum(v.numel() for _, v in _dataset.items())
+        numel = sum(v.numel() for _, v in _dataset.items())
 
-        _result_list, n_chunks = [], utils.ceildiv(_dataset_size, split_size)
-        for chunk_indices in torch.chunk(torch.arange(_dataset_size.shape[-2]), chunks=n_chunks, dim=0):
+        _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
+        for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
 

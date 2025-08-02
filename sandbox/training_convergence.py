@@ -34,8 +34,8 @@ if __name__ == "__main__":
     context_length = 250
     n_train_systems = 40000
     n_test_systems = 3
-    valid_dataset_size = 256
-    test_dataset_size = 256
+    n_valid_traces = 256
+    n_test_traces = 256
     
     n_firs = 5
     rnn_increment = 1
@@ -74,8 +74,8 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
 
     ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
-    ARGS_TRANSFORMER.dataset.dataset_size.update(train=1, valid=valid_dataset_size, test=test_dataset_size)
-    ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=valid_dataset_size * context_length, test=test_dataset_size * context_length)
+    ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
+    ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
 
     # SECTION: Training hyperparameters
     ARGS_TRANSFORMER.training.sampling = Namespace(
