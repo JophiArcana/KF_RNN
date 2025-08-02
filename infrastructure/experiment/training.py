@@ -78,6 +78,13 @@ def _sample_dataset_indices(
     n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
     model_shape = dataset.shape[:2]
 
+    if kwargs["sample_method"] == "full":
+        kwargs.update(dict(
+            sample_method="subsequence_unpadded",
+            subsequence_length=None,
+            batch_size=None,
+        ))
+
     mask = dataset["mask"][0, 0]                                        # bool: [S x B x L]
     sequence_lengths = torch.sum(mask, dim=-1)                          # int: [S x B]
 

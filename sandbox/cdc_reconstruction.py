@@ -122,7 +122,7 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.training.optimizer = Namespace(
             type="AdamW",
             max_lr=3e-4, min_lr=1e-6,
-            weight_decay=1e-2, momentum=0.9
+            weight_decay=1e-2, momentum=0.9,
         )
         ARGS_TRANSFORMER.training.scheduler = Namespace(
             type="exponential",
@@ -169,7 +169,7 @@ if __name__ == "__main__":
             ))):
                 baseline_systems = utils.multi_map(
                     lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
-                    systems, dtype=LTISystem
+                    systems, dtype=LTISystem,
                 )
                 torch.save({
                     "train": baseline_systems,
@@ -180,7 +180,7 @@ if __name__ == "__main__":
 
             if not all(map(os.path.exists, (
                 f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
-                f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt"
+                f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt",
             ))):
                 baseline_dataset = utils.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
                 torch.save({
@@ -217,14 +217,14 @@ if __name__ == "__main__":
             }),
             ("total_trace_length", {
                 "model.model": [ZeroPredictor] + [CnnLeastSquaresPredictor] * (context_length - 1),
-                "dataset.total_sequence_length.train": [*range(context_length),]
+                "dataset.total_sequence_length.train": [*range(context_length),],
             })
         ]
     
         result_cnn, _, _ = run_experiments(
             ARGS_BASELINE_CNN, configurations_cnn, {
                 "dir": output_dir,
-                "fname": output_fname
+                "fname": output_fname,
             }, save_experiment=True,
         )
 
@@ -239,16 +239,15 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN.training.optimizer = Namespace(
             type="SGD",
             max_lr=1e-3, min_lr=1e-7,
-            weight_decay=0.0, momentum=0.9
+            weight_decay=0.0, momentum=0.9,
         )
         ARGS_BASELINE_RNN.training.scheduler = Namespace(
             # type="reduce_on_plateau",
             # factor=0.5, patience=10, warmup_duration=0,
             type="exponential",
-            lr_decay=0.995, warmup_duration=100,
-            epochs=2000, gradient_cutoff=1e-6,
+            lr_decay=0.99975, warmup_duration=100,
+            epochs=40000, gradient_cutoff=1e-6,
         )
-        ARGS_BASELINE_RNN.training.iterations_per_epoch = 20
 
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn
     
@@ -272,7 +271,7 @@ if __name__ == "__main__":
             dataset=dataset,
             result_transformer=result_transformer,
             result_cnn=result_cnn,
-            result_rnn=result_rnn
+            result_rnn=result_rnn,
         )
         torch.save(save, save_file)
     torch.cuda.empty_cache()
