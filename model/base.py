@@ -51,6 +51,8 @@ class Predictor(Observer):
                 _dataset_slice,
                 kwargs,
             ), batch_size=_dataset_slice.shape))
+            utils.empty_cache()
+
         return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
 
     @classmethod
@@ -101,11 +103,22 @@ class Predictor(Observer):
         reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
         for k, v in utils.td_items(ensembled_learned_kfs).items():
             t = utils.rgetattr(reference_module, k)
+            k = (*k.split("."),)
             if isinstance(t, nn.Parameter):
                 reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
             else:
                 reset_ensembled_learned_kfs[k] = torch.Tensor(v.clone())
         return reset_ensembled_learned_kfs
+
+    @classmethod
+    def terminate_with_initialization_and_error(
+        cls,
+        THP: Namespace,
+        exclusive: Namespace,
+        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+        cache: Namespace,
+    ) -> bool:
+        return getattr(cache, "done", False)
 
     @classmethod
     def _train_with_initialization_and_error(cls,
@@ -115,11 +128,7 @@ class Predictor(Observer):
                                                  Namespace
                                              ], Tuple[Dict[str, Any], torch.Tensor]],
                                              cache: Namespace
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
-        def terminate_condition() -> bool:
-            return getattr(cache, "done", False)
-        assert not terminate_condition()
-
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if not hasattr(cache, "initialization_error"):
             initialization, error_ = initialization_func(exclusive)
             for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
@@ -129,8 +138,7 @@ class Predictor(Observer):
         else:
             cache.done = True
             error = cache.initialization_error
-        cache.t += 1
-        return error[None], {}, terminate_condition()
+        return error[None], {}
 
     """ forward
         :parameter {
@@ -153,7 +161,7 @@ class Predictor(Observer):
         return TensorDict.from_dict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
 
     @classmethod
-    def train_func_list(cls, default_train_func: Any) -> Sequence[Any]:
+    def train_func_list(cls, default_train_func: Tuple[Any, Any]) -> Sequence[Tuple[Any, Any]]:
         return default_train_func,
 
     @classmethod

@@ -32,6 +32,7 @@ class RnnPredictor(SequentialPredictor):
 class RnnAnalyticalPredictor(RnnPredictor):
     @classmethod
     def train_analytical(cls,
+                         THP: Namespace,
                          exclusive: Namespace,
                          ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                          cache: Namespace
@@ -50,13 +51,13 @@ class RnnAnalyticalPredictor(RnnPredictor):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_analytical,
+        return (cls.train_analytical, Predictor.terminate_with_initialization_and_error,),
 
 
 class RnnAnalyticalPretrainPredictor(RnnAnalyticalPredictor):
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_analytical, default_train_func
+        return RnnAnalyticalPredictor.train_func_list(default_train_func) + (default_train_func,)
 
 
 class RnnCompanionPredictor(SequentialPredictor):

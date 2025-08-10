@@ -35,17 +35,25 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         LeastSquaresPredictor.__init__(self, modelArgs)
 
     def train_func_list(self, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return self.train_least_squares_online,
+        return (self.train_least_squares_online, CnnLeastSquaresPredictor.terminate_least_squares_online,),
+
+    @classmethod
+    def terminate_least_squares_online(
+            cls,
+            THP: Namespace,
+            exclusive: Namespace,
+            ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+            cache: Namespace,
+    ) -> bool:
+        return cache.index >= cache.L
 
     def train_least_squares_online(
-        self,
-        exclusive: Namespace,
-        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
-        cache: Namespace
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
-        def terminate_condition() -> bool:
-            return cache.index >= cache.L
-
+            self,
+            THP: Namespace,
+            exclusive: Namespace,
+            ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+            cache: Namespace,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
         if not hasattr(cache, "index"):
             # TODO: Set up the dataset index sampler
@@ -79,9 +87,8 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
             cache.XTy = torch.zeros((*cache.bsz, cache.rf, self.O_D,))                          # float: [NE... x RF x O_D]
             cache.yTy = torch.zeros((*cache.bsz, self.O_D, self.O_D,))                          # float: [NE... x O_D x O_D]
 
-        increment = 1
         old_index = cache.index
-        cache.index = min(cache.index + increment, cache.L)
+        cache.index = min(cache.index + THP.sampling.batch_size, cache.L)
 
         chunk_indices = torch.arange(old_index, cache.index)                                    # int: [l]
         indices = (chunk_indices[:, None] - torch.arange(self.ir_length)).clamp_min(-1)         # int: [l x R]
@@ -112,19 +119,18 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
             ensembled_learned_kfs[k] = utils.rgetitem(weights_dict, k if isinstance(k, str) else ".".join(k)).expand_as(v)
 
-        cache.t += 1
-        return error[None], {}, terminate_condition()
+        return error[None], {}
 
 
 class CnnLeastSquaresPretrainPredictor(CnnLeastSquaresPredictor):
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_least_squares, default_train_func
+    def train_func_list(self, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
+        return CnnLeastSquaresPredictor.train_func_list(self, default_train_func) + (default_train_func,)
 
 
 class CnnAnalyticalPredictor(CnnPredictor):
     @classmethod
     def train_analytical(cls,
+                         THP: Namespace,
                          exclusive: Namespace,
                          ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                          cache: Namespace
@@ -139,7 +145,7 @@ class CnnAnalyticalPredictor(CnnPredictor):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_analytical,
+        return (cls.train_analytical, Predictor.terminate_with_initialization_and_error,),
 
     def _analytical_initialization(self, system_state_dict: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, Dict[str, torch.Tensor]], torch.Tensor]:
         F, H, K = map(system_state_dict["environment"].__getitem__, ("F", "H", "K"))
@@ -163,6 +169,7 @@ class CnnAnalyticalPredictor(CnnPredictor):
 class CnnAnalyticalLeastSquaresPredictor(CnnPredictor):
     @classmethod
     def train_analytical_least_squares_newton(cls,
+                                              THP: Namespace,
                                               exclusive: Namespace,
                                               ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                                               cache: Namespace
@@ -209,12 +216,13 @@ class CnnAnalyticalLeastSquaresPredictor(CnnPredictor):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_analytical_least_squares_newton,
+        return (cls.train_analytical_least_squares_newton, Predictor.terminate_with_initialization_and_error,),
 
 
-class CnnLeastSquaresRandomStepPredictor(CnnLeastSquaresPredictor):
+class CnnLeastSquaresRandomStepPredictor(CnnLeastSquaresPretrainPredictor):
     @classmethod
     def train_random_step(cls,
+                          THP: Namespace,
                           exclusive: Namespace,
                           ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                           cache: Namespace
@@ -226,14 +234,16 @@ class CnnLeastSquaresRandomStepPredictor(CnnLeastSquaresPredictor):
             }, torch.full((), torch.nan)), cache
         )
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_least_squares, default_train_func, cls.train_random_step
+    def train_func_list(self, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
+        return CnnLeastSquaresPretrainPredictor.train_func_list(self, default_train_func) + (
+            (self.train_random_step, Predictor.terminate_with_initialization_and_error,),
+        )
 
 
-class CnnLeastSquaresNegationPredictor(CnnLeastSquaresPredictor):
+class CnnLeastSquaresNegationPredictor(CnnLeastSquaresPretrainPredictor):
     @classmethod
     def train_negation(cls,
+                       THP: Namespace,
                        exclusive: Namespace,
                        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                        cache: Namespace
@@ -245,9 +255,10 @@ class CnnLeastSquaresNegationPredictor(CnnLeastSquaresPredictor):
             }, torch.full((), torch.nan)), cache
         )
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_least_squares, default_train_func, cls.train_negation
+    def train_func_list(self, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
+        return CnnLeastSquaresPretrainPredictor.train_func_list(self, default_train_func) + (
+            (self.train_negation, Predictor.terminate_with_initialization_and_error,),
+        )
 
 
 

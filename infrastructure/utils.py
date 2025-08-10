@@ -6,6 +6,7 @@ import json
 import math
 import os
 import sys
+import time
 from argparse import Namespace
 from collections import OrderedDict
 from matplotlib import transforms
@@ -13,6 +14,7 @@ from matplotlib.patches import Ellipse
 from types import MappingProxyType
 from typing import *
 
+import einops
 import numpy as np
 import torch
 import torch.nn as nn
@@ -190,9 +192,8 @@ def hadamard_conjugation(
         beta: torch.Tensor,     # [B... x p x q]
         C: torch.Tensor         # [B... x m x p]
 ) -> torch.Tensor:              # [B... x n x q]
-    P = A[..., :, None, :, None] * B[..., None, :, None, :]                         # [B... x m x p x n x q]
     coeff = 1 / (1 - alpha[..., :, None, :, None] * beta[..., None, :, None, :])    # [B... x m x p x n x q]
-    return torch.sum(P * coeff * C[..., None, None], dim=[-3, -4])
+    return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", A, B, C, coeff,)   # [B... x n x q]
 
 def hadamard_conjugation_diff_order1(
         A: torch.Tensor,        # [B... x m x n]
@@ -202,11 +203,10 @@ def hadamard_conjugation_diff_order1(
         beta2: torch.Tensor,    # [B... x p x q]
         C: torch.Tensor         # [B... x m x p]
 ) -> torch.Tensor:              # [B... x n x q]
-    P = A[..., :, None, :, None] * B[..., None, :, None, :]
-    alpha_ = alpha[..., :, None, :, None]
-    _beta1, _beta2 = beta1[..., None, :, None, :], beta2[..., None, :, None, :]
-    coeff = alpha_ / ((1 - alpha_ * _beta1) * (1 - alpha_ * _beta2))
-    return torch.sum(P * coeff * C[..., None, None], dim=[-3, -4])
+    alpha_ = alpha[..., :, None, :, None]                                           # [B... x m x 1 x n x 1]
+    _beta1, _beta2 = beta1[..., None, :, None, :], beta2[..., None, :, None, :]     # [B... x 1 x p x 1 x q]
+    coeff = alpha_ / ((1 - alpha_ * _beta1) * (1 - alpha_ * _beta2))                # [B... x m x p x n x q]
+    return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", A, B, C, coeff,)   # [B... x n x q]
 
 def hadamard_conjugation_diff_order2(
         B: torch.Tensor,        # [B... x p x q]
@@ -214,20 +214,17 @@ def hadamard_conjugation_diff_order2(
         beta2: torch.Tensor,    # [B... x p x q]
         C: torch.Tensor         # [B... x p x p]
 ) -> torch.Tensor:              # [B... x q x q]
-    P = B[..., :, None, :, None] * B[..., None, :, None, :]                         # [B... x p x p x q x q]
     beta1_, _beta1 = beta1[..., :, None, :, None], beta1[..., None, :, None, :]     # b1_ik, b1_jl
     beta2_, _beta2 = beta2[..., :, None, :, None], beta2[..., None, :, None, :]     # b2_ik, b2_jl
 
     beta12 = beta1_ * _beta2                                                        # b1_ik * b2_jl
-    beta21 = beta12.transpose(dim0=-4, dim1=-3).transpose(dim0=-2, dim1=-1)         # b2_ik * b1_jl
+    beta21 = einops.rearrange(beta12, "i j k l -> j i l k")                         # b2_ik * b1_jl
+    beta11, beta22 = (beta1_ * _beta1), (beta2_ * _beta2),                          # b1_ik * b1_jl, b2_ik * b2_jl,
 
-    coeff = (1 - beta12 * beta21) / (                                               # 1 - (b1 * b2)_ik * (b1 * b2)_jl
-        (1 - beta1_ * _beta1)                                                       # 1 - b1_ik * b1_jl
-        * (1 - beta12)                                                              # 1 - b1_ik * b2_jl
-        * (1 - beta21)                                                              # 1 - b2_ik * b1_jl
-        * (1 - beta2_ * _beta2)                                                     # 1 - b2_ik * b2_jl
-    )
-    return torch.sum(P * coeff * C[..., None, None], dim=[-3, -4])
+    coeff = 1 - beta12 * beta21
+    for t in (beta11, beta12, beta21, beta22,):
+        coeff.div_(1 - t)
+    return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", B, B, C, coeff,)
 
 
 """
@@ -235,11 +232,11 @@ NumPy Array Comprehension Operations
 """
 
 def multi_iter(arr: np.ndarray | DimArray) -> Iterable[Any]:
-    for x in np.nditer(arr, flags=["refs_ok"]):
+    for x in np.nditer(arr, flags=["refs_ok",],):
         yield x[()]
 
 def multi_enumerate(arr: np.ndarray | DimArray) -> Iterable[Tuple[Sequence[int], Any]]:
-    it = np.nditer(arr, flags=["multi_index", "refs_ok"])
+    it = np.nditer(arr, flags=["multi_index", "refs_ok",],)
     for x in it:
         yield it.multi_index, x[()]
 

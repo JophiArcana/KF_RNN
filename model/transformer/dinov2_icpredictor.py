@@ -2,14 +2,14 @@ from argparse import Namespace
 
 import torch
 import torch.nn as nn
-from transformers import Dinov2Model
+from transformers import Dinov2Config, Dinov2Model
 
 from model.transformer.base import TransformerPredictor
 
 
 class Dinov2InContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config = modelArgs.dinov2
+        self.config: Dinov2Config = modelArgs.dinov2
         TransformerPredictor.__init__(self, modelArgs, self.config.hidden_size)
 
         self.core = Dinov2Model(self.config)
@@ -27,8 +27,8 @@ class Dinov2AssociativeInContextPredictor(Dinov2InContextPredictor):
         embd_dict = self.trace_to_embedding(trace)
 
         observation_embds = torch.cat([
-            torch.zeros((B, 1, self.S_D)),                      # [B x 1 x S_D]
-            embd_dict["environment"]["observation"][:, :-1]     # [B x (L - 1) x S_D]
+            torch.zeros((B, 1, self.S_D,)),                     # [B x 1 x S_D]
+            embd_dict["environment"]["observation"][:, :-1],    # [B x (L - 1) x S_D]
         ], dim=-2)                                              # [B x L x S_D]
         action_embds = sum(embd_dict["controller"].values())    # [B x L x S_D]
         embds = observation_embds + action_embds                # [B x L x S_D]

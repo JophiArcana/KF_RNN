@@ -5,13 +5,13 @@ from typing import *
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.utils import PTR
 from model.base import Predictor
 from system.base import SystemGroup
+
 
 MetricVars = Tuple[Namespace, TensorDict[str, torch.Tensor]]
 
@@ -47,9 +47,7 @@ class Metric(object):
 
 
 Metrics: OrderedDict[str, Metric] = collections.OrderedDict()
-def add_to_metrics(M: Metric, names: str | Iterable[str]):
-    if isinstance(names, str):
-        names = (names,)
+def add_to_metrics(M: Metric, names: tuple[str, ...]):
     for n in names:
         Metrics[n] = M
 
@@ -209,39 +207,39 @@ def _get_irreducible_loss_with_dataset_type_and_key(ds_type: str, key: Tuple[str
 
 add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "train", ("environment", "observation"), ("environment", "observation")
-), names="overfit")
+), names=("overfit",))
 add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "valid", ("environment", "observation"), ("environment", "observation")
-), names="validation")
+), names=("validation",))
 add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "valid", ("environment", "observation"), ("environment", "target_observation_estimation")
-), names="validation_target")
+), names=("validation_target",))
 add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "test", ("environment", "observation"), ("environment", "observation")
-), names=["testing", "l"])
+), names=("testing", "l",))
 add_to_metrics(_get_evaluation_metric_with_dataset_type_and_targets(
     "valid", ("controller", "input"), ("controller", "input")
-), names="validation_controller")
+), names=("validation_controller",))
 
-add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("train", ("environment", "observation")), names="noiseless_overfit")
-add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("valid", ("environment", "observation")), names="noiseless_validation")
-add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("test", ("environment", "observation")), names=["noiseless_testing", "nl"])
+add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("train", ("environment", "observation")), names=("noiseless_overfit",))
+add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("valid", ("environment", "observation")), names=("noiseless_validation",))
+add_to_metrics(_get_noiseless_error_with_dataset_type_and_key("test", ("environment", "observation")), names=("noiseless_testing", "nl",))
 
 add_to_metrics(_get_comparator_metric_with_dataset_type_and_targets(
     "test", ("environment", "target_observation_estimation"), ("environment", "observation")
-), names=["testing_empirical_irreducible", "eil"])
+), names=("testing_empirical_irreducible", "eil",))
 
 add_to_metrics(_get_noiseless_error_with_dataset_type_and_target(
     "test", ("environment", "target_observation_estimation")
-), names=["noiseless_testing_empirical_irreducible", "neil"])
+), names=("noiseless_testing_empirical_irreducible", "neil",))
 
-add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("environment", "observation")), names="validation_analytical")
-add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("controller", "input")), names="validation_controller_analytical")
-add_to_metrics(_get_analytical_error_with_dataset_type_and_key("test", ("environment", "observation")), names=["testing_analytical", "al"])
+add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("environment", "observation")), names=("validation_analytical",))
+add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("controller", "input")), names=("validation_controller_analytical",))
+add_to_metrics(_get_analytical_error_with_dataset_type_and_key("test", ("environment", "observation")), names=("testing_analytical", "al",))
 
-add_to_metrics(_get_gradient_norm_with_dataset_type("train"), names="overfit_gradient_norm")
+add_to_metrics(_get_gradient_norm_with_dataset_type("train"), names=("overfit_gradient_norm",))
 
-add_to_metrics(_get_irreducible_loss_with_dataset_type_and_key("test", ("environment", "observation")), names=["testing_irreducible", "il"])
+add_to_metrics(_get_irreducible_loss_with_dataset_type_and_key("test", ("environment", "observation")), names=("testing_irreducible", "il",))
 
 
 

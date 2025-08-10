@@ -1,10 +1,21 @@
-from .gpt2_icpredictor import GPT2InContextPredictor, GPT2AssociativeInContextPredictor
+from .gpt2_icpredictor import (
+    GPT2InContextPredictor,
+    GPT2AssociativeInContextPredictor,
+)
 from .gptneox_icpredictor import GPTNeoXInContextPredictor
-from .llama_icpredictor import LlamaInContextPredictor
-from .transformerxl_icpredictor import TransformerXLInContextPredictor
-from .transformerxl_iccontroller import TransformerXLInContextController
+from .transformerxl_icpredictor import (
+    TransformerXLInContextPredictor,
+    TransformerXLInContextController,
+)
 from .xlnet_icpredictor import XLNetInContextPredictor
-from .dinov2_icpredictor import Dinov2InContextPredictor, Dinov2AssociativeInContextPredictor
+from .llama_icpredictor import LlamaInContextPredictor
+
+from .mamba_icpredictor import Mamba2InContextPredictor
+
+from .dinov2_icpredictor import (
+    Dinov2InContextPredictor,
+    Dinov2AssociativeInContextPredictor,
+)
 
 
 

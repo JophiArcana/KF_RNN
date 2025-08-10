@@ -5,6 +5,7 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.experiment.training import TrainFunc
 from model.base import Predictor
 
 
@@ -75,7 +76,7 @@ class ZeroPredictor(Predictor):
 
 
     @classmethod
-    def train_func_list(cls, default_train_func: Any) -> Sequence[Any]:
+    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return ()
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:

@@ -1,7 +1,9 @@
 #%%
 # This line needs to be added since some terminals will not recognize the current directory
+import os
 import sys
-sys.path.append("/home/wenliao/KF_RNN")
+os.chdir("/home/wentinn/workspace/KF_RNN")
+sys.path.append("/home/wentinn/workspace/KF_RNN")
 
 from argparse import Namespace
 
@@ -34,6 +36,7 @@ if __name__ == "__main__":
 
 
     args.dataset.total_sequence_length.reset(train=100)
+    args.training.sampling.batch_size = 4096
     args.experiment.metrics = Namespace(
         training={"validation_analytical"},
         testing={"al", "il"},
@@ -65,3 +68,5 @@ if __name__ == "__main__":
 
 
 
+
+# %%

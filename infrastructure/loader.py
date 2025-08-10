@@ -18,7 +18,7 @@ BaseDatasetArgs = Namespace(
     n_traces=Namespace(train=1, valid=100, test=500),
     total_sequence_length=Namespace(train=2000, valid=20000, test=800000),
 )
-BaseTrainArgs = Namespace(
+BaseTrainingArgs = Namespace(
     # Batch sampling
     sampling=Namespace(
         method="subsequence_padded",        # {"full", "subsequence_padded", "subsequence_unpadded"}
@@ -89,15 +89,15 @@ def load_system_and_args(folder: str):
         ),
         dataset=BaseDatasetArgs,
         model=Namespace(problem_shape=problem_shape),
-        training=BaseTrainArgs,
+        training=BaseTrainingArgs,
         experiment=BaseExperimentArgs
     ))
     args.dataset.n_systems.train = 1
     args.experiment.n_experiments = 1
 
-    system_group = LTISystem(problem_shape, auxiliary, TensorDict.from_dict({"environment": {
+    system_group = LTISystem(args.system, TensorDict.from_dict({"environment": {
         "F": A, "B": TensorDict({"input": B}, batch_size=()), "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
-    }}, batch_size=()).expand(args.dataset.n_systems.train, args.experiment.n_experiments), settings)
+    }}, batch_size=()).expand(args.dataset.n_systems.train, args.experiment.n_experiments))
     return {"train": DimArray(utils.array_of(system_group), dims=[])}, args_from(args)
 
 
@@ -109,7 +109,7 @@ def generate_args(shp: Namespace) -> Namespace:
         system=shp,
         dataset=BaseDatasetArgs,
         model=Namespace(problem_shape=shp.problem_shape),
-        training=BaseTrainArgs,
+        training=BaseTrainingArgs,
         experiment=BaseExperimentArgs,
     )))
 

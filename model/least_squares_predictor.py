@@ -13,6 +13,7 @@ from model.base import Predictor
 class LeastSquaresPredictor(Predictor):
     @classmethod
     def train_least_squares(cls,
+                            THP: Namespace,
                             exclusive: Namespace,
                             ensembled_learned_kfs: TensorDict[str, torch.Tensor],
                             cache: Namespace
@@ -31,7 +32,7 @@ class LeastSquaresPredictor(Predictor):
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return cls.train_least_squares,
+        return (cls.train_least_squares, Predictor.terminate_with_initialization_and_error,),
 
     def __init__(self, modelArgs: Namespace):
         self.ridge = getattr(modelArgs, "ridge", 0.)

@@ -13,6 +13,7 @@ from transformers import (
     GPT2Config,
     TransfoXLConfig,
     Dinov2Config,
+    Mamba2Config,
 )
 
 # This line needs to be added since some terminals will not recognize the current directory
@@ -31,6 +32,7 @@ from model.transformer import (
     GPT2AssociativeInContextPredictor,
     TransformerXLInContextPredictor,
     Dinov2AssociativeInContextPredictor,
+    Mamba2InContextPredictor,
 )
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LTISystem, MOPDistribution
@@ -105,6 +107,13 @@ if __name__ == "__main__":
             num_attention_heads=n_head,
             mlp_ratio=mlp_ratio,
         )
+        ARGS_TRANSFORMER.model.mamba = Mamba2Config(
+            state_size=64,
+            hidden_size=d_embed,
+            num_hidden_layers=n_layer,
+            num_heads=n_head,
+            head_dim=int(2 * d_embed / n_head),
+        )
     
         # SECTION: Dataset hyperparameters
         ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
@@ -138,10 +147,13 @@ if __name__ == "__main__":
             ("model", {
                 # "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor,],
                 # "model.model": [GPT2AssociativeInContextPredictor, Dinov2AssociativeInContextPredictor,],
-                "model.model": [GPT2InContextPredictor, Dinov2AssociativeInContextPredictor,],
+                # "model.model": [GPT2InContextPredictor, GPT2AssociativeInContextPredictor,],
+                "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
                 "training": {
+                    # "sampling.batch_size": [32, 32,],
                     "optimizer.max_lr": [3e-4, 3e-3,],
-                    "scheduler.lr_decay": [1.0, 0.99,],
+                    "scheduler.lr_decay": [0.98, 0.9,],
+                    # "scheduler.epochs": [100, 100,],
                 }
             })
         ]

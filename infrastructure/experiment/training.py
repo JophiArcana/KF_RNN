@@ -2,6 +2,7 @@ import copy
 import json
 from argparse import Namespace
 from inspect import signature
+from tqdm import tqdm
 from typing import Any, Callable, Iterable
 
 import numpy as np
@@ -19,7 +20,7 @@ from model.base import Predictor
 
 # Optimizer configuration
 def _get_optimizer_and_scheduler(
-        params: Iterable[torch.Tensor],
+        params: Iterable[tuple[str, torch.Tensor]],
         THP: Namespace
 ) -> tuple[optim.Optimizer, optim.lr_scheduler.LRScheduler]:
 
@@ -65,11 +66,20 @@ def _get_optimizer_and_scheduler(
         )
 
 # Training
-TrainFunc = Callable[[
-    Namespace,
-    TensorDict[str, torch.Tensor],
-    Namespace
-], tuple[torch.Tensor, dict[str, torch.Tensor], bool]]
+TrainFunc = tuple[
+    Callable[[
+        Namespace,
+        Namespace,
+        TensorDict[str, torch.Tensor],
+        Namespace
+    ], tuple[torch.Tensor, dict[str, torch.Tensor],]],
+    Callable[[
+        Namespace,
+        Namespace,
+        TensorDict[str, torch.Tensor],
+        Namespace
+    ], bool],
+]
 
 def _sample_dataset_indices(
         dataset: TensorDict[str, torch.Tensor],                         # [N x E x S x B x L x ...]
@@ -78,9 +88,9 @@ def _sample_dataset_indices(
     n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
     model_shape = dataset.shape[:2]
 
-    if kwargs["sample_method"] == "full":
+    if kwargs["method"] == "full":
         kwargs.update(dict(
-            sample_method="subsequence_unpadded",
+            method="subsequence_unpadded",
             subsequence_length=None,
             batch_size=None,
         ))
@@ -94,7 +104,7 @@ def _sample_dataset_indices(
         subsequence_length = torch.full_like(sequence_lengths, kwargs["subsequence_length"])
 
     stop_index_mask = mask                                              # bool: [S x B x L]
-    if kwargs["sample_method"] == "subsequence_unpadded":
+    if kwargs["method"] == "subsequence_unpadded":
         stop_index_mask *= (torch.arange(max_sequence_length) >= (subsequence_length - 1)[..., None])
 
     weights = stop_index_mask.to(torch.float) + torch.rand(model_shape + stop_index_mask.shape) # float: [N x E x S x B x L]
@@ -164,31 +174,36 @@ def _extract_dataset_from_indices(
         subsequence_idx,
     ]
 
-def _train_default(
+def TERMINATE_DEFAULT(
         THP: Namespace,
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],
-        cache: Namespace
-) -> tuple[torch.Tensor, dict[str, torch.Tensor], bool]:
-    def terminate_condition() -> bool:
-        if THP.scheduler.epochs is None:
-            reference_module = exclusive.reference_module.eval()
-            with torch.set_grad_enabled(True):
-                run = Predictor.run(reference_module, ensembled_learned_kfs, cache.padded_train_dataset)
-                loss = Predictor.evaluate_run(
-                    run["environment", "observation"],
-                    cache.padded_train_dataset, ("environment", "observation")
-                )
-            grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
-            grad_norm = torch.Tensor(sum(
-                grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
-                for grad in grads
-            )).mean()
-            print(grad_norm)
-            return grad_norm < THP.scheduler.gradient_cutoff
-        else:
-            return cache.t >= THP.scheduler.epochs
+        cache: Namespace,
+) -> bool:
+    if THP.scheduler.epochs is None:
+        reference_module = exclusive.reference_module.eval()
+        with torch.set_grad_enabled(True):
+            run = Predictor.run(reference_module, ensembled_learned_kfs, cache.padded_train_dataset)
+            loss = Predictor.evaluate_run(
+                run["environment", "observation"],
+                cache.padded_train_dataset, ("environment", "observation")
+            )
+        grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
+        grad_norm = torch.Tensor(sum(
+            grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
+            for grad in grads
+        )).mean()
+        print(grad_norm)
+        return grad_norm < THP.scheduler.gradient_cutoff
+    else:
+        return cache.t >= THP.scheduler.epochs
 
+def TRAIN_DEFAULT(
+        THP: Namespace,
+        exclusive: Namespace,
+        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+        cache: Namespace,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
     if not hasattr(cache, "optimizer"):
         # TODO: Set up the dataset index sampler
@@ -201,16 +216,16 @@ def _train_default(
         for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
             ensembled_learned_kfs[k] = v
         cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((
-            v for v in ensembled_learned_kfs.values(include_nested=True, leaves_only=True)
+            (k, v) for (k, v) in ensembled_learned_kfs.items(include_nested=True, leaves_only=True)
             if isinstance(v, nn.Parameter)
         ), THP)
 
     # SECTION: Iterate through train indices and run gradient descent
     result = []
-    for batch, indices in enumerate(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
+    for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
-        
+
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
         reference_module = exclusive.reference_module.train()
 
@@ -245,7 +260,6 @@ def _train_default(
         result.append(_losses)
 
         cache.optimizer.step(closure)
-    cache.t += 1
 
     result = torch.stack(result, dim=0)
     log = {"learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"])}
@@ -253,7 +267,7 @@ def _train_default(
     if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
         utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
 
-    return result, log, terminate_condition()
+    return result, log,
 
 # Full training scheme
 def _run_training(
@@ -261,7 +275,7 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: list[str],
-        checkpoint_frequency: int = 5,
+        checkpoint_frequency: int = 20,
         print_frequency: int = 1,
 ) -> TensorDict:
 
@@ -283,16 +297,22 @@ def _run_training(
             "training_func_idx",
             "cache",
             "reference_module",
-            "results"
+            "results",
         ))
         # TODO: If an optimizer is used for training, then ensembled_learned_kfs needs to reference the parameters optimized by the optimizer
         if hasattr(cache, "optimizer"):
-            checkpoint_params = cache.optimizer.param_groups[0]["params"]
+            optimizer: optim.Optimizer = cache.optimizer
+            checkpoint_params = zip(
+                optimizer.param_groups[0]["param_names"],
+                optimizer.param_groups[0]["params"],
+            )
         # TODO: Otherwise, copying the values stored by the checkpointed ensembled_learned_kfs is sufficient
         else:
-            checkpoint_params = checkpoint["ensembled_learned_kfs"].values()
-        for checkpoint_v, (k, v) in zip(checkpoint_params, ensembled_learned_kfs.items(include_nested=True, leaves_only=True)):
-            ensembled_learned_kfs[k] = checkpoint_v
+            checkpoint_params = checkpoint["ensembled_learned_kfs"].items(include_nested=True, leaves_only=True)
+        for k, v in checkpoint_params:
+            ensembled_learned_kfs[k] = v
+        # for checkpoint_v, (k, v) in zip(checkpoint_params, ensembled_learned_kfs.items(include_nested=True, leaves_only=True)):
+        #     ensembled_learned_kfs[k] = checkpoint_v
     else:
         THP = None
         training_func_idx = 0
@@ -300,42 +320,28 @@ def _run_training(
         results = []
 
     # DONE: Use list of training functions specified by the model
-    def DEFAULT_TRAINING_FUNC(
-            exclusive_: Namespace,
-            ensembled_learned_kfs_: TensorDict[str, torch.Tensor],
-            cache_: Namespace
-    ):
-        return _train_default(THP, exclusive_, ensembled_learned_kfs_, cache_)
-    training_funcs: list[TrainFunc] = exclusive.reference_module.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
-    # training_funcs: list[TrainFunc] = MHP.model.train_func_list(DEFAULT_TRAINING_FUNC)[training_func_idx:]
-    
+    reference_module: Predictor = exclusive.reference_module
+    training_funcs: list[TrainFunc] = reference_module.train_func_list((TRAIN_DEFAULT, TERMINATE_DEFAULT,))[training_func_idx:]
+
     # TODO: Run training functions starting from checkpoint if it exists
     counter = 1
-    for idx, training_func in enumerate(training_funcs, start=training_func_idx):
+    for idx, (training_func, _terminate_func,) in enumerate(training_funcs, start=training_func_idx):
         print(f'Training function {training_func.__name__}{signature(training_func)}')
         print("-" * 160)
 
         # Create optimizer
-        done = False
         if THP is None:
             THP = copy.deepcopy(_THP)
         if idx != training_func_idx:
             cache = Namespace(t=0)
 
-        while not done:
-            # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
-            checkpoint = {
-                "THP": THP,
-                "training_func_idx": idx,
-                "cache": cache,
-                "reference_module": exclusive.reference_module,
-                "ensembled_learned_kfs": ensembled_learned_kfs,
-                "results": results
-            }
-            if checkpoint_paths is not None and counter % checkpoint_frequency == 0:
-                for checkpoint_path in checkpoint_paths:
-                    torch.save(checkpoint, checkpoint_path)
+        def terminate_func(THP, exclusive, ensembled_learned_kfs, cache):
+            try:
+                return _terminate_func(THP, exclusive, ensembled_learned_kfs, cache)
+            except AttributeError:
+                return False
 
+        while not terminate_func(THP, exclusive, ensembled_learned_kfs, cache):
             # DONE: Set up caching for metrics
             metric_cache = {}
             metrics: set = utils.rgetattr(EHP, "metrics.training", {
@@ -348,18 +354,18 @@ def _run_training(
             } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
 
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
-            exclusive.reference_module.eval()
+            reference_module.eval()
             r = TensorDict({
                 m: Metrics[m].evaluate(
-                    (exclusive, ensembled_learned_kfs),
-                    metric_cache, sweep_position="inside", with_batch_dim=False
+                    (exclusive, ensembled_learned_kfs), metric_cache,
+                    sweep_position="inside", with_batch_dim=False,
                 ).detach()
                 for m in metrics
-            }, batch_size=EHP.model_shape)
+            }, batch_size=EHP.model_shape,)
 
             # DONE: Train on train dataset, passing in only train dataset and dataloader, and save the learning rate
-            exclusive.reference_module.train()
-            train_result, log, done = training_func(exclusive, ensembled_learned_kfs, cache)
+            reference_module.train()
+            train_result, log = training_func(THP, exclusive, ensembled_learned_kfs, cache)
             r["training"] = train_result.detach()[0]
 
             # DONE: Check if training uses an LR scheduler, otherwise log the LR as NaN
@@ -370,15 +376,32 @@ def _run_training(
             results.append(r)
 
             # DONE: Print losses
-            if ((cache.t - 1) % print_frequency == 0) or (training_func is not DEFAULT_TRAINING_FUNC):
+            if (cache.t % print_frequency == 0) or (training_func is not TRAIN_DEFAULT):
                 mean_losses = [
                     (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(dim=-1).median(dim=-1).values.mean())
                     # (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean())
                     for loss_type in ("training", *metrics, *log.keys())
                 ]
-                print(f"\tEpoch {cache.t - 1} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
+                print(f"\tEpoch {cache.t} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
 
+            cache.t += 1
             counter += 1
+            # print(sum([torch.norm(v) for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True)]))
+
+            # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
+            checkpoint = {
+                "THP": THP,
+                "training_func_idx": idx,
+                "cache": cache,
+                "reference_module": reference_module,
+                "ensembled_learned_kfs": ensembled_learned_kfs,
+                "results": results,
+            }
+            if checkpoint_paths is not None and counter % checkpoint_frequency == 0:
+                for checkpoint_path in checkpoint_paths:
+                    torch.save(checkpoint, checkpoint_path)
+
+            utils.empty_cache()
 
     # TODO: Delete the checkpoint so that it does not interfere with the next experiment
     if checkpoint_paths is not None:

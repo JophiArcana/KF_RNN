@@ -5,6 +5,7 @@ from tensordict import TensorDict
 
 from system.base import SystemGroup
 
+
 PARAM_GROUP_FORMATTER: str = "{0}_d({1})"
 TRAINING_DATASET_TYPES: List[str] = [
     "train",
