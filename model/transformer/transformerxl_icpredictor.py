@@ -9,9 +9,7 @@ from model.transformer.base import TransformerPredictor, TransformerController
 class TransformerXLInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
         self.config: TransfoXLConfig = modelArgs.transformerxl
-        TransformerPredictor.__init__(self, modelArgs, self.config.d_model)
-
-        self.core = TransfoXLModel(self.config)
+        TransformerPredictor.__init__(self, modelArgs, TransfoXLModel(self.config), self.config.d_model)
 
 
 class TransformerXLInContextController(TransformerXLInContextPredictor, TransformerController):

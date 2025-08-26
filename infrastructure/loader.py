@@ -50,7 +50,9 @@ BaseTrainingArgs = Namespace(
 BaseExperimentArgs = Namespace(
     n_experiments=1,
     ensemble_size=32,
-    backup_frequency=None
+    backup_frequency=None,
+    checkpoint_frequency=None,
+    print_frequency=None,
 )
 
 def args_from(HP: Namespace):

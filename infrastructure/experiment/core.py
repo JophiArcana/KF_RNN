@@ -11,10 +11,15 @@ from dimarray import DimArray
 
 from infrastructure import utils
 from infrastructure.utils import PTR
-from infrastructure.experiment.internals import _filter_dimensions_if_any_satisfy_condition, \
-    _supports_dataset_condition, _construct_dependency_dict_and_params_dataset, \
-    _construct_info_dict_from_dataset_types, _iterate_HP_with_params, \
-    _process_info_dict, _populate_values
+from infrastructure.experiment.internals import (
+    _filter_dimensions_if_any_satisfy_condition,
+    _supports_dataset_condition,
+    _construct_dependency_dict_and_params_dataset,
+    _construct_info_dict_from_dataset_types,
+    _iterate_HP_with_params,
+    _process_info_dict,
+    _populate_values,
+)
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
@@ -46,7 +51,7 @@ def run_experiments(
 
     return run_testing_experiments(
         HP, iterparams, output_kwargs,
-        systems=systems, result=training_result, cache=training_cache, save_experiment=save_experiment
+        systems=systems, result=training_result, cache=training_cache, save_experiment=save_experiment,
     )
 
 
@@ -102,7 +107,8 @@ def run_training_experiments(
             f"{train_output_dir}/checkpoint_backup.pt"
         ]
     else:
-        output_dir = train_output_dir = caching_output_fname = caching_output_fname_backup = final_output_fname = checkpoint_paths = None
+        output_dir = train_output_dir = caching_output_fname = caching_output_fname_backup = final_output_fname = None
+        checkpoint_paths = []
 
     # Check if the entire experiment has already been run
     if save_experiment and os.path.exists(final_output_fname):
@@ -139,6 +145,9 @@ def run_training_experiments(
     )
 
     # Result setup
+    if save_experiment and os.path.exists(final_output_fname):
+        return utils.torch_load(final_output_fname)
+
     if save_experiment and os.path.exists(caching_output_fname):
         try:
             result = utils.torch_load(caching_output_fname)
@@ -199,12 +208,14 @@ def run_training_experiments(
                 print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
             print("#" * 160 + "\n")
 
+            utils.empty_cache()
             counter += 1
 
     # SECTION: Save relevant information
     if save_experiment:
         # Save full results to final output file
-        torch.save((result, cache), final_output_fname)
+        torch.save((result, cache,), final_output_fname)
+        os.remove(caching_output_fname)
 
         # Save code to for experiment reproducibility
         code_base_dir = f"{output_dir}/code"
@@ -228,7 +239,7 @@ def run_training_experiments(
         if os.path.exists(caching_output_fname_backup):
             os.remove(caching_output_fname_backup)
 
-    return result, cache
+    return result, cache,
 
 
 def run_testing_experiments(
@@ -269,6 +280,9 @@ def run_testing_experiments(
             pass
 
     # Result setup
+    if save_experiment and os.path.exists(final_output_fname):
+        return utils.torch_load(final_output_fname)
+
     if save_experiment and os.path.exists(caching_output_fname):
         result = utils.torch_load(caching_output_fname)
     elif result is None:
@@ -338,10 +352,10 @@ def run_testing_experiments(
                 try:
                     r = Metrics[m].evaluate(
                         (exclusive, ensembled_learned_kfs),
-                        metric_cache, sweep_position="outside", with_batch_dim=True
+                        metric_cache, sweep_position="outside", with_batch_dim=True,
                     ).detach()
                     metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
-                except NotImplementedError:
+                except Exception:
                     pass
             try:
                 metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
@@ -360,13 +374,15 @@ def run_testing_experiments(
                     print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
                     print("#" * 160 + "\n")
 
+            utils.empty_cache()
             counter += 1
 
     # SECTION: Save relevant information
     test_systems, test_dataset = INFO_DICT[TESTING_DATASET_TYPE]["systems"], INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
     if save_experiment:
         # Save full results to final output file
-        torch.save((result, test_systems, test_dataset), final_output_fname)
+        torch.save((result, test_systems, test_dataset,), final_output_fname)
+        os.remove(caching_output_fname)
 
         # Write hyperparameters to JSON
         hp_fname = f"{test_output_dir}/hparams.json"
@@ -374,7 +390,7 @@ def run_testing_experiments(
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-    return result, test_systems, test_dataset
+    return result, test_systems, test_dataset,
 
 
 def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:

@@ -88,7 +88,7 @@ def _get_noiseless_error_with_dataset_type_and_key(ds_type: str, key: Tuple[str,
             )
             env = sg.environment
             irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
-            return (reducible_error.T + irreducible_error.T).T
+            return utils.T(utils.T(reducible_error) + utils.T(irreducible_error))
 
         return utils.multi_map(noiseless_error, utils.multi_zip(
             run_arr, utils.rgetattr(exclusive, f"info.{ds_type}.dataset"),
@@ -113,7 +113,7 @@ def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: Tupl
             )
             env = sg.environment
             irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
-            return (reducible_error.T + irreducible_error.T).T
+            return utils.T(utils.T(reducible_error) + utils.T(irreducible_error))
             
         return utils.multi_map(noiseless_error, utils.multi_zip(
             utils.rgetattr(exclusive, f"info.{ds_type}.dataset"),

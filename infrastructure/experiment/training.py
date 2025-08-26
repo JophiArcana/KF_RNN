@@ -1,6 +1,7 @@
 import copy
 import json
 from argparse import Namespace
+from dataclasses import dataclass
 from inspect import signature
 from tqdm import tqdm
 from typing import Any, Callable, Iterable
@@ -8,7 +9,6 @@ from typing import Any, Callable, Iterable
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
-import torch.utils.data
 from tensordict import TensorDict
 
 from infrastructure import utils
@@ -88,13 +88,6 @@ def _sample_dataset_indices(
     n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
     model_shape = dataset.shape[:2]
 
-    if kwargs["method"] == "full":
-        kwargs.update(dict(
-            method="subsequence_unpadded",
-            subsequence_length=None,
-            batch_size=None,
-        ))
-
     mask = dataset["mask"][0, 0]                                        # bool: [S x B x L]
     sequence_lengths = torch.sum(mask, dim=-1)                          # int: [S x B]
 
@@ -104,13 +97,17 @@ def _sample_dataset_indices(
         subsequence_length = torch.full_like(sequence_lengths, kwargs["subsequence_length"])
 
     stop_index_mask = mask                                              # bool: [S x B x L]
-    if kwargs["method"] == "subsequence_unpadded":
-        stop_index_mask *= (torch.arange(max_sequence_length) >= (subsequence_length - 1)[..., None])
+    method: str = kwargs["method"]
+    if method is None:
+        method = "subsequence_unpadded"
+    assert method in ("subsequence_unpadded", "subsequence_padded",), f"method must be one of (`subsequence_unpadded`, `subsequence_padded`,) but got {method}"
+    if method == "subsequence_unpadded":
+        stop_index_mask = stop_index_mask * (torch.arange(max_sequence_length) >= (subsequence_length - 1)[..., None])
 
     weights = stop_index_mask.to(torch.float) + torch.rand(model_shape + stop_index_mask.shape) # float: [N x E x S x B x L]
     stop_indices = torch.argmax(weights, dim=-1) + 1                                            # int: [N x E x S x B]
     start_indices = stop_indices - subsequence_length                                           # int; [N x E x S x B]
-    system_indices, sequence_indices = torch.meshgrid(torch.arange(n_systems), torch.arange(n_traces))
+    system_indices, sequence_indices = torch.meshgrid((torch.arange(n_systems), torch.arange(n_traces),), indexing="ij",)
 
     shape = (*model_shape, n_systems, n_traces,)
     index_td = TensorDict({
@@ -157,9 +154,9 @@ def _extract_dataset_from_indices(
 
     n_experiment_idx = torch.arange(indices.shape[0])[:, None, None, None]
     ensemble_size_idx = torch.arange(indices.shape[1])[None, :, None, None]
-    system_idx = system_indices.unsqueeze(-1)
-    sequence_idx = sequence_indices.unsqueeze(-1)
-    subsequence_idx = (start_indices.unsqueeze(-1) + subsequence_offset).clamp_min(-1)
+    system_idx = system_indices[..., None]
+    sequence_idx = sequence_indices[..., None]
+    subsequence_idx = (start_indices[..., None] + subsequence_offset).clamp_min(-1)
 
     """
         input: [N x E x B x L_SS x I_D]
@@ -262,12 +259,23 @@ def TRAIN_DEFAULT(
         cache.optimizer.step(closure)
 
     result = torch.stack(result, dim=0)
-    log = {"learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"])}
-
+    log = {
+        "learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"]),
+        # "imag": sum(torch.norm(v.imag) ** 2 for v in ensembled_learned_kfs.values(include_nested=True, leaves_only=True)),
+    }
     if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
         utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
 
     return result, log,
+
+
+@dataclass
+class Checkpoint:
+    training_func_idx: int
+    cache: Namespace
+    ensembled_learned_kfs: TensorDict[str, torch.Tensor]
+    results: list[TensorDict[str, torch.Tensor]]
+
 
 # Full training scheme
 def _run_training(
@@ -275,46 +283,36 @@ def _run_training(
         exclusive: Namespace,
         ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
         checkpoint_paths: list[str],
-        checkpoint_frequency: int = 20,
-        print_frequency: int = 1,
 ) -> TensorDict:
-
-    MHP, _THP, EHP = map(vars(HP).__getitem__, ("model", "training", "experiment"))
+    THP, EHP = HP.training, HP.experiment,
 
     # TODO: Check if checkpoint exists and if so, load the stored information
-    checkpoint = None
-    if checkpoint_paths is not None:
-        for checkpoint_path in filter(os.path.exists, checkpoint_paths):
-            try:
-                checkpoint = utils.torch_load(checkpoint_path)
-                break
-            except RuntimeError:
-                pass
+    checkpoint: Checkpoint = None
+    for checkpoint_path in checkpoint_paths:
+        try:
+            checkpoint = utils.torch_load(checkpoint_path)
+            break
+        except Exception:
+            pass
 
     if checkpoint is not None:
-        THP, training_func_idx, cache, exclusive.reference_module, results = map(checkpoint.__getitem__, (
-            "THP",
-            "training_func_idx",
-            "cache",
-            "reference_module",
-            "results",
-        ))
-        # TODO: If an optimizer is used for training, then ensembled_learned_kfs needs to reference the parameters optimized by the optimizer
+        training_func_idx = checkpoint.training_func_idx
+        cache = checkpoint.cache
+        results = checkpoint.results
+
         if hasattr(cache, "optimizer"):
+            # TODO: If an optimizer is used for training, then ensembled_learned_kfs needs to reference the parameters optimized by the optimizer
             optimizer: optim.Optimizer = cache.optimizer
-            checkpoint_params = zip(
-                optimizer.param_groups[0]["param_names"],
-                optimizer.param_groups[0]["params"],
-            )
-        # TODO: Otherwise, copying the values stored by the checkpointed ensembled_learned_kfs is sufficient
+            checkpoint_params = zip(optimizer.param_groups[0]["param_names"], optimizer.param_groups[0]["params"],)
         else:
-            checkpoint_params = checkpoint["ensembled_learned_kfs"].items(include_nested=True, leaves_only=True)
+            # TODO: Otherwise, copying the values stored by the checkpointed ensembled_learned_kfs is sufficient
+            checkpoint_params = checkpoint.ensembled_learned_kfs.items(include_nested=True, leaves_only=True)
+       
         for k, v in checkpoint_params:
             ensembled_learned_kfs[k] = v
-        # for checkpoint_v, (k, v) in zip(checkpoint_params, ensembled_learned_kfs.items(include_nested=True, leaves_only=True)):
-        #     ensembled_learned_kfs[k] = checkpoint_v
+        
+        print(f"Checkpoint loaded starting from epoch {cache.t}")
     else:
-        THP = None
         training_func_idx = 0
         cache = Namespace(t=0)
         results = []
@@ -323,15 +321,40 @@ def _run_training(
     reference_module: Predictor = exclusive.reference_module
     training_funcs: list[TrainFunc] = reference_module.train_func_list((TRAIN_DEFAULT, TERMINATE_DEFAULT,))[training_func_idx:]
 
+    # DONE: List the metrics that need to be computed
+    metrics: set = utils.rgetattr(EHP, "metrics.training", {
+        "overfit",
+        "validation",
+        "validation_target",
+        "validation_analytical",
+        "impulse_target",
+        "overfit_gradient_norm"
+    } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
+
+    def evaluate_metrics() -> TensorDict[str, torch.Tensor]:
+        reference_module.eval()
+        metric_cache = {}
+        return TensorDict({
+            m: Metrics[m].evaluate(
+                (exclusive, ensembled_learned_kfs), metric_cache,
+                sweep_position="inside", with_batch_dim=False,
+            ).detach()
+            for m in metrics
+        }, batch_size=EHP.model_shape,)
+    
+    def print_losses(r: TensorDict[str, torch.Tensor], prefix: str, keys: Iterable[str]) -> None:
+        mean_losses = [
+            (loss_type, r[loss_type].reshape((*EHP.model_shape, -1,)).mean(dim=-1).median(dim=-1).values.mean())
+            for loss_type in keys
+        ]
+        print(f"\t{prefix} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
+
     # TODO: Run training functions starting from checkpoint if it exists
-    counter = 1
     for idx, (training_func, _terminate_func,) in enumerate(training_funcs, start=training_func_idx):
         print(f'Training function {training_func.__name__}{signature(training_func)}')
         print("-" * 160)
 
         # Create optimizer
-        if THP is None:
-            THP = copy.deepcopy(_THP)
         if idx != training_func_idx:
             cache = Namespace(t=0)
 
@@ -342,30 +365,13 @@ def _run_training(
                 return False
 
         while not terminate_func(THP, exclusive, ensembled_learned_kfs, cache):
-            # DONE: Set up caching for metrics
-            metric_cache = {}
-            metrics: set = utils.rgetattr(EHP, "metrics.training", {
-                "overfit",
-                "validation",
-                "validation_target",
-                "validation_analytical",
-                "impulse_target",
-                "overfit_gradient_norm"
-            } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
-
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
-            reference_module.eval()
-            r = TensorDict({
-                m: Metrics[m].evaluate(
-                    (exclusive, ensembled_learned_kfs), metric_cache,
-                    sweep_position="inside", with_batch_dim=False,
-                ).detach()
-                for m in metrics
-            }, batch_size=EHP.model_shape,)
-
+            r = evaluate_metrics()
+            
             # DONE: Train on train dataset, passing in only train dataset and dataloader, and save the learning rate
             reference_module.train()
             train_result, log = training_func(THP, exclusive, ensembled_learned_kfs, cache)
+
             r["training"] = train_result.detach()[0]
 
             # DONE: Check if training uses an LR scheduler, otherwise log the LR as NaN
@@ -376,37 +382,29 @@ def _run_training(
             results.append(r)
 
             # DONE: Print losses
-            if (cache.t % print_frequency == 0) or (training_func is not TRAIN_DEFAULT):
-                mean_losses = [
-                    (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean(dim=-1).median(dim=-1).values.mean())
-                    # (loss_type, r[loss_type].reshape(*EHP.model_shape, -1).mean())
-                    for loss_type in ("training", *metrics, *log.keys())
-                ]
-                print(f"\tEpoch {cache.t} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
-
+            if (cache.t % EHP.print_frequency == 0) or (training_func is not TRAIN_DEFAULT):
+                print_losses(r, f"Epoch {cache.t}", ("training", *metrics, *log.keys(),))
             cache.t += 1
-            counter += 1
-            # print(sum([torch.norm(v) for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True)]))
 
             # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
-            checkpoint = {
-                "THP": THP,
-                "training_func_idx": idx,
-                "cache": cache,
-                "reference_module": reference_module,
-                "ensembled_learned_kfs": ensembled_learned_kfs,
-                "results": results,
-            }
-            if checkpoint_paths is not None and counter % checkpoint_frequency == 0:
+            if cache.t % EHP.checkpoint_frequency == 0:
+                checkpoint = Checkpoint(
+                    training_func_idx=idx,
+                    cache=cache,
+                    ensembled_learned_kfs=ensembled_learned_kfs,
+                    results=results,
+                )
                 for checkpoint_path in checkpoint_paths:
                     torch.save(checkpoint, checkpoint_path)
 
             utils.empty_cache()
+    
+    results.append(r := evaluate_metrics())
+    print_losses(r, "Final", metrics)
 
     # TODO: Delete the checkpoint so that it does not interfere with the next experiment
-    if checkpoint_paths is not None:
-        for checkpoint_path in filter(os.path.exists, checkpoint_paths):
-            os.remove(checkpoint_path)
+    for checkpoint_path in filter(os.path.exists, checkpoint_paths):
+        os.remove(checkpoint_path)
 
     if len(results) > 0:
         return TensorDict.maybe_dense_stack(results, dim=2)
@@ -430,7 +428,7 @@ def _run_unit_training_experiment(
     # Ensemble learned Kalman Filters to be trained
     learned_kfs = utils.multi_map(
         lambda _: MHP.model(MHP),
-        np.empty(EHP.model_shape), dtype=nn.Module
+        np.empty(EHP.model_shape), dtype=nn.Module,
     )
     reference_module, ensembled_learned_kfs = utils.stack_module_arr(learned_kfs)
 
@@ -444,7 +442,7 @@ def _run_unit_training_experiment(
         lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
             dataset.obj[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
             DHP.total_sequence_length.train
-        )), info.train.dataset, dtype=PTR
+        )), info.train.dataset, dtype=PTR,
     )
 
     # DONE: Create train dataloader
@@ -452,7 +450,7 @@ def _run_unit_training_experiment(
         info=info,
         train_info=info.train[()],
         reference_module=reference_module,
-        n_train_systems=DHP.n_systems.train
+        n_train_systems=DHP.n_systems.train,
     )
 
     # Setup result and run training
@@ -463,7 +461,7 @@ def _run_unit_training_experiment(
             try:
                 print(f"\t{ds_type}:", utils.multi_map(
                     lambda sg: utils.map_dict(sg.td()[loss_type], avg),
-                    ds_info.systems, dtype=dict
+                    ds_info.systems, dtype=dict,
                 ))
             except Exception:
                 pass

@@ -17,7 +17,7 @@ class ZeroPredictor(Predictor):
     ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
-        shape = systems.shape
+        shape = systems.shape if kfs is None else torch.broadcast_shapes(kfs.shape, systems.shape)
         default_td = TensorDict({}, batch_size=shape)
 
         K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
@@ -72,7 +72,7 @@ class ZeroPredictor(Predictor):
             Has=Has, Las=Las, sqrt_S_Ws=sqrt_S_Ws,
             Vinv_BL_F_BLK=Vinv_BL_F_BLK, Dj=Dj
         )
-        return TensorDict.from_dict({"environment": {"observation": err}}, batch_size=shape), cache
+        return TensorDict.from_dict({"environment": {"observation": err.expand(shape)}}, batch_size=shape), cache
 
 
     @classmethod

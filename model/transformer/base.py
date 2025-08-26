@@ -2,28 +2,35 @@ from argparse import Namespace
 
 import torch
 import torch.nn as nn
+from transformers import PreTrainedModel
 
 from model.base import Predictor, Controller
 
 
 class TransformerPredictor(Predictor):
-    def __init__(self, modelArgs: Namespace, S_D: int):
+    def __init__(self, modelArgs: Namespace, core: PreTrainedModel, S_D: int):
         Predictor.__init__(self, modelArgs)
+        self.core = core
         self.S_D = S_D
 
-        self.observation_in = nn.Parameter(torch.zeros((self.S_D, self.O_D)))       # [S_D x O_D]
-        nn.init.kaiming_normal_(self.observation_in)
-        self.observation_out = nn.Parameter(torch.zeros((self.O_D, self.S_D)))      # [O_D x S_D]
-        nn.init.kaiming_normal_(self.observation_out)
+        if modelArgs.adapter:
+            self.observation_in = nn.Parameter(torch.zeros((self.S_D, self.O_D)))       # [S_D x O_D]
+            nn.init.kaiming_normal_(self.observation_in)
+            self.observation_out = nn.Parameter(torch.zeros((self.O_D, self.S_D)))      # [O_D x S_D]
+            nn.init.kaiming_normal_(self.observation_out)
+        else:
+            assert self.S_D == self.O_D, f"State dimension and observation dimension must be identical when no adapter is used but got {self.S_D} and {self.O_D}."
+            self.observation_in = torch.eye(self.S_D)
+            self.observation_out = torch.eye(self.O_D)
 
-        self.input_in = nn.Parameterdict({
+        self.input_in = nn.ParameterDict({
             k: nn.Parameter(torch.zeros((self.S_D, d)))                             # [S_D x I_D?]
             for k, d in vars(self.problem_shape.controller).items()
         })
         for v in self.input_in.values():
             nn.init.kaiming_normal_(v)
 
-        if getattr(modelArgs, "bias", False):
+        if modelArgs.bias:
             b = torch.randn((self.S_D,)) / (self.S_D ** 0.5)
             self.input_bias = nn.Parameter(b)
             self.observation_bias = nn.Parameter(-b)
@@ -33,7 +40,6 @@ class TransformerPredictor(Predictor):
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
-        # assert L <= self.n_positions, f"Trace length must be at most the context length of the transformer but got {self.n_positions}."
         embd_dict = self.trace_to_embedding(trace)
 
         observation_embds = torch.cat([
@@ -46,7 +52,7 @@ class TransformerPredictor(Predictor):
         out = self.core.forward(
             inputs_embeds=embds,
             output_hidden_states=True,
-            attention_mask=trace["mask"].to(torch.float) if "mask" in trace else None
+            attention_mask=None, # trace["mask"].to(torch.float) if "mask" in trace else None,
         ).hidden_states[-1]                                     # [B x L x S_D]
 
         return self.embedding_to_output({"environment": out})

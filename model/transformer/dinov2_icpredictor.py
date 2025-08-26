@@ -10,9 +10,7 @@ from model.transformer.base import TransformerPredictor
 class Dinov2InContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
         self.config: Dinov2Config = modelArgs.dinov2
-        TransformerPredictor.__init__(self, modelArgs, self.config.hidden_size)
-
-        self.core = Dinov2Model(self.config)
+        TransformerPredictor.__init__(self, modelArgs, Dinov2Model(self.config), self.config.hidden_size)
 
 
 class Dinov2AssociativeInContextPredictor(Dinov2InContextPredictor):

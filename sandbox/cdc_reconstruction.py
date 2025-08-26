@@ -29,7 +29,7 @@ from model.convolutional import CnnLeastSquaresPredictor
 from model.sequential import RnnAnalyticalPretrainPredictor
 from model.transformer import (
     GPT2InContextPredictor,
-    GPT2AssociativeInContextPredictor,
+    # GPT2AssociativeInContextPredictor,
     TransformerXLInContextPredictor,
     Dinov2AssociativeInContextPredictor,
     Mamba2InContextPredictor,
@@ -39,20 +39,21 @@ from system.linear_time_invariant import LTISystem, MOPDistribution
 
 
 if __name__ == "__main__":
-    output_dir = "in_context"
+    output_dir = "in_context_large"
     output_fname = "result"
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    S_D, O_D = 16, 8,
     SHP = Namespace(
-        distribution=dist, S_D=10,
+        distribution=dist, S_D=S_D,
         problem_shape=Namespace(
-            environment=Namespace(observation=5),
+            environment=Namespace(observation=O_D,),
             controller=Namespace()
         ), auxiliary=Namespace()
     )
     
-    context_length = 250
-    n_train_systems = 40000
+    context_length = 500
+    n_train_systems = 10000
     n_test_systems = 3
     n_valid_traces = 256
     n_test_traces = 256
@@ -84,6 +85,7 @@ if __name__ == "__main__":
         mlp_ratio = 4
         d_inner = mlp_ratio * d_embed
     
+        ARGS_TRANSFORMER.model.bias = False
         ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
             n_positions=context_length,
             n_embd=d_embed,
@@ -107,12 +109,14 @@ if __name__ == "__main__":
             num_attention_heads=n_head,
             mlp_ratio=mlp_ratio,
         )
+        mamba_hidden_size, n_mamba_head, mamba_expand = O_D, O_D, 1
         ARGS_TRANSFORMER.model.mamba = Mamba2Config(
-            state_size=64,
-            hidden_size=d_embed,
+            state_size=512,
+            hidden_size=mamba_hidden_size,
             num_hidden_layers=n_layer,
-            num_heads=n_head,
-            head_dim=int(2 * d_embed / n_head),
+            num_heads=n_mamba_head,
+            head_dim=int(mamba_expand * mamba_hidden_size / n_mamba_head),
+            expand=mamba_expand,
         )
     
         # SECTION: Dataset hyperparameters
@@ -124,9 +128,9 @@ if __name__ == "__main__":
 
         # SECTION: Training hyperparameters
         ARGS_TRANSFORMER.training.sampling = Namespace(
-            method="subsequence_padded",
-            subsequence_length=context_length,
-            batch_size=32,
+            method=None, # "subsequence_padded",
+            subsequence_length=None, # context_length,
+            batch_size=64,
         )
         ARGS_TRANSFORMER.training.optimizer = Namespace(
             type="AdamW",
@@ -141,20 +145,26 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-        ARGS_TRANSFORMER.experiment.metrics = Namespace(training={"noiseless_validation"}) # {"validation"}
+        ARGS_TRANSFORMER.experiment.metrics = Namespace(training={
+            # "noiseless_overfit",
+            "noiseless_validation",
+        }) # {"validation"}
     
         configurations_transformer = [
             ("model", {
                 # "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor,],
                 # "model.model": [GPT2AssociativeInContextPredictor, Dinov2AssociativeInContextPredictor,],
                 # "model.model": [GPT2InContextPredictor, GPT2AssociativeInContextPredictor,],
-                "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
+                "model": {
+                    "model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
+                    "adapter": [True, True,],
+                },
                 "training": {
                     # "sampling.batch_size": [32, 32,],
-                    "optimizer.max_lr": [3e-4, 3e-3,],
-                    "scheduler.lr_decay": [0.98, 0.9,],
+                    "optimizer.max_lr": [3e-4, 3e-4,],
+                    "scheduler.lr_decay": [0.98, 0.98,],
                     # "scheduler.epochs": [100, 100,],
-                }
+                },
             })
         ]
 
@@ -212,6 +222,8 @@ if __name__ == "__main__":
         ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
         ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
 
+        ARGS_BASELINE_CNN.training.sampling.batch_size = 4096
+
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
         ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
         ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
@@ -247,7 +259,11 @@ if __name__ == "__main__":
         ARGS_BASELINE_RNN.model.S_D = SHP.S_D
         ARGS_BASELINE_RNN.model.initial_state_scale = 1.0
 
-        ARGS_BASELINE_RNN.training.sampling = Namespace(method="full")
+        ARGS_BASELINE_RNN.training.sampling = Namespace(
+            method=None, # "subsequence_padded",
+            subsequence_length=None, # context_length,
+            batch_size=None, # 64,
+        )
         ARGS_BASELINE_RNN.training.optimizer = Namespace(
             type="SGD",
             max_lr=1e-3, min_lr=1e-7,
@@ -257,8 +273,8 @@ if __name__ == "__main__":
             # type="reduce_on_plateau",
             # factor=0.5, patience=10, warmup_duration=0,
             type="exponential",
-            lr_decay=0.99975, warmup_duration=100,
-            epochs=40000, gradient_cutoff=1e-6,
+            lr_decay=0.95, warmup_duration=100,
+            epochs=2000, gradient_cutoff=1e-6,
         )
 
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn

@@ -38,12 +38,12 @@ class SystemGroup(ModuleGroup):
         controller_arr = np.array(controller_arr)
         group_shape = utils.broadcast_shapes(
             self.group_shape,
-            *(controller.group_shape for controller in controller_arr.ravel())
+            *(controller.group_shape for controller in controller_arr.ravel()),
         )
 
         action = utils.stack_tensor_arr(utils.multi_map(
             lambda controller: controller.get_zero_knowledge_action(batch_size).expand(*group_shape, batch_size),
-            controller_arr, dtype=TensorDict
+            controller_arr, dtype=TensorDict,
         ))
         state = self.environment.sample_initial_state(batch_size).expand(*controller_arr.shape, *group_shape, batch_size)
 
@@ -54,7 +54,7 @@ class SystemGroup(ModuleGroup):
             return TensorDict({
                 "environment": st,
                 "controller": ac
-            }, batch_size=(*controller_arr.shape, *group_shape, batch_size))[..., None]
+            }, batch_size=(*controller_arr.shape, *group_shape, batch_size,))[..., None]
 
         # history = construct_timestep(action, state)
         # for _ in range(sequence_length - 1):

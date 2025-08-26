@@ -41,7 +41,7 @@ from system.linear_time_invariant import LTISystem, MOPDistribution, Orthonormal
 
 
 if __name__ == "__main__":
-    output_dir = "gpt2_v_mamba2"
+    output_dir = "mamba"
     output_fname = "result"
 
     # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.00001)
@@ -56,8 +56,8 @@ if __name__ == "__main__":
         ), auxiliary=Namespace(),
     )
     
-    context_length = 250
-    n_train_systems = 40000
+    context_length = 2000 # 250
+    n_train_systems = 10000 # 40000
     n_test_systems = 100
     n_valid_traces = 64
     n_test_traces = 64
@@ -89,12 +89,12 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.model.bias = False
         ARGS_TRANSFORMER.model.adapter = True
 
-        ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
-            n_positions=context_length,
-            n_embd=128,
-            n_layer=max_num_hidden_layers,
-            n_head=8,
-        )
+        # ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
+        #     n_positions=context_length,
+        #     n_embd=128,
+        #     n_layer=max_num_hidden_layers,
+        #     n_head=8,
+        # )
         # ARGS_TRANSFORMER.model.model = MambaInContextPredictor
         # ARGS_TRANSFORMER.model.mamba = MambaConfig(
         #     state_size=256,
@@ -147,14 +147,17 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.experiment.checkpoint_frequency = 5
         ARGS_TRANSFORMER.experiment.print_frequency = 1
     
-        configurations_transformer = [
-            ("model", {
-                "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
-            })
-            # ("num_hidden_layers", {
-            #     "model.mamba2.num_hidden_layers": n_layers,
-            # }),
-        ]
+        configurations_transformer = []
+        # configurations_transformer = [
+        #     ("dataset_shape", {
+        #         "dataset.n_systems.train": [80000, 40000, 20000, 10000,],
+        #         "dataset.total_sequence_length.train": [125, 250, 500, 1000,],
+        #         "training.sampling.batch_size": [512, 256, 128, 64,],
+        #     })
+        #     # ("num_hidden_layers", {
+        #     #     "model.mamba2.num_hidden_layers": n_layers,
+        #     # }),
+        # ]
         result_transformer, systems, dataset = run_experiments(
             ARGS_TRANSFORMER, configurations_transformer, {
                 "dir": output_dir,

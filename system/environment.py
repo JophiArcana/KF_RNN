@@ -3,6 +3,7 @@ from typing import *
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as Fn
 from tensordict import TensorDict
 
 from infrastructure import utils
@@ -33,7 +34,7 @@ class LTIEnvironment(EnvironmentGroup):
     def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float, settings: Namespace,):
         EnvironmentGroup.__init__(self, problem_shape, params.shape)
 
-        for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V"):
+        for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V",):
             if isinstance(param := params[param_name], nn.Parameter):
                 self.register_parameter(param_name, param)
             else:
@@ -44,7 +45,7 @@ class LTIEnvironment(EnvironmentGroup):
             for k in vars(self.problem_shape.controller)
         })
 
-        if not torch.all(torch.linalg.eigvals(self.F).abs() < 1 + 1e-9):
+        if not torch.all(torch.linalg.eigvals(self.F).abs() < 1 + 1e-5):
             raise RuntimeError(f"Eigenvalues of F matrix {self.F.clone().detach()} are unstable.")
 
         # SECTION: Define system group dimensions
@@ -133,6 +134,47 @@ class LTIEnvironment(EnvironmentGroup):
             # "w": w, "v": v,
             **target,
         }, batch_size=x.shape[:-1])
+
+
+class LTIZeroNoiseEnvironment(LTIEnvironment):
+    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float, settings: Namespace,):
+        nn.Module.__init__(self)
+        for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V",):
+            if isinstance(param := params[param_name], nn.Parameter):
+                self.register_parameter(param_name, param)
+            else:
+                self.register_buffer(param_name, param)
+
+        assert torch.norm(self.sqrt_S_W) == 0, f"Norm of W in noiseless environment should be 0 but got {torch.norm(self.sqrt_S_W)}."
+        assert torch.norm(self.sqrt_S_V) == 0, f"Norm of V in noiseless environment should be 0 but got {torch.norm(self.sqrt_S_V)}."
+        assert not getattr(settings, "include_analytical", True), "Cannot include analysis for zero noise environments."
+        
+        LTIEnvironment.__init__(self, problem_shape, params, initial_state_scale, settings)
+
+
+    def sample_initial_state(
+        self,
+        batch_size: int                             # B
+    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+        x = (self.initial_state_scale / self.S_D ** 0.5) * torch.randn((*self.group_shape, batch_size, self.S_D,), requires_grad=True)   # [N... x B x S_D]
+        
+        y = x @ self.H.mT
+        noiseless_y = torch.zeros_like(y)
+
+        if self.include_analytical:
+            target = {
+                "target_observation_estimation": torch.zeros_like(y),                                               # [C... x N... x B x O_D]
+                "target_state_estimation": y @ self.K.mT,                                                           # [C... x N... x B x S_D]
+            }
+        else:
+            target = {}
+
+        return TensorDict({
+            "state": x,
+            "observation": y,
+            "noiseless_observation": noiseless_y,
+            **target,
+        }, batch_size=(*self.group_shape, batch_size))
 
 
 

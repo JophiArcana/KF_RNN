@@ -10,9 +10,7 @@ from model.transformer.base import TransformerPredictor
 class LlamaInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
         self.config: LlamaConfig = modelArgs.llama
-        TransformerPredictor.__init__(self, modelArgs, self.config.hidden_size)
-
-        self.core = LlamaForCausalLM(self.config)
+        TransformerPredictor.__init__(self, modelArgs, LlamaForCausalLM(self.config), self.config.hidden_size)
 
 
 class LlamaAssociativeInContextPredictor(LlamaInContextPredictor):

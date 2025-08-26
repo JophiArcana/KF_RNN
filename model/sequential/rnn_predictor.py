@@ -5,6 +5,8 @@ import einops
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as Fn
+from causal_conv1d.cpp_functions import causal_conv1d_fwd_function
 from tensordict import TensorDict, NonTensorData
 
 from infrastructure import utils
@@ -15,18 +17,17 @@ from model.least_squares_predictor import LeastSquaresPredictor
 
 
 class RnnPredictor(SequentialPredictor):
-    def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
+    def __init__(self, modelArgs: Namespace, **initialization: torch.Tensor | nn.Parameter):
         SequentialPredictor.__init__(self, modelArgs)
         self.S_D = modelArgs.S_D
 
         self.F = nn.Parameter(initialization.get("F", (1 - self.eps) * torch.eye(self.S_D)))
         self.B = nn.ParameterDict({
-            k: nn.Parameter(torch.zeros((self.S_D, d)))
+            k: nn.Parameter(utils.rgetitem(initialization, f"B.{k}", torch.zeros((self.S_D, d,))))
             for k, d in vars(self.problem_shape.controller).items()
         })
-        self.H = nn.Parameter(initialization.get('H', torch.zeros((self.O_D, self.S_D))))
-        nn.init.kaiming_normal_(self.H)
-        self.K = nn.Parameter(initialization.get('K', torch.zeros((self.S_D, self.O_D))))
+        self.H = nn.Parameter(initialization.get("H", nn.init.kaiming_normal_(torch.zeros((self.O_D, self.S_D,)))))
+        self.K = nn.Parameter(initialization.get("K", torch.zeros((self.S_D, self.O_D,))))
 
 
 class RnnAnalyticalPredictor(RnnPredictor):
@@ -60,31 +61,90 @@ class RnnAnalyticalPretrainPredictor(RnnAnalyticalPredictor):
         return RnnAnalyticalPredictor.train_func_list(default_train_func) + (default_train_func,)
 
 
-class RnnCompanionPredictor(SequentialPredictor):
-    def __init__(self, modelArgs: Namespace, **initialization: Dict[str, torch.Tensor | nn.Parameter]):
+class RnnComplexDiagonalPredictor(SequentialPredictor):
+    def __init__(self, modelArgs: Namespace, **initialization: torch.Tensor | nn.Parameter):
         SequentialPredictor.__init__(self, modelArgs)
         self.S_D = modelArgs.S_D
 
-        if "F" in initialization:
-            eigvals = torch.linalg.eigvals(initialization["F"])
+        keys = ("F", "B", "H", "K",)
+        initalized_keys = (*filter(initialization.__contains__, keys),)
+        assert len(initalized_keys) in (0, len(keys),)
+
+        if len(initalized_keys) == 0:
+            P_init = torch.zeros((self.S_D, self.O_D,))
+            B_init = {
+                k: torch.zeros((self.S_D, d,))
+                for k, d in vars(self.problem_shape.controller).items()
+            }
+            H_init = nn.init.kaiming_normal_(torch.zeros((self.O_D, self.S_D,)))
+            logD_init = torch.complex(
+                torch.full((self.S_D,), -self.eps),
+                torch.zeros((self.S_D,)).uniform_(-torch.pi / 10, torch.pi / 10),
+            )
         else:
-            eigvals = torch.full((self.S_D,), 1 - self.eps)
-        init_coefficients = torch.tensor(np.polynomial.Polynomial.fromroots(eigvals).coef)
-        self.C = nn.Parameter(-init_coefficients[:-1])
+            F, B, H, K = map(initialization.__getitem__, keys)
+            FK = F @ K
+            M = F - FK @ H
+            L, V = torch.linalg.eig(M)
+            Vinv = torch.inverse(V)
 
-        self.B = nn.ParameterDict({
-            k: nn.Parameter(torch.zeros((self.S_D, d)))
-            for k, d in vars(self.problem_shape.controller).items()
-        })
-        self.H = nn.Parameter(initialization.get("H", torch.zeros((self.O_D, self.S_D))))
-        nn.init.kaiming_normal_(self.H)
-        self.K = nn.Parameter(initialization.get("K", torch.zeros((self.S_D, self.O_D))))
+            P_init = Vinv @ FK
+            B_init = {k: Vinv @ _B for k, _B in B.items()}
+            H_init = H @ V
+            logD_init = torch.log(utils.complex(L))
+        
+        self.P = nn.Parameter(utils.complex(P_init))
+        self.B = nn.ParameterDict({k: nn.Parameter(utils.complex(v)) for k, v in B_init.items()})
+        self.H = nn.Parameter(utils.complex(H_init))
+        self.logD = nn.Parameter(logD_init)
 
-    @property
-    def F(self) -> torch.Tensor:
-        F = torch.diag(torch.ones((self.S_D - 1,)), diagonal=-1)
-        F[:, -1] = self.C
-        return F
+    @classmethod
+    def _analytical_error_and_cache(cls,
+                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
+                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
+    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+        kfs = kfs.clone()
+        F = torch.diag_embed(torch.exp(kfs["logD"])) + kfs["P"] @ kfs["H"]
+        kfs["F"] = F
+        kfs["K"] = torch.inverse(F) @ kfs["P"]
+        return SequentialPredictor._analytical_error_and_cache(kfs, systems)
+
+    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:
+        trace: TensorDict[str, torch.Tensor] = self.trace_to_td(trace)
+        actions, observations = trace["controller"], trace["environment", "observation"]    # [B... x L x I_D?], [B... x L x O_D]
+
+        L = trace.shape[-1]
+        state_initialization = self.sample_initial_as_observations(observations, (*trace.shape[:-1], self.S_D,))    # [B... x S_D]
+
+        observation_embds = utils.complex(torch.cat((
+            torch.zeros_like(observations[..., :1, :]),
+            observations[..., :-1, :],
+        ), dim=-2)) @ self.P.mT                                                                                     # [B... x L x S_D]
+        action_embds = sum(utils.complex(ac) @ self.B[ac_name].mT for ac_name, ac in actions.items())               # [B... x L x S_D]
+        embds = observation_embds + action_embds                                                                    # [B... x L x S_D]
+        embds = torch.cat((state_initialization[..., None, :], embds,), dim=-2)                                     # [B... x (L + 1) x S_D]
+
+        # weights = torch.exp(self.logD * torch.arange(L, -1, -1)[:, None])
+        # state_estimations = (torch.cumsum(embds * weights, dim=-2) / weights)[..., 1:, :]
+        k = 1
+        while k < (L + 1):
+            w = torch.exp(self.logD * k)
+            embds = torch.cat((embds[..., :k, :], embds[..., k:, :] + w * embds[..., :-k, :]), dim=-2)
+            k <<= 1
+        state_estimations = embds[..., 1:, :]
+        observation_estimations = state_estimations @ self.H.mT
+
+        if not self.training:
+            state_estimations = torch.real(state_estimations)
+            observation_estimations = torch.real(observation_estimations)
+
+        return {
+            "environment": {
+                "state": state_estimations,
+                "observation": observation_estimations,
+            },
+            "controller": {},
+        }
 
 
 # class RnnLeastSquaresPredictor(RnnPredictor, LeastSquaresPredictor):

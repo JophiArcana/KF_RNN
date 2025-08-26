@@ -33,7 +33,7 @@ class Predictor(Observer):
             ensembled_kfs: TensorDict[str, torch.Tensor],
             dataset: TensorDict[str, torch.Tensor],
             kwargs: Dict[str, Any] = MappingProxyType(dict()),
-            split_size: int = 1 << 17,
+            split_size: int = 1 << 18,
     ) -> TensorDict[str, torch.Tensor]:
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
@@ -88,7 +88,7 @@ class Predictor(Observer):
                      result: torch.Tensor | float,                          # [B... x N x B x L x ...]
                      target_dict: TensorDict[str, torch.Tensor],            # [B... x N x B x L x ...]
                      target_key: Tuple[str, ...],
-                     batch_mean: bool = True
+                     batch_mean: bool = True,
     ) -> torch.Tensor:
         losses = torch.norm(result - target_dict[target_key], dim=-1) ** 2  # [B... x N x B x L]
         mask = target_dict.get("mask", torch.full(target_dict.shape[-1:], True))

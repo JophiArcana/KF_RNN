@@ -10,7 +10,7 @@ from infrastructure.discrete_are import solve_discrete_are
 from model.zero_predictor import ZeroController
 from system.base import SystemGroup, SystemDistribution
 from system.controller import LinearControllerGroup
-from system.environment import LTIEnvironment
+from system.environment import LTIEnvironment, LTIZeroNoiseEnvironment
 
 
 class LQGController(LinearControllerGroup):
@@ -60,39 +60,60 @@ class LTISystem(SystemGroup):
 
         # SECTION: Set up the effective system that produces the same distribution of data, but without controls.
         if getattr(settings, "include_analytical", True):
-            F = self.environment.F
-            H = self.environment.H
-            K = self.environment.K
-            I, zeros = torch.eye(self.environment.S_D), torch.zeros((self.environment.S_D, self.environment.S_D))
+            self.setup_analytical()
+    
+    def setup_analytical(self):
+        F = self.environment.F
+        H = self.environment.H
+        K = self.environment.K
+        I, zeros = torch.eye(self.environment.S_D), torch.zeros((self.environment.S_D, self.environment.S_D))
 
-            KH = K @ H
-            BL = zeros + sum(
-                self.environment.B[k] @ getattr(self.controller.L, k)
-                for k in vars(self.hyperparameters.problem_shape.controller)
-            )
-            F_BL, I_KH = F - BL, I - KH
+        KH = K @ H
+        BL = zeros + sum(
+            self.environment.B[k] @ getattr(self.controller.L, k)
+            for k in vars(self.hyperparameters.problem_shape.controller)
+        )
+        F_BL, I_KH = F - BL, I - KH
 
-            # SECTION: Compute effective transition, observation, and control matrices of LQG system
-            self.register_buffer("F_augmented", torch.cat([
-                torch.cat([F_BL + BL @ I_KH, -BL @ I_KH], dim=-1),
-                F_BL @ torch.cat([KH, I_KH], dim=-1)
-            ], dim=-2))
-            self.register_buffer("H_augmented", torch.cat([H, torch.zeros_like(H)], dim=-1))
-            L_augmented = nn.Module()
-            for k in vars(self.hyperparameters.problem_shape.controller):
-                L = getattr(self.controller.L, k)
-                L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH], dim=-1))
-            self.register_module("L_augmented", L_augmented)
+        # SECTION: Compute effective transition, observation, and control matrices of LQG system
+        self.register_buffer("F_augmented", torch.cat([
+            torch.cat([F_BL + BL @ I_KH, -BL @ I_KH], dim=-1),
+            F_BL @ torch.cat([KH, I_KH], dim=-1)
+        ], dim=-2))
+        self.register_buffer("H_augmented", torch.cat([H, torch.zeros_like(H)], dim=-1))
+        L_augmented = nn.Module()
+        for k in vars(self.hyperparameters.problem_shape.controller):
+            L = getattr(self.controller.L, k)
+            L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH], dim=-1))
+        self.register_module("L_augmented", L_augmented)
 
-            # SECTION: Register irreducible loss
-            zero_predictor_loss = ZeroController.analytical_error(None, self.td())
-            self.register_module("zero_predictor_loss", utils.buffer_dict(zero_predictor_loss))
+        # SECTION: Register irreducible loss
+        zero_predictor_loss = ZeroController.analytical_error(None, self.td())
+        self.register_module("zero_predictor_loss", utils.buffer_dict(zero_predictor_loss))
 
-            irreducible_loss = TensorDict.from_dict({
-                "environment": {"observation": self.environment.irreducible_loss.clone()},
-                "controller": zero_predictor_loss["controller"].apply(torch.zeros_like)
-            }, batch_size=self.group_shape)
-            self.register_module("irreducible_loss", utils.buffer_dict(irreducible_loss))
+        irreducible_loss = TensorDict.from_dict({
+            "environment": {"observation": self.environment.irreducible_loss.clone()},
+            "controller": zero_predictor_loss["controller"].apply(torch.zeros_like)
+        }, batch_size=self.group_shape)
+        self.register_module("irreducible_loss", utils.buffer_dict(irreducible_loss))
+
+
+class LTIZeroNoiseSystem(LTISystem):
+    class Distribution(SystemDistribution):
+        def __init__(self):
+            SystemDistribution.__init__(self, LTIZeroNoiseSystem)
+
+    def __init__(self, hyperparameters: Namespace, params: TensorDict[str, torch.tensor]):
+        # SECTION: Set up controller
+        problem_shape = hyperparameters.problem_shape
+        auxiliary = hyperparameters.auxiliary
+        settings = hyperparameters.settings
+        SystemGroup.__init__(
+            self,
+            hyperparameters,
+            LTIZeroNoiseEnvironment(problem_shape, params["environment"], getattr(auxiliary, "initial_state_scale", 1.0), settings,),
+            LQGController(problem_shape, params, getattr(auxiliary, "control_noise_std", 0.0)),
+        )
 
 
 class MOPDistribution(LTISystem.Distribution):
@@ -103,7 +124,7 @@ class MOPDistribution(LTISystem.Distribution):
                  V_std: float,
                  B_scale: float = 1.0,
                  Q_scale: float = 0.1,
-                 R_scale: float = 1.0
+                 R_scale: float = 1.0,
     ) -> None:
         LTISystem.Distribution.__init__(self)
         self.F_mode = F_mode
@@ -155,7 +176,7 @@ class MOPDistribution(LTISystem.Distribution):
         }, batch_size=shape).apply(nn.Parameter)
 
 
-class OrthonormalDistribution(LTISystem.Distribution):
+class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
     def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert S_D == O_D, "Orthonormal system setting is assumed to be fully observed."
