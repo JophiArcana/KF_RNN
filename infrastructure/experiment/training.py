@@ -224,23 +224,14 @@ def TRAIN_DEFAULT(
         dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
 
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
-        reference_module = exclusive.reference_module.train()
+        reference_module: Predictor = exclusive.reference_module.train()
 
         pre_runs: list[torch.Tensor] = []
         def compute_losses() -> torch.Tensor:
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
-                    train_result = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
-                    observation_losses = Predictor.evaluate_run(
-                        train_result["environment", "observation"],
-                        dataset_ss, ("environment", "observation")
-                    )
-                    action_losses = sum([
-                        Predictor.evaluate_run(v, dataset_ss, ("controller", k))
-                        for k, v in train_result["controller"].items()
-                    ])
-                    losses = observation_losses + THP.control_coefficient * action_losses
-                return losses
+                    result_ss = Predictor.run(reference_module, ensembled_learned_kfs, dataset)
+                    return reference_module.compute_losses(result_ss, dataset_ss, THP)
             else:
                 return pre_runs.pop()
 

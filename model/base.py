@@ -96,6 +96,18 @@ class Predictor(Observer):
         return result_.mean(dim=-1) if batch_mean else result_
 
     @classmethod
+    def compute_losses(
+        cls,
+        result: TensorDict[str, torch.Tensor],
+        dataset: TensorDict[str, torch.Tensor],
+        THP: Namespace,
+    ) -> torch.Tensor:
+        return Predictor.evaluate_run(
+            result["environment", "observation"],
+            dataset, ("environment", "observation")
+        )
+
+    @classmethod
     def clone_parameter_state(cls,
                               reference_module: nn.Module,
                               ensembled_learned_kfs: TensorDict[str, torch.Tensor]
@@ -178,8 +190,26 @@ class Predictor(Observer):
     ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
-class Controller(Observer):
-    pass
+
+# TODO: This is more semantically correct
+# class Controller(Observer):
+class Controller(Predictor):
+    @classmethod
+    def compute_losses(
+        cls,
+        result: TensorDict[str, torch.Tensor],
+        dataset: TensorDict[str, torch.Tensor],
+        THP: Namespace,
+    ) -> torch.Tensor:
+        observation_losses = Predictor.evaluate_run(
+            result["environment", "observation"],
+            dataset, ("environment", "observation")
+        )
+        action_losses = sum([
+            Predictor.evaluate_run(v, dataset, ("controller", k))
+            for k, v in result["controller"].items()
+        ])
+        return observation_losses + THP.control_coefficient * action_losses
 
 
 
