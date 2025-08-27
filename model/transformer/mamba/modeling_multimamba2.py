@@ -37,6 +37,7 @@ from transformers.utils.import_utils import is_causal_conv1d_available, is_mamba
 from transformers.models.mamba2.modeling_mamba2 import MambaRMSNormGated, Mamba2RMSNorm
 
 from .configuration_multimamba import MultiMamba2Config
+from .vmap_ssd_combined import mamba_chunk_scan_combined
 
 
 logger = logging.get_logger(__name__)
@@ -44,7 +45,7 @@ logger = logging.get_logger(__name__)
 
 if is_mamba_2_ssm_available():
     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
+    # from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
 else:
     selective_state_update = None
 
@@ -200,103 +201,77 @@ class MultiMamba2Mixer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
     ):
         # set up dimensions for reshapes later
-
         batch_size, seq_len, _ = hidden_states.shape
-        groups_time_state_size = self.n_groups * self.ssm_state_size
-
-        A = -torch.exp(self.A_log.float())  # (nheads,)
 
         # getting projected states from cache if it exists
-        if cache_params is not None and cache_params.seqlen_offset > 0:
+        do_inference = (cache_params is not None) and (cache_params.seqlen_offset > 0)
+        if do_inference:
             assert seq_len == 1, "Only supports inference for one token at a time."
-            projected_states = self.in_proj(hidden_states.squeeze(1))  # (B 2D)
-            split_projection_dim = [self.intermediate_size, self.conv_dim, self.num_heads]
-            gate, hidden_states_B_C, dt = torch.split(projected_states, split_projection_dim, dim=-1)
+            hidden_states = hidden_states.squeeze(1)    # (B 2D)
+        elif attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
+            # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
+            dtype = hidden_states.dtype
+            hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
 
+        projected_states = self.in_proj(hidden_states)
+        gate, hidden_states_B_C, dt = torch.split(
+            projected_states, [self.intermediate_size, self.conv_dim, self.num_heads],
+            dim=-1,
+        )
+
+        if do_inference:
             hidden_states_B_C = causal_conv1d_update(
                 hidden_states_B_C,
                 cache_params.conv_states[self.layer_idx],
                 self.conv1d.weight.squeeze(1),
-                self.conv1d.bias,
-                self.activation,
+                bias=self.conv1d.bias,
+                activation=self.activation,
             )
+        else:
+            # 1D Convolution
+            hidden_states_B_C = causal_conv1d_fn(
+                hidden_states_B_C.transpose(1, 2),
+                self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+            ).transpose(1, 2)[:, :seq_len]
 
-            hidden_states, B, C = torch.split(
-                hidden_states_B_C,
-                [self.intermediate_size, groups_time_state_size, groups_time_state_size],
-                # [self.intermediate_size, groups_time_state_size, 2 * groups_time_state_size],
-                dim=-1,
-            )
+        hidden_states, B, C = torch.split(
+            hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
+            [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
+            dim=-1,
+        )
 
-            A = A[:, None, None, ...].expand(-1, self.head_dim, self.ssm_state_size).to(dtype=torch.float32)
-            dt = dt[:, :, None].expand(-1, -1, self.head_dim)
+        A = -torch.exp(self.A_log.float())  # (nheads,)
+        if do_inference:
+            dt = dt[:, :, None].expand((-1, -1, self.head_dim,))
             dt_bias = self.dt_bias[:, None].expand((self.num_heads, self.head_dim,))
+            A = A[:, None, None].expand((-1, self.head_dim, self.ssm_state_size,)).to(dtype=torch.float32)
             D = self.D[:, None].expand((self.num_heads, self.head_dim,))
-            B = B.view((batch_size, self.n_groups, -1,))
-            C = C.view((batch_size, self.n_groups, -1,))
-            hidden_states_reshaped = hidden_states.view((batch_size, self.num_heads, self.head_dim,))
             hidden_states = selective_state_update(
                 cache_params.ssm_states[self.layer_idx],
-                hidden_states_reshaped,
+                hidden_states,
                 dt, A, B, C, D,
-                z=None,
                 dt_bias=dt_bias,
                 dt_softplus=True,
             )
-
         # if no cache is found, calling the kernel
         else:
             if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
                 # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
                 dtype = hidden_states.dtype
-                hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
-            # 1. Gated MLP's linear projection
-            projected_states = self.in_proj(hidden_states)
-            dt_limit_kwargs = {} if self.time_step_limit == (0.0, float("inf")) else {"dt_limit": self.time_step_limit}
-
-            gate, hidden_states_B_C, dt = torch.split(
-                projected_states,
-                [self.intermediate_size, self.conv_dim, self.num_heads],
-                dim=-1,
-            )
-
-            # 1D Convolution
-            if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
-                hidden_states_B_C = self.act(
-                    self.conv1d(hidden_states_B_C.transpose(1, 2)).transpose(1, 2)[:, :seq_len]
-                )  # (B, L, self.d_inner + 2 * ngroups * d_state)
-            else:
-                hidden_states_B_C = causal_conv1d_fn(
-                    x=hidden_states_B_C.transpose(1, 2),
-                    weight=self.conv1d.weight.squeeze(1),
-                    bias=self.conv1d.bias,
-                    activation=self.activation,
-                ).transpose(1, 2)[:, :seq_len]
-            hidden_states, B, C = torch.split(
-                hidden_states_B_C,
-                [self.intermediate_size, groups_time_state_size, groups_time_state_size],
-                # [self.intermediate_size, groups_time_state_size, 2 * groups_time_state_size],
-                dim=-1,
-            )
-            if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
-                # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
-                dtype = hidden_states.dtype
-                hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
+                hidden_states = (hidden_states * attention_mask[:, :, None, None]).to(dtype)
             hidden_states, ssm_state = mamba_chunk_scan_combined(
-                hidden_states.view((batch_size, seq_len, -1, self.head_dim,)),
-                dt,
-                A,
-                B.view((batch_size, seq_len, self.n_groups, -1,)),
-                C.view((batch_size, seq_len, self.n_groups, -1,)),
+                hidden_states,
+                dt, A, B, [C, C, C],
                 chunk_size=self.chunk_size,
                 D=self.D,
-                z=None,
-                seq_idx=None,
-                return_final_states=True,
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
-                **dt_limit_kwargs,
+                dt_limit=self.time_step_limit,
+                return_final_states=True,
             )
+            hidden_states = sum(hidden_states)
             if ssm_state is not None and cache_params is not None:
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 

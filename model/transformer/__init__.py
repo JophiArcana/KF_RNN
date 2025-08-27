@@ -13,6 +13,9 @@ from .llama_icpredictor import LlamaInContextPredictor
 from .mamba import (
     MambaInContextPredictor,
     Mamba2InContextPredictor,
+    
+    MultiMamba2Config,
+    MultiMamba2Model,
 )
 
 from .dinov2_icpredictor import (

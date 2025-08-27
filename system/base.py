@@ -7,9 +7,9 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from system.environment import EnvironmentGroup
-from system.controller import ControllerGroup
-from system.module_group import ModuleGroup
+from .environment import EnvironmentGroup
+from .controller import ControllerGroup
+from .module_group import ModuleGroup
 
 
 class SystemGroup(ModuleGroup):

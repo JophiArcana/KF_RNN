@@ -230,7 +230,7 @@ def TRAIN_DEFAULT(
         def compute_losses() -> torch.Tensor:
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
-                    result_ss = Predictor.run(reference_module, ensembled_learned_kfs, dataset)
+                    result_ss = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
                     return reference_module.compute_losses(result_ss, dataset_ss, THP)
             else:
                 return pre_runs.pop()

@@ -17,10 +17,12 @@ class MambaInContextPredictor(TransformerPredictor):
         TransformerPredictor.__init__(self, modelArgs, MambaModel(self.config), self.config.hidden_size)
 
 
+from .modeling_multimamba2 import MultiMamba2Model
 class Mamba2InContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
         self.config: Mamba2Config = modelArgs.mamba2
-        TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
+        TransformerPredictor.__init__(self, modelArgs, MultiMamba2Model(self.config), self.config.hidden_size)
+        # TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
