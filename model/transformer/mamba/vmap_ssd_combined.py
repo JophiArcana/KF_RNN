@@ -224,8 +224,14 @@ def _mamba_chunk_scan_combined_bwd(
 
 class MambaChunkScanCombinedFn(torch.autograd.Function):
     @staticmethod
+    def setup_context(ctx, inputs, output):
+        print(type(inputs))
+        raise Exception("uiop")
+        return super().setup_context(ctx, inputs, output)
+
+    @staticmethod
     def forward(
-            ctx,
+            # ctx,
             x: torch.Tensor,
             dt: torch.Tensor,
             A: torch.Tensor,
