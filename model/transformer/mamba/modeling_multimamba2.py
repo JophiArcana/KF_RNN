@@ -263,15 +263,16 @@ class MultiMamba2Mixer(nn.Module):
                 hidden_states = (hidden_states * attention_mask[:, :, None, None]).to(dtype)
             hidden_states, ssm_state = mamba_chunk_scan_combined(
                 hidden_states,
-                dt, A, B, [C, C, C],
+                # dt, A, B, [C],
+                dt, A, B, C,
                 chunk_size=self.chunk_size,
                 D=self.D,
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
                 dt_limit=self.time_step_limit,
-                return_final_states=True,
             )
-            hidden_states = sum(hidden_states)
+            # hidden_states = hidden_states[0]
+            # hidden_states = sum(hidden_states)
             if ssm_state is not None and cache_params is not None:
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 
