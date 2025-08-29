@@ -57,7 +57,7 @@ if __name__ == "__main__":
     )
     
     context_length = 1000 # 250
-    n_train_systems = 20000 # 40000
+    n_train_systems = 10000 # 40000
     n_test_systems = 100
     n_valid_traces = 64
     n_test_traces = 64

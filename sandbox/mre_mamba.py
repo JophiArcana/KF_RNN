@@ -7,40 +7,45 @@ if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
 import torch
-from transformers import MambaModel, MambaConfig, Mamba2Config, Mamba2Model
+from transformers.models.mamba2.modeling_mamba2 import Mamba2Mixer, Mamba2Config
 
 from infrastructure import utils
-from model.transformer import MultiMamba2Config, MultiMamba2Model
+from model.transformer.mamba.modeling_multimamba2 import MultiMamba2Mixer, MultiMamba2Config
 
 
 if __name__ == "__main__":
     torch.manual_seed(1212)
     x = torch.randn((1, 13, 256), device="cuda:0")
 
-    # torch.manual_seed(1212)
-    # c = Mamba2Config(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1)
-    # m = Mamba2Model(c).to("cuda:0").eval()
+    torch.manual_seed(1212)
+    c = Mamba2Config(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1)
+    m = Mamba2Mixer(c, 0).to("cuda:0").eval()
 
+    out = m.forward(hidden_states=x)
     # out = m.forward(inputs_embeds=x[:, :-1, :], use_cache=True)
     # _out = m.forward(inputs_embeds=x[:, -1:, :], use_cache=True, cache_params=out.cache_params, cache_position=torch.randn((4,)))
-
+    grad = torch.autograd.grad(out.norm() ** 2, m.parameters(), allow_unused=True)
 
     torch.manual_seed(1212)
     c2 = MultiMamba2Config(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1)
-    m2 = MultiMamba2Model(c2).to("cuda:0").eval()
+    m2 = MultiMamba2Mixer(c2, 0).to("cuda:0").eval()
 
-    out2 = m2.forward(inputs_embeds=x[:, :-1, :], use_cache=True)
-    _out2 = m2.forward(inputs_embeds=x[:, -1:, :], use_cache=True, cache_params=out2.cache_params, cache_position=torch.randn((4,)))
+    out2 = m2.forward(hidden_states=x)
+    # out2 = m2.forward(inputs_embeds=x[:, :-1, :], use_cache=True)
+    # _out2 = m2.forward(inputs_embeds=x[:, -1:, :], use_cache=True, cache_params=out2.cache_params, cache_position=torch.randn((4,)))
+    grad2 = torch.autograd.grad(out2.norm() ** 2, m2.parameters(), allow_unused=True)
+    # print(sum(v.norm() ** 2 for v in g if v is not None))
 
-    (out2.last_hidden_state.norm() ** 2).backward()
-    # g = torch.autograd.grad(out2.last_hidden_state.norm() ** 2, m2.parameters(), allow_unused=True)
-    # print(g)
-
-    # print("Synchronous")
-    # print(out.last_hidden_state == out2.last_hidden_state)
+    print("Synchronous")
+    print(torch.abs(out - out2).max())
 
     # print("Inference")
-    # print(_out.last_hidden_state == _out2.last_hidden_state)
+    # print(torch.abs(_out.last_hidden_state - _out2.last_hidden_state).max())
+
+    print("Grad")
+    print(sum(v.norm() ** 2 for v in grad if v is not None))
+    print(sum(v2.norm() ** 2 for v2 in grad2 if v2 is not None))
+    print([(v - v2).norm() ** 2 for (v, v2) in zip(grad, grad2) if v is not None])
 
 
     # print({k: v.shape for k, v in out.cache_params.conv_states.items()})

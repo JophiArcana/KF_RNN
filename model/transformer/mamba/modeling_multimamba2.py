@@ -45,7 +45,7 @@ logger = logging.get_logger(__name__)
 
 if is_mamba_2_ssm_available():
     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-    # from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
+    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined as mamba_chunk_scan_combined_old
 else:
     selective_state_update = None
 
@@ -236,11 +236,16 @@ class MultiMamba2Mixer(nn.Module):
                 activation=self.activation,
             ).transpose(1, 2)[:, :seq_len]
 
-        hidden_states, B, C = torch.split(
-            hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
-            [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
+        hidden_states, B, C = map(lambda t: t.unflatten(-1, (self.n_groups, -1,)), torch.split(
+            hidden_states_B_C,
+            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,],
             dim=-1,
-        )
+        ))
+        # hidden_states, B, C = torch.split(
+        #     hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
+        #     [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
+        #     dim=-1,
+        # )
 
         A = -torch.exp(self.A_log.float())  # (nheads,)
         if do_inference:
@@ -261,18 +266,21 @@ class MultiMamba2Mixer(nn.Module):
                 # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
                 dtype = hidden_states.dtype
                 hidden_states = (hidden_states * attention_mask[:, :, None, None]).to(dtype)
+
             hidden_states, ssm_state = mamba_chunk_scan_combined(
                 hidden_states,
-                # dt, A, B, [C],
-                dt, A, B, C,
+                dt, A, B, torch.stack([C, C, C,], dim=0),
+                # dt, A, B, C,
                 chunk_size=self.chunk_size,
                 D=self.D,
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
                 dt_limit=self.time_step_limit,
+                # return_final_states=True,
             )
-            # hidden_states = hidden_states[0]
-            # hidden_states = sum(hidden_states)
+            hidden_states = hidden_states[0]
+            print("var", torch.sum(hidden_states.var(dim=0)))
+            hidden_states = hidden_states.mean(dim=0)
             if ssm_state is not None and cache_params is not None:
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 

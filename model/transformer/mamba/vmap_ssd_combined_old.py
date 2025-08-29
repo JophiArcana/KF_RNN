@@ -38,7 +38,7 @@ def _mamba_chunk_scan_combined_fwd(
         dt_softplus: bool = False,
         dt_limit: tuple[float, float] = (0.0, float("inf"),),
 ):
-    # print("modified forward")
+    print("modified forward")
     batch, seqlen, nheads, headdim = x.shape
     _, _, ngroups, dstate = B.shape
     assert nheads % ngroups == 0
@@ -46,8 +46,8 @@ def _mamba_chunk_scan_combined_fwd(
     assert x.shape == (batch, seqlen, nheads, headdim)
     assert dt.shape == (batch, seqlen, nheads)
     assert A.shape == (nheads,)
-    for _C in C_list:
-        assert _C.shape == B.shape
+    C = C_list[0]
+    assert C.shape == B.shape
     if z is not None:
         assert z.shape == x.shape
     if D is not None:
@@ -56,7 +56,7 @@ def _mamba_chunk_scan_combined_fwd(
         assert seq_idx.shape == (batch, seqlen)
     if B.stride(-1) != 1:
         B = B.contiguous()
-    C_list = [_C.contiguous() if _C.stride(-1) != 1 else _C for _C in C_list]
+    C = C.contiguous() if C.stride(-1) != 1 else C
     if x.stride(-1) != 1 and x.stride(1) != 1:  # Either M or K dimension should be contiguous
         x = x.contiguous()
     if z is not None and z.stride(-1) != 1 and z.stride(1) != 1:  # Either M or K dimension should be contiguous
@@ -80,11 +80,9 @@ def _mamba_chunk_scan_combined_fwd(
     states, final_states = [rearrange(t, "... (p n) -> ... p n", n=dstate) for t in [states, final_states]]
     # states_tmp0 = rearrange(_state_passing_fwd(rearrange(states_tmp0, "... p n -> ... (p n)"), dA_cumsum_tmp0[:, :, :, -1], chunk_size=chunk_size), "... (p n) -> ... p n", n=dstate)
     # states_tmp1 = rearrange(_state_passing_fwd(rearrange(states_tmp1, "... p n -> ... (p n)"), dA_cumsum_tmp1[:, :, :, -1], chunk_size=chunk_size), "... (p n) -> ... p n", n=dstate)
-    out_list: list[tuple[torch.Tensor, torch.Tensor]] = []
-    for _C in C_list:
-        _CB = _bmm_chunk_fwd(_C, B, chunk_size, seq_idx=seq_idx, output_dtype=torch.float32)
-        out_list.append(_chunk_scan_fwd(_CB, x, dt, dA_cumsum, _C, states, D=D, z=z, seq_idx=seq_idx))
-    out_list, out_x_list = zip(*out_list)
+    CB = _bmm_chunk_fwd(C, B, chunk_size, seq_idx=seq_idx, output_dtype=torch.float32)
+    out, outx = _chunk_scan_fwd(CB, x, dt, dA_cumsum, C, states, D=D, z=z, seq_idx=seq_idx)
+    out_list, out_x_list = [out], [outx]
     if cu_seqlens is None:
         return out_list, out_x_list, dt, dA_cumsum, states, final_states
     else:
@@ -113,7 +111,9 @@ def _mamba_chunk_scan_combined_bwd(
         dt_limit: tuple[float, float] = (0.0, float("inf"),),
         recompute_output: bool = False,
 ):
-    # print("modified backward")
+    print("modified backward")
+    # raise KeyboardInterrupt("uiop")
+    # raise Exception("uiop")
     if dout.stride(-1) != 1:
         dout = dout.contiguous()
     batch, seqlen, nheads, headdim = x.shape
@@ -124,42 +124,38 @@ def _mamba_chunk_scan_combined_bwd(
     assert A.shape == (nheads,)
     assert nheads % ngroups == 0
     assert B.shape == (batch, seqlen, ngroups, dstate)
-    for _C in C_list:
-        assert _C.shape == B.shape
-    for _out in out_list:
-        assert _out.shape == x.shape
+    C = C_list[0]
+    assert C.shape == B.shape
+    out = out_list[0]
+    assert out.shape == x.shape
     if initial_states is not None:
         assert initial_states.shape == (batch, nheads, headdim, dstate)
     if seq_idx is not None:
         assert seq_idx.shape == (batch, seqlen)
+    dz = None
     dB_given = torch.empty_like(B)
-    dC_given_list = [torch.empty_like(_C) for _C in C_list]
-    if dz is not None:
-        assert z is not None
-        assert dz.shape == z.shape
-    if ddt is not None:
-        assert ddt.shape == dt.shape
-        ddt_given = ddt
-    else:
-        ddt_given = torch.empty_like(dt)
+    dC_given = torch.empty_like(C)
+    ddt_given = torch.empty_like(dt)
     # TD: For some reason Triton (2.1.0 and 2.2.0) errors with
     # "[CUDA]: invalid device context" (e.g. during varlne test), and cloning makes it work. Idk why.
     dt_in = dt.clone()
     dA_cumsum, dt = _chunk_cumsum_fwd(dt_in, A, chunk_size, dt_bias=dt_bias, dt_softplus=dt_softplus,
                                       dt_limit=dt_limit)
-    CB = _bmm_chunk_fwd(C, B, chunk_size, seq_idx=seq_idx, output_dtype=torch.float32)
     states = _chunk_state_fwd(B, x, dt, dA_cumsum, seq_idx=seq_idx, states_in_fp32=True)
     states, _ = _state_passing_fwd(rearrange(states, "... p n -> ... (p n)"), dA_cumsum[:, :, :, -1],
                                    initial_states=rearrange(initial_states, "... p n -> ... (p n)") if initial_states is not None else None,
                                    seq_idx=seq_idx, chunk_size=chunk_size)
     states = rearrange(states, "... (p n) -> ... p n", n=dstate)
+    
     if z is not None:
         dz, dout, dD, *rest = _chunk_scan_bwd_dz(x, z, out, dout, chunk_size=chunk_size, has_ddAcs=False, D=D, dz=dz, recompute_output=recompute_output)
         outz = rest[0] if recompute_output else out
     else:
         dz = None
-        outz = out
+        outz = []
+    
     dstates = _chunk_scan_bwd_dstates(C, dA_cumsum, dout, seq_idx=seq_idx, dtype=states.dtype)
+
     # dstates has length nchunks, containing the gradient to initial states at index 0 and
     # gradient to the states of chunk (nchunks - 2) at index (nchunks - 1)
     # Do computation in fp32 but convert dstates and states to fp16/bf16 since dstates and states
@@ -182,7 +178,10 @@ def _mamba_chunk_scan_combined_bwd(
     states = rearrange(states, "... (p n) -> ... p n", n=dstate)
     dstates = rearrange(dstates, "... (p n) -> ... p n", n=dstate)
     dinitial_states = rearrange(dinitial_states, "... (p n) -> ... p n", n=dstate) if dinitial_states is not None else None
+    
+    CB = _bmm_chunk_fwd(C, B, chunk_size, seq_idx=seq_idx, output_dtype=torch.float32)
     dx, ddt, dD_from_x = _chunk_scan_chunk_state_bwd_dx(x, dt, dA_cumsum, B, CB, dout, dstates, D=D, seq_idx=seq_idx, dx=dx)
+    
     # dB = _chunk_state_bwd_db(x, dt, dA_cumsum, dstates, seq_idx=seq_idx, ngroups=ngroups)
     dB, ddA_next = _chunk_state_bwd_db(x, dt, dA_cumsum, dstates, seq_idx=seq_idx, B=B, ngroups=ngroups)
     # dC = _chunk_scan_bwd_dC(states[:, :-1].to(x.dtype), dA_cumsum, dout, seq_idx=seq_idx, ngroups=ngroups)
@@ -220,20 +219,8 @@ def _mamba_chunk_scan_combined_bwd(
 
 class MambaChunkScanCombinedFn(torch.autograd.Function):
     @staticmethod
-    def setup_context(ctx, inputs, output):
-        x, dt, A, B, C_list, chunk_size, D, z, dt_bias, initial_states, seq_idx, cu_seqlens, dt_softplus, dt_limit, return_varlen_states = inputs
-        out_list, out_x_list, dt_out, dA_cumsum, states, final_states, *rest = output
-
-        ctx.save_for_backward(x, dt, dA_cumsum, A, B, D, z, dt_bias, initial_states, seq_idx)
-        ctx.out_list = out_list if z is None else out_x_list
-        ctx.C_list = C_list
-        ctx.dt_softplus = dt_softplus
-        ctx.chunk_size = chunk_size
-        ctx.dt_limit = dt_limit
-        ctx.return_varlen_states = return_varlen_states
-    
-    @staticmethod
     def forward(
+            ctx,
             x: torch.Tensor,
             dt: torch.Tensor,
             A: torch.Tensor,
@@ -250,11 +237,24 @@ class MambaChunkScanCombinedFn(torch.autograd.Function):
             dt_limit: tuple[float, float] = (0.0, float("inf"),),
             return_varlen_states: bool = False,
     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+        ctx.dt_dtype = dt.dtype
         if not return_varlen_states:
             cu_seqlens = None
         else:
             assert cu_seqlens is not None, "cu_seqlens must be provided if return_varlen_states is True"
-        return _mamba_chunk_scan_combined_fwd(x, dt, A, B, C_list, chunk_size, D=D, z=z, dt_bias=dt_bias, initial_states=initial_states, seq_idx=seq_idx, cu_seqlens=cu_seqlens, dt_softplus=dt_softplus, dt_limit=dt_limit)
+        out_list, out_x_list, dt_out, dA_cumsum, states, final_states, *rest = _mamba_chunk_scan_combined_fwd(x, dt, A, B, C_list, chunk_size, D=D, z=z, dt_bias=dt_bias, initial_states=initial_states, seq_idx=seq_idx, cu_seqlens=cu_seqlens, dt_softplus=dt_softplus, dt_limit=dt_limit)
+        ctx.save_for_backward(x, dt, dA_cumsum, A, B, D, z, dt_bias, initial_states, seq_idx)
+        ctx.out_list = out_list if z is None else out_x_list
+        ctx.C_list = C_list
+        ctx.dt_softplus = dt_softplus
+        ctx.chunk_size = chunk_size
+        ctx.dt_limit = dt_limit
+        ctx.return_varlen_states = return_varlen_states
+        if not return_varlen_states:
+            return (out_list, final_states)
+        else:
+            varlen_states = rest[0]
+            return (out_list, final_states, varlen_states)
 
     @staticmethod
     def backward(
@@ -267,7 +267,7 @@ class MambaChunkScanCombinedFn(torch.autograd.Function):
         C_list = ctx.C_list
         assert not ctx.return_varlen_states, "return_varlen_states is not supported in backward"
         dfinal_states = args[0]
-        dx, ddt, dA, dB, dC, dD, dz, ddt_bias, dinitial_states = _mamba_chunk_scan_combined_bwd(dout, x, dt, A, B, C_list, out, ctx.chunk_size, D=D, z=z, dt_bias=dt_bias, initial_states=initial_states, dfinal_states=dfinal_states, seq_idx=seq_idx, dt_softplus=ctx.dt_softplus, dt_limit=ctx.dt_limit)
+        dx, ddt, dA, dB, dC, dD, dz, ddt_bias, dinitial_states = _mamba_chunk_scan_combined_bwd(dout, x, dt, A, B, C_list, out_list, ctx.chunk_size, D=D, z=z, dt_bias=dt_bias, initial_states=initial_states, dfinal_states=dfinal_states, seq_idx=seq_idx, dt_softplus=ctx.dt_softplus, dt_limit=ctx.dt_limit)
         return dx, ddt, dA, dB, dC, None, dD, dz, ddt_bias, dinitial_states, None, None, None, None, None, None
 
 
@@ -306,13 +306,7 @@ def mamba_chunk_scan_combined(
     Return:
         out: (batch, seqlen, nheads, headdim)
     """
-
-    out_list, out_x_list, dt_out, dA_cumsum, states, final_states, *rest = MambaChunkScanCombinedFn.apply(x, dt, A, B, C_list, chunk_size, D, z, dt_bias, initial_states, seq_idx, cu_seqlens, dt_softplus, dt_limit, return_varlen_states)
-    if not return_varlen_states:
-        return (out_list, final_states)
-    else:
-        varlen_states = rest[0]
-        return (out_list, final_states, varlen_states)
+    return MambaChunkScanCombinedFn.apply(x, dt, A, B, C_list, chunk_size, D, z, dt_bias, initial_states, seq_idx, cu_seqlens, dt_softplus, dt_limit, return_varlen_states)
 
 
 
