@@ -37,15 +37,20 @@ from model.transformer import (
     Mamba2InContextPredictor,
 )
 from model.zero_predictor import ZeroPredictor
-from system.linear_time_invariant import LTISystem, MOPDistribution, OrthonormalDistribution
+from system.linear_time_invariant import (
+    MOPDistribution,
+    OrthonormalDistribution,
+    ContinuousDistribution,
+)
 
 
 if __name__ == "__main__":
-    output_dir = "mamba"
-    output_fname = "result"
+    output_dir = "gpt"
+    output_fname = "result_batch_sweep"
 
-    # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.00001)
-    dist = OrthonormalDistribution()
+    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    # dist = ContinuousDistribution("gaussian", "gaussian", eps=0.01, W_std=1.0, V_std=1.0)
+    # dist = OrthonormalDistribution()
     # S_D, O_D = 10, 5,
     S_D = O_D = 5
     SHP = Namespace(
@@ -68,235 +73,226 @@ if __name__ == "__main__":
     n_firs = 5
     rnn_increment = 1
     
-    save_file = f"output/{output_dir}/save.pt"
-    if os.path.exists(save_file):
-        save = utils.torch_load(save_file)
 
-        systems = save.systems
-        dataset = save.dataset
-        result_transformer = save.result_transformer
-        # result_cnn = save.result_cnn
-        # result_rnn = save.result_rnn
-    else:
-        """ Transformer experiment """
-        exp_name_transformer = "transformer"
+    """ Transformer experiment """
+    exp_name_transformer = "transformer"
+
+    ARGS_TRANSFORMER = loader.generate_args(SHP)
+
+    # SECTION: Transformer architecture hyperparameters
+    hidden_size, num_heads, expand = 8, 8, 1, # 256, 8, 2,
+    state_size = 256 // hidden_size
+    ARGS_TRANSFORMER.model.bias = False
+    ARGS_TRANSFORMER.model.adapter = True
+
+    ARGS_TRANSFORMER.model.model = GPT2InContextPredictor
+    ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
+        n_positions=context_length,
+        n_embd=128,
+        n_layer=max_num_hidden_layers,
+        n_head=8,
+    )
+    # ARGS_TRANSFORMER.model.model = MambaInContextPredictor
+    # ARGS_TRANSFORMER.model.mamba = MambaConfig(
+    #     state_size=256,
+    #     hidden_size=hidden_size,
+    #     num_hidden_layers=num_hidden_layers,
+    #     # expand=expand,
+    # )
+    # ARGS_TRANSFORMER.model.model = Mamba2InContextPredictor
+    # ARGS_TRANSFORMER.model.mamba2 = Mamba2Config(
+    #     state_size=state_size,
+    #     hidden_size=hidden_size,
+    #     num_hidden_layers=max_num_hidden_layers,
+    #     num_heads=num_heads,
+    #     head_dim=int(expand * hidden_size / num_heads),
+    #     expand=expand,
+    # )
+
+    # SECTION: Dataset hyperparameters
+    ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
+    ARGS_TRANSFORMER.system.settings = Namespace(include_analytical=True)
     
-        ARGS_TRANSFORMER = loader.generate_args(SHP)
-    
-        # SECTION: Transformer architecture hyperparameters
-        hidden_size, num_heads, expand = 8, 8, 1, # 256, 8, 2,
-        state_size = 256 // hidden_size
-        ARGS_TRANSFORMER.model.bias = False
-        ARGS_TRANSFORMER.model.adapter = True
+    ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
+    ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
+    ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
 
-        # ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
-        #     n_positions=context_length,
-        #     n_embd=128,
-        #     n_layer=max_num_hidden_layers,
-        #     n_head=8,
-        # )
-        # ARGS_TRANSFORMER.model.model = MambaInContextPredictor
-        # ARGS_TRANSFORMER.model.mamba = MambaConfig(
-        #     state_size=256,
-        #     hidden_size=hidden_size,
-        #     num_hidden_layers=num_hidden_layers,
-        #     # expand=expand,
-        # )
-        ARGS_TRANSFORMER.model.model = Mamba2InContextPredictor
-        ARGS_TRANSFORMER.model.mamba2 = Mamba2Config(
-            state_size=state_size,
-            hidden_size=hidden_size,
-            num_hidden_layers=max_num_hidden_layers,
-            num_heads=num_heads,
-            head_dim=int(expand * hidden_size / num_heads),
-            expand=expand,
-        )
-    
-        # SECTION: Dataset hyperparameters
-        ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
-        ARGS_TRANSFORMER.system.settings = Namespace(include_analytical=False)
-        
-        ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
-        ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
-        ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
+    # SECTION: Training hyperparameters
+    ARGS_TRANSFORMER.training.sampling = Namespace(
+        method=None, # "subsequence_padded",
+        subsequence_length=None, # context_length,
+        batch_size=64,
+    )
+    ARGS_TRANSFORMER.training.optimizer = Namespace(
+        type="AdamW",
+        max_lr=1e-2, min_lr=1e-6,
+        weight_decay=1e-2, momentum=0.9,
+    )
+    ARGS_TRANSFORMER.training.scheduler = Namespace(
+        type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
+        # type="exponential", lr_decay=0.98,
+        epochs=200,
+    )
 
-        # SECTION: Training hyperparameters
-        ARGS_TRANSFORMER.training.sampling = Namespace(
-            method=None, # "subsequence_padded",
-            subsequence_length=None, # context_length,
-            batch_size=64,
-        )
-        ARGS_TRANSFORMER.training.optimizer = Namespace(
-            type="AdamW",
-            max_lr=1e-2, min_lr=1e-6,
-            weight_decay=1e-2, momentum=0.9,
-        )
-        ARGS_TRANSFORMER.training.scheduler = Namespace(
-            type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
-            # type="exponential", lr_decay=0.98,
-            epochs=200,
-        )
+    ARGS_TRANSFORMER.experiment.n_experiments = 1
+    ARGS_TRANSFORMER.experiment.ensemble_size = 1
+    ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
+    ARGS_TRANSFORMER.experiment.metrics = Namespace(training={
+        # "overfit",
+        # "validation",
+        "noiseless_overfit",
+        "noiseless_validation",
+    })
+    ARGS_TRANSFORMER.experiment.checkpoint_frequency = 5
+    ARGS_TRANSFORMER.experiment.print_frequency = 1
+    from numpy.core.records import 
 
-        ARGS_TRANSFORMER.experiment.n_experiments = 1
-        ARGS_TRANSFORMER.experiment.ensemble_size = 1
-        ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-        ARGS_TRANSFORMER.experiment.metrics = Namespace(training={
-            "overfit",
-            "validation",
-        }) # {"validation"}
-        ARGS_TRANSFORMER.experiment.checkpoint_frequency = 5
-        ARGS_TRANSFORMER.experiment.print_frequency = 1
-    
-        configurations_transformer = []
-        # configurations_transformer = [
-        #     ("dataset_shape", {
-        #         "dataset.n_systems.train": [80000, 40000, 20000, 10000,],
-        #         "dataset.total_sequence_length.train": [125, 250, 500, 1000,],
-        #         "training.sampling.batch_size": [512, 256, 128, 64,],
-        #     })
-        #     # ("num_hidden_layers", {
-        #     #     "model.mamba2.num_hidden_layers": n_layers,
-        #     # }),
-        # ]
-        result_transformer, systems, dataset = run_experiments(
-            ARGS_TRANSFORMER, configurations_transformer, {
-                "dir": output_dir,
-                "fname": output_fname
-            }, save_experiment=True,
-        )
+    # configurations_transformer = []
+    configurations_transformer = [
+        ("batch_size", {
+            "training.sampling.batch_size": [16, 32, 64, 128,],
+        })
+        # ("dataset_shape", {
+        #     "dataset.n_systems.train": [80000, 40000, 20000, 10000,],
+        #     "dataset.total_sequence_length.train": [125, 250, 500, 1000,],
+        #     "training.sampling.batch_size": [512, 256, 128, 64,],
+        # })
+        # ("num_hidden_layers", {
+        #     "model.mamba2.num_hidden_layers": n_layers,
+        # }),
+    ]
+    result_transformer, info_dict = run_experiments(
+        ARGS_TRANSFORMER, configurations_transformer, {
+            "dir": output_dir,
+            "fname": output_fname
+        }, save_experiment=True,
+    )
+    test_systems = info_dict["test"]["systems"].values[()]
 
 
 
-        # """ Baseline experiment setup """
-        # exp_name_cnn = "cnn"
-        # exp_name_rnn = "rnn"
-    
-        # for _exp_name_baseline in (exp_name_cnn, exp_name_rnn):
-        #     os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/training", exist_ok=True)
-        #     os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/testing", exist_ok=True)
+    # """ Baseline experiment setup """
+    # exp_name_cnn = "cnn"
+    # exp_name_rnn = "rnn"
 
-        #     if not all(map(os.path.exists, (
-        #         f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt",
-        #         f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt",
-        #     ))):
-        #         baseline_systems = utils.multi_map(
-        #             lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
-        #             systems, dtype=LTISystem,
-        #         )
-        #         torch.save({
-        #             "train": baseline_systems,
-        #         }, f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt")
-        #         torch.save({
-        #             "test": baseline_systems,
-        #         }, f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt")
+    # for _exp_name_baseline in (exp_name_cnn, exp_name_rnn):
+    #     os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/training", exist_ok=True)
+    #     os.makedirs(f"output/{output_dir}/{_exp_name_baseline}/testing", exist_ok=True)
 
-        #     if not all(map(os.path.exists, (
-        #         f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
-        #         f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt",
-        #     ))):
-        #         baseline_dataset = utils.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
-        #         torch.save({
-        #             "train": baseline_dataset,
-        #             "valid": baseline_dataset,
-        #         }, f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt")
-        #         torch.save({
-        #             "test": baseline_dataset,
-        #         }, f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt")
-    
-    
-    
-        # """ CNN Experiment """
-        # ARGS_BASELINE_CNN = loader.generate_args(SHP)
+    #     if not all(map(os.path.exists, (
+    #         f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt",
+    #         f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt",
+    #     ))):
+    #         baseline_systems = utils.multi_map(
+    #             lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
+    #             systems, dtype=LTISystem,
+    #         )
+    #         torch.save({
+    #             "train": baseline_systems,
+    #         }, f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt")
+    #         torch.save({
+    #             "test": baseline_systems,
+    #         }, f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt")
 
-        # ARGS_BASELINE_CNN.model.model = CnnLeastSquaresPredictor
-
-        # ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
-        # ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
-        # ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(train=context_length)
-
-        # ARGS_BASELINE_CNN.training.sampling.batch_size = 1
-
-        # ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
-        # ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
-        # ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
-        # ARGS_BASELINE_CNN.experiment.backup_frequency = 250
-        # ARGS_BASELINE_CNN.experiment.checkpoint_frequency = 10000
-        # ARGS_BASELINE_CNN.experiment.print_frequency = 1
-
-        # # SECTION: Make a copy for RNN args after setting shared parameters
-        # ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
-    
-        # # SECTION: Set CNN exclusive hyperparameters
-        # ARGS_BASELINE_CNN.model.ridge = 1.0
-        # ARGS_BASELINE_CNN.experiment.exp_name = exp_name_cnn
-    
-        # configurations_cnn = [
-        #     ("model", {
-        #         "model.ir_length": [*range(1, n_firs + 1)],
-        #     }),
-        # ]
-    
-        # result_cnn, _, _ = run_experiments(
-        #     ARGS_BASELINE_CNN, configurations_cnn, {
-        #         "dir": output_dir,
-        #         "fname": output_fname,
-        #     }, save_experiment=True,
-        # )
+    #     if not all(map(os.path.exists, (
+    #         f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
+    #         f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt",
+    #     ))):
+    #         baseline_dataset = utils.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
+    #         torch.save({
+    #             "train": baseline_dataset,
+    #             "valid": baseline_dataset,
+    #         }, f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt")
+    #         torch.save({
+    #             "test": baseline_dataset,
+    #         }, f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt")
 
 
 
-        # """ RNN Experiment """
-        # # SECTION: Set RNN exclusive hyperparameters
-        # ARGS_BASELINE_RNN.model.S_D = SHP.S_D
-        # ARGS_BASELINE_RNN.model.initial_state_scale = 0.00001
+    # """ CNN Experiment """
+    # ARGS_BASELINE_CNN = loader.generate_args(SHP)
 
-        # ARGS_BASELINE_RNN.training.sampling = Namespace(
-        #     method=None, # "subsequence_padded",
-        #     subsequence_length=None, # context_length,
-        #     batch_size=None, # 64,
-        # )
-        # ARGS_BASELINE_RNN.training.optimizer = Namespace(
-        #     type="SGD",
-        #     max_lr=1e-3, min_lr=1e-7,
-        #     weight_decay=0.0, momentum=0.9,
-        # )
-        # ARGS_BASELINE_RNN.training.scheduler = Namespace(
-        #     type="reduce_on_plateau",
-        #     factor=0.7, patience=10, warmup_duration=0,
-        #     # type="exponential",
-        #     # lr_decay=0.998, warmup_duration=100,
-        #     epochs=2000, gradient_cutoff=1e-6,
-        # )
+    # ARGS_BASELINE_CNN.model.model = CnnLeastSquaresPredictor
 
-        # ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn
-        # ARGS_BASELINE_RNN.experiment.checkpoint_frequency = 200
-        # ARGS_BASELINE_RNN.experiment.print_frequency = 1
-    
-        # configurations_rnn = [
-        #     ("total_trace_length", {
-        #         "model.model": [ZeroPredictor] + [RnnComplexDiagonalPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
-        #         # "model.model": [ZeroPredictor] + [RnnAnalyticalPretrainPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
-        #         "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
-        #     })
-        # ]
+    # ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
+    # ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
+    # ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(train=context_length)
 
-        # result_rnn, _, _ = run_experiments(
-        #     ARGS_BASELINE_RNN, configurations_rnn, {
-        #         "dir": output_dir,
-        #         "fname": output_fname
-        #     }, save_experiment=True,
-        # )
-    
-        # SECTION: Save the collected experiment results
-        save = Namespace(
-            systems=systems,
-            dataset=dataset,
-            result_transformer=result_transformer,
-            # result_cnn=result_cnn,
-            # result_rnn=result_rnn,
-        )
-        torch.save(save, save_file)
+    # ARGS_BASELINE_CNN.training.sampling.batch_size = 1
+
+    # ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
+    # ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
+    # ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
+    # ARGS_BASELINE_CNN.experiment.backup_frequency = 250
+    # ARGS_BASELINE_CNN.experiment.checkpoint_frequency = 10000
+    # ARGS_BASELINE_CNN.experiment.print_frequency = 1
+
+    # # SECTION: Make a copy for RNN args after setting shared parameters
+    # ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
+
+    # # SECTION: Set CNN exclusive hyperparameters
+    # ARGS_BASELINE_CNN.model.ridge = 1.0
+    # ARGS_BASELINE_CNN.experiment.exp_name = exp_name_cnn
+
+    # configurations_cnn = [
+    #     ("model", {
+    #         "model.ir_length": [*range(1, n_firs + 1)],
+    #     }),
+    # ]
+
+    # result_cnn, _, _ = run_experiments(
+    #     ARGS_BASELINE_CNN, configurations_cnn, {
+    #         "dir": output_dir,
+    #         "fname": output_fname,
+    #     }, save_experiment=True,
+    # )
+
+
+
+    # """ RNN Experiment """
+    # # SECTION: Set RNN exclusive hyperparameters
+    # ARGS_BASELINE_RNN.model.S_D = SHP.S_D
+    # ARGS_BASELINE_RNN.model.initial_state_scale = 0.00001
+
+    # ARGS_BASELINE_RNN.training.sampling = Namespace(
+    #     method=None, # "subsequence_padded",
+    #     subsequence_length=None, # context_length,
+    #     batch_size=None, # 64,
+    # )
+    # ARGS_BASELINE_RNN.training.optimizer = Namespace(
+    #     type="SGD",
+    #     max_lr=1e-3, min_lr=1e-7,
+    #     weight_decay=0.0, momentum=0.9,
+    # )
+    # ARGS_BASELINE_RNN.training.scheduler = Namespace(
+    #     type="reduce_on_plateau",
+    #     factor=0.7, patience=10, warmup_duration=0,
+    #     # type="exponential",
+    #     # lr_decay=0.998, warmup_duration=100,
+    #     epochs=2000, gradient_cutoff=1e-6,
+    # )
+
+    # ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn
+    # ARGS_BASELINE_RNN.experiment.checkpoint_frequency = 200
+    # ARGS_BASELINE_RNN.experiment.print_frequency = 1
+
+    # configurations_rnn = [
+    #     ("total_trace_length", {
+    #         "model.model": [ZeroPredictor] + [RnnComplexDiagonalPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
+    #         # "model.model": [ZeroPredictor] + [RnnAnalyticalPretrainPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
+    #         "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
+    #     })
+    # ]
+
+    # result_rnn, _, _ = run_experiments(
+    #     ARGS_BASELINE_RNN, configurations_rnn, {
+    #         "dir": output_dir,
+    #         "fname": output_fname
+    #     }, save_experiment=True,
+    # )
     torch.cuda.empty_cache()
+
+
 
     M_transformer = get_metric_namespace_from_result(result_transformer)
     # M_cnn = get_metric_namespace_from_result(result_cnn)
@@ -312,20 +308,17 @@ if __name__ == "__main__":
         get_result_attr(result_transformer, "output"), dtype=TensorDict,
     ))
 
-    overfit_l = torch.mean(einops.rearrange(training_log["overfit"], "l 1 1 t b -> l t b"), dim=-1)
-    validation_l = torch.mean(einops.rearrange(training_log["validation"], "l 1 1 t b -> l t b"), dim=-1)
+    # overfit_l = torch.mean(einops.rearrange(training_log["overfit"], "1 1 t b -> t b"), dim=-1)
+    # validation_l = torch.mean(einops.rearrange(training_log["validation"], "1 1 t b -> t b"), dim=-1)
 
     plt.rcParams["figure.figsize"] = (10.0, 5.0,)
-    c_list = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    for idx, (num_hidden_layers, c) in enumerate(zip(n_layers, c_list)):
-        plt.plot(
-            overfit_l[idx].numpy(force=True),
-            color=c, label=f"overfit_layers{num_hidden_layers}",
-        )
-        plt.plot(
-            validation_l[idx].numpy(force=True),
-            color=c, linestyle="--", label=f"validation_layers{num_hidden_layers}",
-        )
+    for k, v in [
+        ("noiseless_overfit", "train",),
+        ("noiseless_validation", "valid",)
+    ]:
+        il = torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
+        l = torch.mean(einops.rearrange(training_log[k], "1 1 t b -> t b",), dim=-1)
+        plt.plot((l - il).numpy(force=True), label=k,)
 
     plt.xlabel("epochs", fontsize=10)
     plt.ylabel("loss", fontsize=10)

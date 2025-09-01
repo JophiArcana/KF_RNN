@@ -446,7 +446,7 @@ def _run_unit_training_experiment(
 
     # Setup result and run training
     avg = lambda t: t.mean().item()
-    for loss_type in ("zero_predictor_loss", "irreducible_loss"):
+    for loss_type in ("zero_predictor_loss", "copy_predictor_loss", "irreducible_loss",):
         print(f"Mean {loss_type.replace('_', ' ')} {'-' * 80}")
         for ds_type, ds_info in vars(info).items():
             try:

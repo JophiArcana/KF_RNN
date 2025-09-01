@@ -33,7 +33,7 @@ def run_experiments(
         systems: Dict[str, DimArray] = None,
         initialization: DimArray = None,
         save_experiment: bool = True
-) -> Tuple[DimArray, DimArray, DimArray]:
+) -> Tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
     HP = utils.deepcopy_namespace(HP)
 
     training_iterparams = []
@@ -44,14 +44,14 @@ def run_experiments(
         if len(_training_params) > 0:
             training_iterparams.append((param_group, _training_params))
 
-    training_result, training_cache = run_training_experiments(
+    training_result, info_dict = run_training_experiments(
         HP, training_iterparams, output_kwargs,
         systems=systems, initialization=initialization, save_experiment=save_experiment
     )
 
     return run_testing_experiments(
         HP, iterparams, output_kwargs,
-        systems=systems, result=training_result, cache=training_cache, save_experiment=save_experiment,
+        systems=systems, result=training_result, info_dict=info_dict, save_experiment=save_experiment,
     )
 
 
@@ -86,7 +86,7 @@ def run_training_experiments(
         initialization: DimArray = None,
         save_experiment: bool = True,
         print_hyperparameters: bool = False,
-) -> Tuple[DimArray, Namespace]:
+) -> Tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
     HP = utils.deepcopy_namespace(HP)
 
     # Set up file names
@@ -98,29 +98,16 @@ def run_training_experiments(
         output_dir = f"{root_dir}/{HP.experiment.exp_name}"
         os.makedirs((train_output_dir := f"{output_dir}/{output_kwargs['training_dir']}"), exist_ok=True)
 
-        caching_output_fname = f"{train_output_dir}/_{output_kwargs['fname']}.pt"
-        caching_output_fname_backup = f"{train_output_dir}/_{output_kwargs['fname']}_backup.pt"
-        final_output_fname = f"{train_output_dir}/{output_kwargs['fname']}.pt"
-
-        checkpoint_paths = [
-            f"{train_output_dir}/checkpoint.pt",
-            f"{train_output_dir}/checkpoint_backup.pt"
-        ]
+        tiers = 2
+        output_fnames = [f"{train_output_dir}/{'_' * tier}{output_kwargs['fname']}.pt" for tier in range(tiers)]
+        checkpoint_paths = [f"{train_output_dir}/{'_' * tier}checkpoint.pt" for tier in range(tiers)]
     else:
-        output_dir = train_output_dir = caching_output_fname = caching_output_fname_backup = final_output_fname = None
+        output_dir = train_output_dir = None
+        output_fnames = []
         checkpoint_paths = []
 
-    # Check if the entire experiment has already been run
-    if save_experiment and os.path.exists(final_output_fname):
-        try:
-            result, cache = utils.torch_load(final_output_fname)
-            print(f"Complete result recovered from file {final_output_fname}.")
-            return result, cache
-        except RuntimeError:
-            pass
 
     # SECTION: Run prologue to construct basic data structures
-    cache = Namespace()
     conditions = (
         (lambda n: not re.match(r"experiment\.", n), "Cannot sweep over experiment parameters."),
         (lambda n: not re.match(r"dataset(\..*\.|\.)test$", n), "Cannot sweep over test dataset hyperparameters during training."),
@@ -129,48 +116,58 @@ def run_training_experiments(
     dimensions, params_dataset = _construct_dependency_dict_and_params_dataset(HP, iterparams, conditions)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
-    _INFO_DICT = _construct_info_dict_from_dataset_types(
+    INFO_DICT = _construct_info_dict_from_dataset_types(
         HP, dimensions, params_dataset, OrderedDict(), TRAINING_DATASET_TYPES, train_output_dir,
-        default_systems=systems
+        default_systems=systems,
     )
 
-    # DONE: Cache unprocessed INFO_DICT to use during testing
-    cache.info_dict = _INFO_DICT
-    INFO_DICT: Dict[str, DimArray] = {k: _process_info_dict(v) for k, v in _INFO_DICT.items()}
 
-    # SECTION: Run the experiments for hyperparameter sweeps
-    # DONE: Filter out the hyperparameter sweeps that do not influence training
-    cache.train_dimensions = _filter_dimensions_if_any_satisfy_condition(
-        dimensions, lambda param: not re.match("dataset\\.", param) or re.match("dataset(\\..*\\.|\\.)train$", param)
-    )
-
-    # Result setup
-    if save_experiment and os.path.exists(final_output_fname):
-        return utils.torch_load(final_output_fname)
-
-    if save_experiment and os.path.exists(caching_output_fname):
+    # DONE: Result setup
+    output_fname: str = None
+    result: DimArray = None
+    for output_fname in output_fnames:
         try:
-            result = utils.torch_load(caching_output_fname)
-        except RuntimeError:
-            result = utils.torch_load(caching_output_fname_backup)
+            result = utils.torch_load(output_fname)
+            break
+        except Exception:
+            pass
+    
+    def check_done() -> np.ndarray:
+        return np_records.fromrecords(result.values, dtype=RESULT_DTYPE).time > 0
+
+    if result is not None:
+        done = check_done()
+        if done.sum().item() == done.size:
+            print(f"Complete result recovered from file {output_fname}.")
+            return result, INFO_DICT,
+
+        train_dimensions = OrderedDict(zip(result.dims, result.shape,))
     else:
-        # Set up new result DimRecarray
+        # DONE: Filter out the hyperparameter sweeps that do not influence training
+        train_dimensions = _filter_dimensions_if_any_satisfy_condition(
+            dimensions, lambda param: not re.match("dataset\\.", param) or re.match("dataset(\\..*\\.|\\.)train$", param)
+        )
         result = DimArray(
-            np.recarray([*cache.train_dimensions.values()], dtype=RESULT_DTYPE),
-            dims=[*cache.train_dimensions.keys()], dtype=RESULT_DTYPE
+            np.recarray([*train_dimensions.values()], dtype=RESULT_DTYPE),
+            dims=[*train_dimensions.keys()], dtype=RESULT_DTYPE,
         )
 
+    # DONE: Restructure INFO_DICT for easier access during training
+    PROCESSED_INFO_DICT: Dict[str, DimArray] = {k: _process_info_dict(v) for k, v in INFO_DICT.items()}
+
+
+    # SECTION: Run the training experiments
     print("=" * 160)
     print(HP.experiment.exp_name)
     if print_hyperparameters:
         print("=" * 160)
         print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
 
-    counter = 0
-    for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, cache.train_dimensions, params_dataset):
+    counter = 1
+    for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, train_dimensions, params_dataset):
         experiment_record = result.take(experiment_dict_index)
         if experiment_record.time == 0:
-            done = np_records.fromrecords(result.values, dtype=RESULT_DTYPE).time > 0
+            done = check_done()
             print("=" * 160)
             print(f'Experiment {done.sum().item()}/{done.size}')
 
@@ -179,7 +176,7 @@ def run_training_experiments(
 
             INFO = Namespace(**{
                 ds_type: np_records.fromrecords(utils.take_from_dim_array(ds_info, experiment_dict_index), dtype=ds_info.dtype)
-                for ds_type, ds_info in INFO_DICT.items()
+                for ds_type, ds_info in PROCESSED_INFO_DICT.items()
             })
 
             # TODO: Set up experiment initialization if it exists
@@ -201,11 +198,12 @@ def run_training_experiments(
             print("\n" + "#" * 160)
             if save_experiment:
                 backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
-                if backup_frequency is not None and counter % backup_frequency == 0:
-                    torch.save(result, caching_output_fname_backup)
-                    print(f'{os.path.getsize(caching_output_fname_backup)} bytes written to {caching_output_fname_backup}')
-                torch.save(result, caching_output_fname)
-                print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
+                if backup_frequency is None:
+                    backup_frequency = 10000
+                for tier, output_fname in enumerate(output_fnames):
+                    if counter % (backup_frequency ** tier) == 0:
+                        torch.save(result, output_fname)
+                        print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
             print("#" * 160 + "\n")
 
             utils.empty_cache()
@@ -214,8 +212,9 @@ def run_training_experiments(
     # SECTION: Save relevant information
     if save_experiment:
         # Save full results to final output file
-        torch.save((result, cache,), final_output_fname)
-        os.remove(caching_output_fname)
+        for output_fname in output_fnames[1:]:
+            if os.path.exists(output_fname):
+                os.remove(output_fname)
 
         # Save code to for experiment reproducibility
         code_base_dir = f"{output_dir}/code"
@@ -225,21 +224,13 @@ def run_training_experiments(
             if not os.path.exists(code_dir):
                 shutil.copytree(dir_name, code_dir, dirs_exist_ok=True)
 
-        # Save cached training information to be used at test time
-        cache_fname = f"{train_output_dir}/cache.pt"
-        torch.save(cache, cache_fname)
-
         # Write hyperparameters to JSON
         hp_fname = f"{train_output_dir}/hparams.json"
         if not os.path.exists(hp_fname):
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-        # Clean up result_backup
-        if os.path.exists(caching_output_fname_backup):
-            os.remove(caching_output_fname_backup)
-
-    return result, cache,
+    return result, INFO_DICT,
 
 
 def run_testing_experiments(
@@ -248,9 +239,9 @@ def run_testing_experiments(
         output_kwargs: Dict[str, Any],
         systems: Dict[str, DimArray] = None,
         result: DimArray = None,
-        cache: Namespace = None,
+        info_dict: OrderedDict[str, OrderedDict[str, DimArray]] = None,
         save_experiment: bool = True
-) -> Tuple[DimArray, DimArray, DimArray]:
+) -> Tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
     HP = utils.deepcopy_namespace(HP)
 
     # Set up file names
@@ -258,42 +249,17 @@ def run_testing_experiments(
     output_kwargs.setdefault("training_dir", "training")
     output_kwargs.setdefault("testing_dir", "testing")
 
-    if save_experiment or cache is None:
+    if save_experiment:
         root_dir = f"output/{output_kwargs['dir']}"
         output_dir = f"{root_dir}/{HP.experiment.exp_name}"
-        if save_experiment:
-            os.makedirs((test_output_dir := f"{output_dir}/{output_kwargs['testing_dir']}"), exist_ok=True)
-            caching_output_fname = f"{test_output_dir}/_{output_kwargs['fname']}.pt"
-            final_output_fname = f"{test_output_dir}/{output_kwargs['fname']}.pt"
-        else:
-            test_output_dir = caching_output_fname = final_output_fname = None
+        os.makedirs((test_output_dir := f"{output_dir}/{output_kwargs['testing_dir']}"), exist_ok=True)
+
+        tiers = 1
+        output_fnames = [f"{test_output_dir}/{'_' * tier}{output_kwargs['fname']}.pt" for tier in range(tiers)]
     else:
-        output_dir = test_output_dir = caching_output_fname = final_output_fname = None
+        output_dir = test_output_dir = None
+        output_fnames = []
 
-    # Check if the entire experiment has already been run
-    if save_experiment and os.path.exists(final_output_fname):
-        try:
-            result, test_systems, test_dataset = utils.torch_load(final_output_fname)
-            print(f"Complete result recovered from file {final_output_fname}.")
-            return result, test_systems, test_dataset
-        except RuntimeError:
-            pass
-
-    # Result setup
-    if save_experiment and os.path.exists(final_output_fname):
-        return utils.torch_load(final_output_fname)
-
-    if save_experiment and os.path.exists(caching_output_fname):
-        result = utils.torch_load(caching_output_fname)
-    elif result is None:
-        train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
-        assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
-        result = utils.torch_load(train_output_fname)
-
-    if cache is None:
-        training_cache_fname = f"{output_dir}/{output_kwargs['training_dir']}/cache.pt"
-        assert os.path.exists(training_cache_fname), f"Training cache was not provided, and could not be found at {training_cache_fname}."
-        cache = utils.torch_load(training_cache_fname)
 
     # SECTION: Run prologue to construct basic data structures
     conditions = (
@@ -303,11 +269,39 @@ def run_testing_experiments(
     dimensions, params_dataset = _construct_dependency_dict_and_params_dataset(HP, iterparams, conditions)
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
+    if info_dict is None:
+        info_dict = OrderedDict()
     INFO_DICT = _construct_info_dict_from_dataset_types(
-        HP, dimensions, params_dataset, cache.info_dict, (TESTING_DATASET_TYPE,), test_output_dir,
+        HP, dimensions, params_dataset, info_dict, (TESTING_DATASET_TYPE,), test_output_dir,
         default_systems=systems
     )
 
+
+    # TODO: Result setup
+    output_fname: str = None
+    result: DimArray = None
+    for output_fname in output_fnames:
+        try:
+            result = utils.torch_load(output_fname)
+            break
+        except Exception:
+            pass
+    
+    if result is None:
+        train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
+        assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
+        result = utils.torch_load(train_output_fname)
+
+    def check_done() -> np.ndarray:
+        return ~np.array(get_result_attr(result, "metrics") == None)
+
+    done = check_done()
+    if done.sum().item() == done.size:
+        print(f"Complete result recovered from file {output_fname}.")
+        return result, INFO_DICT,
+
+
+    # SECTION: Construct DimRecarray from accumulated information
     for ds_info in INFO_DICT.values():
         shapes = utils.stack_tensor_arr(utils.multi_map(
             lambda dataset: torch.IntTensor([*dataset.obj.shape, ]),
@@ -316,12 +310,14 @@ def run_testing_experiments(
         flattened_shapes = shapes.reshape(-1, shapes.shape[-1])
         assert torch.all(flattened_shapes == flattened_shapes[0]), f"Cannot sweep over hyperparameters that determine shape of the testing dataset. Got dataset shapes {shapes}."
 
-    # SECTION: Construct DimRecarray from accumulated information
+    # DONE: Restructure INFO_DICT for easier access during training
     TEST_INFO = _process_info_dict(INFO_DICT[TESTING_DATASET_TYPE])
 
+
     # SECTION: Run the testing metrics
-    counter = 0
-    for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, cache.train_dimensions, params_dataset):
+    counter = 1
+    train_dimensions = OrderedDict(zip(result.dims, result.shape,))
+    for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, train_dimensions, params_dataset):
         experiment_record = result.take(experiment_dict_index)
         if experiment_record.metrics is None:
             done = ~np.array(get_result_attr(result, "metrics") == None)
@@ -362,27 +358,30 @@ def run_testing_experiments(
             except KeyError:
                 pass
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
-
             experiment_record.metrics = PTR(metric_result)
 
             if save_experiment:
                 # TODO: Save if backup frequency or if it was the last experiment
                 backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
-                if (backup_frequency is not None and (counter + 1) % backup_frequency == 0) or (done.sum().item() + 1 == done.size):
-                    print("\n" + "#" * 160)
-                    torch.save(result, caching_output_fname)
-                    print(f'{os.path.getsize(caching_output_fname)} bytes written to {caching_output_fname}')
-                    print("#" * 160 + "\n")
+                if backup_frequency is None:
+                    backup_frequency = 10000
+
+                for tier, output_fname in enumerate(output_fnames):
+                    if (counter % (backup_frequency ** tier) == 0) or (done.sum().item() + 1 == done.size):
+                        torch.save(result, output_fname)
+                        print("\n" + "#" * 160)
+                        print(f'{os.path.getsize(output_fname)} bytes written to {output_fname}')
+                        print("\n" + "#" * 160)
 
             utils.empty_cache()
             counter += 1
 
     # SECTION: Save relevant information
-    test_systems, test_dataset = INFO_DICT[TESTING_DATASET_TYPE]["systems"], INFO_DICT[TESTING_DATASET_TYPE]["dataset"]
     if save_experiment:
         # Save full results to final output file
-        torch.save((result, test_systems, test_dataset,), final_output_fname)
-        os.remove(caching_output_fname)
+        for output_fname in output_fnames[1:]:
+            if os.path.exists(output_fname):
+                os.remove(output_fname)
 
         # Write hyperparameters to JSON
         hp_fname = f"{test_output_dir}/hparams.json"
@@ -390,7 +389,7 @@ def run_testing_experiments(
             with open(hp_fname, "w") as fp:
                 json.dump(utils.toJSON(HP), fp, indent=4)
 
-    return result, test_systems, test_dataset,
+    return result, INFO_DICT,
 
 
 def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:

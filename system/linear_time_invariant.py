@@ -8,6 +8,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 from infrastructure.discrete_are import solve_discrete_are
 from model.zero_predictor import ZeroController
+from model.convolutional import ConvolutionalPredictor
 from system.base import SystemGroup, SystemDistribution
 from system.controller import LinearControllerGroup
 from system.environment import LTIEnvironment, LTIZeroNoiseEnvironment
@@ -77,14 +78,14 @@ class LTISystem(SystemGroup):
 
         # SECTION: Compute effective transition, observation, and control matrices of LQG system
         self.register_buffer("F_augmented", torch.cat([
-            torch.cat([F_BL + BL @ I_KH, -BL @ I_KH], dim=-1),
-            F_BL @ torch.cat([KH, I_KH], dim=-1)
+            torch.cat([F_BL + BL @ I_KH, -BL @ I_KH,], dim=-1),
+            F_BL @ torch.cat([KH, I_KH,], dim=-1)
         ], dim=-2))
         self.register_buffer("H_augmented", torch.cat([H, torch.zeros_like(H)], dim=-1))
         L_augmented = nn.Module()
         for k in vars(self.hyperparameters.problem_shape.controller):
             L = getattr(self.controller.L, k)
-            L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH], dim=-1))
+            L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH,], dim=-1))
         self.register_module("L_augmented", L_augmented)
 
         # SECTION: Register irreducible loss
@@ -96,6 +97,13 @@ class LTISystem(SystemGroup):
             "controller": zero_predictor_loss["controller"].apply(torch.zeros_like)
         }, batch_size=self.group_shape)
         self.register_module("irreducible_loss", utils.buffer_dict(irreducible_loss))
+
+        assert len(vars(self.environment.problem_shape.controller)) == 0
+        copy_predictor_td = TensorDict({
+            "observation_IR": torch.eye(self.environment.O_D)[:, None, :],
+        }, batch_size=())[None, None]
+        copy_predictor_loss = ConvolutionalPredictor.analytical_error(copy_predictor_td, self.td())
+        self.register_module("copy_predictor_loss", utils.buffer_dict(copy_predictor_loss))
 
 
 class LTIZeroNoiseSystem(LTISystem):
@@ -138,12 +146,12 @@ class MOPDistribution(LTISystem.Distribution):
 
         match self.F_mode:
             case "gaussian":
-                F = torch.randn((*shape, S_D, S_D))
+                F = torch.randn((*shape, S_D, S_D,))
             case "uniform":
-                F = torch.zeros((*shape, S_D, S_D)).uniform_(-1., 1.)
+                F = torch.zeros((*shape, S_D, S_D,)).uniform_(-1., 1.)
             case _:
                 raise ValueError(self.F_mode)
-        F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values.unsqueeze(-1).unsqueeze(-2))
+        F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None])
         B = TensorDict({
             k: self.B_scale * torch.randn((*shape, S_D, I_D)) / (3 ** 0.5)
             for k, I_D in vars(SHP.problem_shape.controller).items()
@@ -151,14 +159,14 @@ class MOPDistribution(LTISystem.Distribution):
 
         match self.H_mode:
             case "gaussian":
-                H = torch.randn((*shape, O_D, S_D)) / (3 ** 0.5)
+                H = torch.randn((*shape, O_D, S_D,)) / (3 ** 0.5)
             case "uniform":
-                H = torch.zeros((*shape, O_D, S_D)).uniform_(-1., 1.)
+                H = torch.zeros((*shape, O_D, S_D,)).uniform_(-1., 1.)
             case _:
                 raise ValueError(self.H_mode)
 
-        sqrt_S_W = (torch.eye(S_D) * self.W_std).expand(*shape, S_D, S_D)
-        sqrt_S_V = (torch.eye(O_D) * self.V_std).expand(*shape, O_D, O_D)
+        sqrt_S_W = (torch.eye(S_D) * self.W_std).expand((*shape, S_D, S_D,))
+        sqrt_S_V = (torch.eye(O_D) * self.V_std).expand((*shape, O_D, O_D,))
 
         to_psd = lambda M: utils.sqrtm(M @ M.mT)
         Q = TensorDict({
@@ -182,16 +190,66 @@ class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
         assert S_D == O_D, "Orthonormal system setting is assumed to be fully observed."
         assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
 
-        _Z = torch.randn((*shape, S_D, S_D))
+        _Z = torch.randn((*shape, S_D, S_D,))
         _Q, _R = torch.linalg.qr(_Z)
         F = _Q * torch.sgn(torch.diagonal(_R, dim1=-2, dim2=-1))[..., None]
 
+        B = TensorDict({}, batch_size=(*shape, S_D,))
+
+        H = torch.eye(S_D).expand((*shape, S_D, O_D,))
+
+        sqrt_S_W = torch.zeros((*shape, S_D, S_D,))
+        sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
+
+        Q = TensorDict({}, batch_size=(*shape, S_D, S_D,))
+        R = TensorDict({}, batch_size=shape)
+
+        return TensorDict.from_dict({
+            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
+            "controller": {"Q": Q, "R": R}
+        }, batch_size=shape).apply(nn.Parameter)
+
+
+class ContinuousDistribution(LTISystem.Distribution):
+    def __init__(self,
+                 F_mode: str,
+                 H_mode: str,
+                 eps: float,
+                 W_std: float,
+                 V_std: float,
+    ) -> None:
+        LTISystem.Distribution.__init__(self)
+        self.F_mode = F_mode
+        self.H_mode = H_mode
+
+        self.eps = eps
+        self.W_std, self.V_std = W_std, V_std
+
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
+        S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
+
+        match self.F_mode:
+            case "gaussian":
+                F = torch.randn((*shape, S_D, S_D))
+            case "uniform":
+                F = torch.zeros((*shape, S_D, S_D)).uniform_(-1., 1.)
+            case _:
+                raise ValueError(self.F_mode)
+        F /= torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None]
+        F = (1 - 2 * self.eps) * torch.eye(S_D) - self.eps * F
+
         B = TensorDict({}, batch_size=(*shape, S_D))
 
-        H = torch.eye(S_D).expand((*shape, S_D, O_D))
+        match self.H_mode:
+            case "gaussian":
+                H = torch.randn((*shape, O_D, S_D)) / (3 ** 0.5)
+            case "uniform":
+                H = torch.zeros((*shape, O_D, S_D)).uniform_(-1., 1.)
+            case _:
+                raise ValueError(self.H_mode)
 
-        sqrt_S_W = torch.zeros((*shape, S_D, S_D))
-        sqrt_S_V = torch.zeros((*shape, O_D, O_D))
+        sqrt_S_W = (torch.eye(S_D) * self.W_std * self.eps).expand((*shape, S_D, S_D,))
+        sqrt_S_V = (torch.eye(O_D) * self.V_std * self.eps).expand((*shape, O_D, O_D,))
 
         Q = TensorDict({}, batch_size=(*shape, S_D, S_D))
         R = TensorDict({}, batch_size=shape)
