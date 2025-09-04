@@ -10,6 +10,8 @@ import tensordict.utils
 import torch
 from matplotlib import colors
 from matplotlib import pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from tensordict import TensorDict
 from transformers import (
     GPT2Config,
@@ -45,8 +47,9 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "mamba"
-    output_fname = "result_batch_sweep"
+    output_dir = "mamba_new"
+    output_fname = "result_batch64x3"
+    # output_fname = "result_batch_sweep_exponential_lr"
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     # dist = ContinuousDistribution("gaussian", "gaussian", eps=0.01, W_std=1.0, V_std=1.0)
@@ -129,7 +132,7 @@ if __name__ == "__main__":
     )
     ARGS_TRANSFORMER.training.scheduler = Namespace(
         type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
-        # type="exponential", lr_decay=0.98,
+        # type="exponential", lr_decay=0.982, warmup_duration=0,
         epochs=200,
     )
 
@@ -148,7 +151,9 @@ if __name__ == "__main__":
     # configurations_transformer = []
     configurations_transformer = [
         ("batch_size", {
-            "training.sampling.batch_size": [16, 32, 64, 128,],
+            # "training.sampling.batch_size": [16, 32, 64, 128,],
+            # "training.sampling.batch_size": [64, 128,],
+            "training.sampling.batch_size": [64, 64, 64,],
         })
         # ("dataset_shape", {
         #     "dataset.n_systems.train": [80000, 40000, 20000, 10000,],
@@ -302,26 +307,46 @@ if __name__ == "__main__":
     # print(M_transformer.nl.shape)
     # print(M_transformer.output.environment.observation.shape)
     training_log = utils.stack_tensor_arr(utils.multi_map(
-        lambda p: p.obj,
-        get_result_attr(result_transformer, "output"), dtype=TensorDict,
-    ))
+        lambda p: p.obj, get_result_attr(result_transformer, "output"),
+        dtype=TensorDict,
+    ))[:, 0, 0]
+    # training_log: TensorDict = result_transformer.values[()].output.obj[0, 0]
 
+    # lr = torch.stack([td["learning_rate"] for td in training_log[:-1]], dim=0)
     # overfit_l = torch.mean(einops.rearrange(training_log["overfit"], "1 1 t b -> t b"), dim=-1)
     # validation_l = torch.mean(einops.rearrange(training_log["validation"], "1 1 t b -> t b"), dim=-1)
 
-    plt.rcParams["figure.figsize"] = (10.0, 5.0,)
-    for k, v in [
-        ("noiseless_overfit", "train",),
-        ("noiseless_validation", "valid",)
-    ]:
-        il = torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
-        l = torch.mean(einops.rearrange(training_log[k], "1 1 t b -> t b",), dim=-1)
-        plt.plot((l - il).numpy(force=True), label=k,)
 
-    plt.xlabel("epochs", fontsize=10)
-    plt.ylabel("loss", fontsize=10)
-    plt.yscale("log")
-    plt.legend(fontsize=10)
+    hparam_name = configurations_transformer[0][0]
+    hparam_values = [*configurations_transformer[0][1].values()][0]
+
+    clist = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    nrows = len(hparam_values)
+    plt.rcParams["figure.figsize"] = (10.0, 5.0 * nrows,)
+    fig, axs = plt.subplots(nrows=len(hparam_values),)
+
+    for i, (hparam_value, log_td) in enumerate(zip(hparam_values, training_log)):
+        ax: Axes = axs[i]
+        ax_lr = ax.twinx()
+
+        for j, (k, v) in enumerate([
+            ("noiseless_overfit", "train",),
+            ("noiseless_validation", "valid",)
+        ]):
+            il = torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
+            l = torch.mean(log_td[k], dim=-1)
+            ax.plot((l - il).numpy(force=True), label=f"{hparam_name}{hparam_value}-{k}",)
+            print((l - il).min())
+        # ax_lr.plot(lr.numpy(force=True), color="green", linestyle="--", label="lr",)
+
+        ax.set_xlabel("epochs", fontsize=10)
+        ax.set_ylabel("loss", fontsize=10)
+        ax.set_yscale("log")
+        ax.legend(fontsize=10)
+
+        ax_lr.set_ylabel("learning_rate")
+        ax_lr.set_yscale("log")
+        ax_lr.legend(fontsize=10)
 
     plt.show()
     plt.rcdefaults()
@@ -448,7 +473,7 @@ if __name__ == "__main__":
     #             # plt.plot(cd(x_), cd(l.mean(dim=0)), zorder=12, **plt_kwargs)
     #             plt.plot(x_.numpy(force=True), l.median(dim=0).values.numpy(force=True), zorder=12, **plt_kwargs)
     #             if error_bars:
-    #                 plt.fill_between(
+    #                 plt.fill_between(s
     #                     x_.numpy(force=True), *torch.quantile(l, torch.tensor([0.25, 0.75]), dim=0).numpy(force=True),
     #                     alpha=0.1, **plt_kwargs
     #                 )

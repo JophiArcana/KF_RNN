@@ -8,12 +8,12 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import PTR
+from infrastructure.utils import ModelPair, PTR
 from model.base import Predictor
 from system.base import SystemGroup
 
 
-MetricVars = Tuple[Namespace, TensorDict[str, torch.Tensor]]
+MetricVars = Tuple[Namespace, ModelPair]
 
 class Metric(object):
     @classmethod
@@ -23,11 +23,11 @@ class Metric(object):
                 cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]]
     ) -> np.ndarray[TensorDict[str, torch.Tensor]]:
         if dependency not in cache:
-            exclusive, ensembled_learned_kfs = mv
+            exclusive, model_pair = mv
             with torch.set_grad_enabled(False):
                 run_arr = utils.multi_map(
-                    lambda dataset: Predictor.run(exclusive.reference_module, ensembled_learned_kfs, *dataset),
-                    utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=TensorDict
+                    lambda dataset: Predictor.run(model_pair, *dataset),
+                    utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=TensorDict,
                 )
             cache[dependency] = run_arr
         return cache[dependency]
@@ -66,7 +66,7 @@ def _get_evaluation_metric_with_dataset_type_and_targets(ds_type: str, key: Tupl
         return utils.multi_map(
             lambda pair: Predictor.evaluate_run(
                 pair[0][key], pair[1].obj, target,
-                batch_mean=not with_batch_dim
+                batch_mean=not with_batch_dim,
             ), utils.multi_zip(run_arr, utils.rgetattr(exclusive, f"info.{ds_type}.dataset")), dtype=torch.Tensor
         )
     return Metric(eval_func)
@@ -117,7 +117,7 @@ def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: Tupl
             
         return utils.multi_map(noiseless_error, utils.multi_zip(
             utils.rgetattr(exclusive, f"info.{ds_type}.dataset"),
-            utils.rgetattr(exclusive, f"info.{ds_type}.systems")
+            utils.rgetattr(exclusive, f"info.{ds_type}.systems"),
         ), dtype=torch.Tensor)
 
     return Metric(eval_func)
@@ -141,10 +141,10 @@ def _get_analytical_error_with_dataset_type_and_key(ds_type: str, key: Tuple[str
             cache: Dict[str, np.ndarray[TensorDict[str, torch.Tensor]]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
-        exclusive, ensembled_learned_kfs = mv
+        exclusive, (reference_module, ensembled_learned_kfs) = mv
 
         def analytical_error(sg: SystemGroup) -> torch.Tensor:
-            return _unsqueeze_if(exclusive.reference_module.analytical_error(
+            return _unsqueeze_if(reference_module.analytical_error(
                 ensembled_learned_kfs[:, :, None],
                 sg.td()[:, None, :]
             )[key], with_batch_dim)
@@ -160,15 +160,15 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
         # raise NotImplementedError("This metric is outdated, and we need to derive a new way of determining convergence.")
-        exclusive, ensembled_learned_kfs = mv
+        exclusive, model_pair = mv
 
-        reset_ensembled_learned_kfs = Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs)
-        params = [p for p in reset_ensembled_learned_kfs.values() if isinstance(p, nn.Parameter)]
+        reset_model_pair = Predictor.clone_parameter_state(model_pair)
+        params = [p for p in reset_model_pair[1].values() if isinstance(p, nn.Parameter)]
 
         dataset_arr = utils.rgetattr(exclusive, f"info.{ds_type}.dataset")
         with torch.set_grad_enabled(True):
             run_arr = utils.multi_map(
-                lambda dataset: Predictor.run(exclusive.reference_module, reset_ensembled_learned_kfs, *dataset)["environment", "observation"],
+                lambda dataset: Predictor.run(reset_model_pair, *dataset)["environment", "observation"],
                 dataset_arr, dtype=torch.Tensor
             )
             loss_arr = utils.multi_map(

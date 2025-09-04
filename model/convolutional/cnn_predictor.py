@@ -11,6 +11,7 @@ import torch.optim as optim
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.utils import ModelPair
 from infrastructure.experiment.training import TrainFunc
 from model.base import Predictor
 from model.convolutional.base import ConvolutionalPredictor
@@ -42,7 +43,7 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
             cls,
             THP: Namespace,
             exclusive: Namespace,
-            ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+            model_pair: ModelPair,
             cache: Namespace,
     ) -> bool:
         return cache.index >= cache.L
@@ -51,7 +52,7 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
             self,
             THP: Namespace,
             exclusive: Namespace,
-            ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+            model_pair: ModelPair,
             cache: Namespace,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
@@ -116,8 +117,8 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         w = einops.rearrange(flattened_w, "... (r f) d -> ... f r d", r=self.ir_length)         # float: [NE... x F x R x O_D]
         weights = [w[..., lo:hi, :, :] for lo, hi in itertools.pairwise(cache.cum_lengths)]
         weights_dict = {"input_IR": dict(zip(cache.ac_names, weights[:-1])), "observation_IR": weights[-1],}
-        for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
-            ensembled_learned_kfs[k] = utils.rgetitem(weights_dict, k if isinstance(k, str) else ".".join(k)).expand_as(v)
+        for k, v in model_pair[1].items(include_nested=True, leaves_only=True):
+            model_pair[1][k] = utils.rgetitem(weights_dict, k if isinstance(k, str) else ".".join(k)).expand_as(v)
 
         return error[None], {}
 
@@ -132,13 +133,14 @@ class CnnAnalyticalPredictor(CnnPredictor):
     def train_analytical(cls,
                          THP: Namespace,
                          exclusive: Namespace,
-                         ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                         model_pair: ModelPair,
                          cache: Namespace
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
+        reference_module, ensembled_learned_kfs = model_pair
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: utils.multi_vmap(
-                exclusive_.reference_module._analytical_initialization, 2,
+                reference_module._analytical_initialization, 2,
                 randomness="different",
             )(exclusive_.train_info.systems.td().to_dict()), cache
         )
@@ -171,10 +173,11 @@ class CnnAnalyticalLeastSquaresPredictor(CnnPredictor):
     def train_analytical_least_squares_newton(cls,
                                               THP: Namespace,
                                               exclusive: Namespace,
-                                              ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                                              model_pair: ModelPair,
                                               cache: Namespace
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
+        ensembled_learned_kfs = model_pair[1]
         def newton_analytical(exclusive_: Namespace) -> Tuple[Dict[str, Dict[str, torch.Tensor]], torch.Tensor]:
             # DONE: Remove parameters that do not require gradients before flattening
             _kf_dict = OrderedDict([(k, v) for k, v in ensembled_learned_kfs.items() if v.requires_grad])           # [N x E x F...]
@@ -224,13 +227,14 @@ class CnnLeastSquaresRandomStepPredictor(CnnLeastSquaresPretrainPredictor):
     def train_random_step(cls,
                           THP: Namespace,
                           exclusive: Namespace,
-                          ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                          model_pair: ModelPair,
                           cache: Namespace
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
+        reference_module, ensembled_learned_kfs = model_pair
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: ({
                 k: v + torch.normal(0., torch.abs(ensembled_learned_kfs[k].data - v))
-                for k, v in cls.vmap_train_least_squares(exclusive_)[0].items()
+                for k, v in reference_module.vmap_train_least_squares(exclusive_)[0].items()
             }, torch.full((), torch.nan)), cache
         )
 
@@ -245,13 +249,14 @@ class CnnLeastSquaresNegationPredictor(CnnLeastSquaresPretrainPredictor):
     def train_negation(cls,
                        THP: Namespace,
                        exclusive: Namespace,
-                       ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                       model_pair: ModelPair,
                        cache: Namespace
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
+        reference_module, ensembled_learned_kfs = model_pair
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs, lambda exclusive_: ({
                 k: 2 * v - ensembled_learned_kfs[k].data
-                for k, v in cls.vmap_train_least_squares(exclusive_)[0].items()
+                for k, v in reference_module.vmap_train_least_squares(exclusive_)[0].items()
             }, torch.full((), torch.nan)), cache
         )
 

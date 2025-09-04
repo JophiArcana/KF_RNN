@@ -29,25 +29,24 @@ class Predictor(Observer):
 
     @classmethod
     def run(cls,
-            reference_module: nn.Module,
-            ensembled_kfs: TensorDict[str, torch.Tensor],
+            model_pair: "utils.ModelPair",
             dataset: TensorDict[str, torch.Tensor],
             kwargs: Dict[str, Any] = MappingProxyType(dict()),
             split_size: int = 1 << 20,
     ) -> TensorDict[str, torch.Tensor]:
+        ensembled_kfs = model_pair[1]
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
         
         # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
+        _dataset = dataset.reshape((*ensembled_kfs.shape, -1, L))
         numel = sum(v.numel() for _, v in _dataset.items())
 
         _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _result_list.append(TensorDict.from_dict(utils.run_module_arr(
-                reference_module,
-                ensembled_kfs,
+                model_pair,
                 _dataset_slice,
                 kwargs,
             ), batch_size=_dataset_slice.shape))
@@ -57,12 +56,12 @@ class Predictor(Observer):
 
     @classmethod
     def gradient(cls,
-                 reference_module: nn.Module,
-                 ensembled_kfs: TensorDict[str, torch.Tensor],
+                 model_pair: "utils.ModelPair",
                  dataset: TensorDict[str, torch.Tensor],
                  kwargs: Dict[str, Any] = MappingProxyType(dict()),
                  split_size: int = 1 << 20
     ) -> TensorDict[str, torch.Tensor]:
+        ensembled_kfs = model_pair[1]
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
 
@@ -75,7 +74,7 @@ class Predictor(Observer):
             _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
 
-            out = Predictor.run(reference_module, ensembled_kfs, _dataset_slice)[..., -1]["environment", "observation"].norm() ** 2
+            out = Predictor.run(model_pair, _dataset_slice)[..., -1]["environment", "observation"].norm() ** 2
             params = OrderedDict({k: v for k, v in _dataset_slice.items() if v.requires_grad}) 
             _result_list.append(TensorDict(dict(zip(
                 params.keys(),
@@ -108,10 +107,8 @@ class Predictor(Observer):
         )
 
     @classmethod
-    def clone_parameter_state(cls,
-                              reference_module: nn.Module,
-                              ensembled_learned_kfs: TensorDict[str, torch.Tensor]
-    ) -> TensorDict[str, torch.Tensor]:
+    def clone_parameter_state(cls, model_pair: "utils.ModelPair") -> "utils.ModelPair":
+        reference_module, ensembled_learned_kfs = model_pair
         reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
         for k, v in utils.td_items(ensembled_learned_kfs).items():
             t = utils.rgetattr(reference_module, k)
@@ -120,14 +117,14 @@ class Predictor(Observer):
                 reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
             else:
                 reset_ensembled_learned_kfs[k] = torch.Tensor(v.clone())
-        return reset_ensembled_learned_kfs
+        return (reference_module, reset_ensembled_learned_kfs,)
 
     @classmethod
     def terminate_with_initialization_and_error(
         cls,
         THP: Namespace,
         exclusive: Namespace,
-        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+        model_pair: "utils.ModelPair",
         cache: Namespace,
     ) -> bool:
         return getattr(cache, "done", False)

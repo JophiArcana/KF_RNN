@@ -4,11 +4,13 @@ import torch
 
 torch.set_printoptions(sci_mode=False, linewidth=400)
 
-DEVICE: str = "cuda:1"
+_CUDA_NUM = 0
+DEVICE: str = f"cuda:{_CUDA_NUM}"
 DTYPE: torch.dtype = torch.float32
 PROJECT_NAME: str = "KF_RNN"
 PROJECT_PATH: str = os.getcwd()[:os.getcwd().find(PROJECT_NAME)] + PROJECT_NAME
 
+os.environ["CUDA_VISIBLE_DEVICES"] = str(_CUDA_NUM)
 torch.set_default_device(DEVICE)
 torch.set_default_dtype(DTYPE)
 os.chdir(PROJECT_PATH)

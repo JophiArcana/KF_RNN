@@ -11,7 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "cwd": "/home/wentinn/workspace/KF_RNN", // "${fileDirname}",
-            "purpose":["debug-in-terminal"],
+            "purpose": ["debug-in-terminal"],
         },
     ]
 }

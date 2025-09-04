@@ -6,6 +6,7 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.utils import ModelPair
 from infrastructure.experiment.training import TrainFunc
 from model.base import Predictor
 
@@ -15,18 +16,18 @@ class LeastSquaresPredictor(Predictor):
     def train_least_squares(cls,
                             THP: Namespace,
                             exclusive: Namespace,
-                            ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                            model_pair: ModelPair,
                             cache: Namespace
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
+        reference_module, ensembled_learned_kfs = model_pair
         return Predictor._train_with_initialization_and_error(
             exclusive, ensembled_learned_kfs,
-            cls.vmap_train_least_squares, cache
+            reference_module.vmap_train_least_squares, cache,
         )
 
-    @classmethod
-    def vmap_train_least_squares(cls, exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+    def vmap_train_least_squares(self, exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
         return utils.multi_vmap(
-            exclusive_.reference_module._least_squares_initialization, 2,
+            self._least_squares_initialization, 2,
             randomness="different",
         )(exclusive_.train_info.dataset.obj.to_dict())
 

@@ -99,8 +99,8 @@ def run_training_experiments(
         os.makedirs((train_output_dir := f"{output_dir}/{output_kwargs['training_dir']}"), exist_ok=True)
 
         tiers = 2
-        output_fnames = [f"{train_output_dir}/{'_' * tier}{output_kwargs['fname']}.pt" for tier in range(tiers)]
-        checkpoint_paths = [f"{train_output_dir}/{'_' * tier}checkpoint.pt" for tier in range(tiers)]
+        output_fnames = [f"{train_output_dir}/{output_kwargs['fname']}{'_' * tier}.pt" for tier in range(tiers)]
+        checkpoint_paths = [f"{train_output_dir}/checkpoint-{output_kwargs['fname']}{'_' * tier}.pt" for tier in range(tiers)]
     else:
         output_dir = train_output_dir = None
         output_fnames = []
@@ -135,18 +135,16 @@ def run_training_experiments(
     def check_done() -> np.ndarray:
         return np_records.fromrecords(result.values, dtype=RESULT_DTYPE).time > 0
 
+    train_dimensions = _filter_dimensions_if_any_satisfy_condition(
+        dimensions, lambda param: not re.match("dataset\\.", param) or re.match("dataset(\\..*\\.|\\.)train$", param)
+    )
     if result is not None:
         done = check_done()
         if done.sum().item() == done.size:
             print(f"Complete result recovered from file {output_fname}.")
             return result, INFO_DICT,
-
-        train_dimensions = OrderedDict(zip(result.dims, result.shape,))
     else:
         # DONE: Filter out the hyperparameter sweeps that do not influence training
-        train_dimensions = _filter_dimensions_if_any_satisfy_condition(
-            dimensions, lambda param: not re.match("dataset\\.", param) or re.match("dataset(\\..*\\.|\\.)train$", param)
-        )
         result = DimArray(
             np.recarray([*train_dimensions.values()], dtype=RESULT_DTYPE),
             dims=[*train_dimensions.keys()], dtype=RESULT_DTYPE,
@@ -255,7 +253,7 @@ def run_testing_experiments(
         os.makedirs((test_output_dir := f"{output_dir}/{output_kwargs['testing_dir']}"), exist_ok=True)
 
         tiers = 1
-        output_fnames = [f"{test_output_dir}/{'_' * tier}{output_kwargs['fname']}.pt" for tier in range(tiers)]
+        output_fnames = [f"{test_output_dir}/{output_kwargs['fname']}{'_' * tier}.pt" for tier in range(tiers)]
     else:
         output_dir = test_output_dir = None
         output_fnames = []

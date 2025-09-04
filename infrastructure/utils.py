@@ -30,15 +30,17 @@ _T = TypeVar("_T")
 """
 System and model functions
 """
+ModelPair = tuple[nn.Module, TensorDict[str, torch.Tensor]]
+
 def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
     tensor_list = [*tensor_arr.ravel()]
     if isinstance(t := tensor_list[0], torch.Tensor):
         result = torch.stack(tensor_list, dim=dim)
     else:
         result = TensorDict.maybe_dense_stack(tensor_list, dim=dim)
-    return result.reshape(*tensor_arr.shape, *t.shape)
+    return result.reshape((*tensor_arr.shape, *t.shape,))
 
-def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, TensorDict[str, torch.Tensor]]:
+def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> ModelPair:
     params, buffers = torch.func.stack_module_state(module_arr.ravel().tolist())
     td = TensorDict({}, batch_size=module_arr.shape)
 
@@ -57,7 +59,7 @@ def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, Tens
 
     return module_arr.ravel()[0].to(DEVICE), td.to(DEVICE)
 
-def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> Tuple[nn.Module, TensorDict[str, torch.Tensor]]:
+def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> ModelPair:
     flattened_td = TensorDict.maybe_dense_stack([
         TensorDict({
             k: v
@@ -69,14 +71,14 @@ def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> Tu
     return module_arr.ravel()[0], td.to(DEVICE)
 
 def run_module_arr(
-        reference_module: nn.Module,
-        module_td: TensorDict[str, torch.Tensor],
+        model_pair: ModelPair,
         args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
         kwargs: Dict[str, Any] = MappingProxyType(dict())
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     if "TensorDict" in type(args).__name__:
         args = args.to_dict()
 
+    reference_module, module_td = model_pair
     module_td = TensorDict(td_items(module_td), batch_size=module_td.shape)
     n = int(np.prod(module_td.shape))
     try:

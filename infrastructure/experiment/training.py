@@ -14,7 +14,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 from infrastructure.experiment.metrics import Metrics
 from infrastructure.settings import *
-from infrastructure.utils import PTR
+from infrastructure.utils import ModelPair, PTR
 from model.base import Predictor
 
 
@@ -70,13 +70,13 @@ TrainFunc = tuple[
     Callable[[
         Namespace,
         Namespace,
-        TensorDict[str, torch.Tensor],
+        ModelPair,
         Namespace
     ], tuple[torch.Tensor, dict[str, torch.Tensor],]],
     Callable[[
         Namespace,
         Namespace,
-        TensorDict[str, torch.Tensor],
+        ModelPair,
         Namespace
     ], bool],
 ]
@@ -174,13 +174,13 @@ def _extract_dataset_from_indices(
 def TERMINATE_DEFAULT(
         THP: Namespace,
         exclusive: Namespace,
-        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+        model_pair: ModelPair,
         cache: Namespace,
 ) -> bool:
     if THP.scheduler.epochs is None:
-        reference_module = exclusive.reference_module.eval()
+        model_pair[0].eval()
         with torch.set_grad_enabled(True):
-            run = Predictor.run(reference_module, ensembled_learned_kfs, cache.padded_train_dataset)
+            run = Predictor.run(model_pair, cache.padded_train_dataset)
             loss = Predictor.evaluate_run(
                 run["environment", "observation"],
                 cache.padded_train_dataset, ("environment", "observation")
@@ -198,7 +198,7 @@ def TERMINATE_DEFAULT(
 def TRAIN_DEFAULT(
         THP: Namespace,
         exclusive: Namespace,
-        ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+        model_pair: ModelPair,
         cache: Namespace,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
@@ -210,10 +210,10 @@ def TRAIN_DEFAULT(
         ], dim=-1)
 
         # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
-        for k, v in Predictor.clone_parameter_state(exclusive.reference_module, ensembled_learned_kfs).items():
-            ensembled_learned_kfs[k] = v
+        for k, v in Predictor.clone_parameter_state(model_pair)[1].items():
+            model_pair[1][k] = v
         cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((
-            (k, v) for (k, v) in ensembled_learned_kfs.items(include_nested=True, leaves_only=True)
+            (k, v) for (k, v) in model_pair[1].items(include_nested=True, leaves_only=True)
             if isinstance(v, nn.Parameter)
         ), THP)
 
@@ -224,13 +224,13 @@ def TRAIN_DEFAULT(
         dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
 
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
-        reference_module: Predictor = exclusive.reference_module.train()
+        reference_module: Predictor = model_pair[0].train()
 
         pre_runs: list[torch.Tensor] = []
         def compute_losses() -> torch.Tensor:
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
-                    result_ss = Predictor.run(reference_module, ensembled_learned_kfs, dataset_ss)
+                    result_ss = Predictor.run(model_pair, dataset_ss)
                     return reference_module.compute_losses(result_ss, dataset_ss, THP)
             else:
                 return pre_runs.pop()
@@ -272,7 +272,7 @@ class Checkpoint:
 def _run_training(
         HP: Namespace,
         exclusive: Namespace,
-        ensembled_learned_kfs: TensorDict[str, torch.Tensor],   # [N x E x ...]
+        model_pair: ModelPair,  # [N x E x ...]
         checkpoint_paths: list[str],
 ) -> TensorDict:
     THP, EHP = HP.training, HP.experiment,
@@ -300,7 +300,7 @@ def _run_training(
             checkpoint_params = checkpoint.ensembled_learned_kfs.items(include_nested=True, leaves_only=True)
        
         for k, v in checkpoint_params:
-            ensembled_learned_kfs[k] = v
+            model_pair[1][k] = v
         
         print(f"Checkpoint loaded starting from epoch {cache.t}")
     else:
@@ -309,7 +309,7 @@ def _run_training(
         results = []
 
     # DONE: Use list of training functions specified by the model
-    reference_module: Predictor = exclusive.reference_module
+    reference_module: Predictor = model_pair[0]
     training_funcs: list[TrainFunc] = reference_module.train_func_list((TRAIN_DEFAULT, TERMINATE_DEFAULT,))[training_func_idx:]
 
     # DONE: List the metrics that need to be computed
@@ -327,7 +327,7 @@ def _run_training(
         metric_cache = {}
         return TensorDict({
             m: Metrics[m].evaluate(
-                (exclusive, ensembled_learned_kfs), metric_cache,
+                (exclusive, model_pair), metric_cache,
                 sweep_position="inside", with_batch_dim=False,
             ).detach()
             for m in metrics
@@ -349,19 +349,19 @@ def _run_training(
         if idx != training_func_idx:
             cache = Namespace(t=0)
 
-        def terminate_func(THP, exclusive, ensembled_learned_kfs, cache):
+        def terminate_func(THP: Namespace, exclusive: Namespace, model_pair: ModelPair, cache: Namespace):
             try:
-                return _terminate_func(THP, exclusive, ensembled_learned_kfs, cache)
+                return _terminate_func(THP, exclusive, model_pair, cache)
             except AttributeError:
                 return False
 
-        while not terminate_func(THP, exclusive, ensembled_learned_kfs, cache):
+        while not terminate_func(THP, exclusive, model_pair, cache):
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
             r = evaluate_metrics()
             
             # DONE: Train on train dataset, passing in only train dataset and dataloader, and save the learning rate
             reference_module.train()
-            train_result, log = training_func(THP, exclusive, ensembled_learned_kfs, cache)
+            train_result, log = training_func(THP, exclusive, model_pair, cache)
 
             r["training"] = train_result.detach()[0]
 
@@ -382,7 +382,7 @@ def _run_training(
                 checkpoint = Checkpoint(
                     training_func_idx=idx,
                     cache=cache,
-                    ensembled_learned_kfs=ensembled_learned_kfs,
+                    ensembled_learned_kfs=model_pair[1],
                     results=results,
                 )
                 for checkpoint_path in checkpoint_paths:
@@ -390,7 +390,11 @@ def _run_training(
 
             utils.empty_cache()
     
-    results.append(r := evaluate_metrics())
+    r = evaluate_metrics()
+    for k, v in results[0].items(include_nested=True, leaves_only=True):
+        if k not in r:
+            r[k] = torch.full_like(v, torch.nan)
+    results.append(r)
     print_losses(r, "Final", metrics)
 
     # TODO: Delete the checkpoint so that it does not interfere with the next experiment
@@ -401,6 +405,7 @@ def _run_training(
         return TensorDict.maybe_dense_stack(results, dim=2)
     else:
         return TensorDict({}, batch_size=(*EHP.model_shape, 0))
+
 
 def _run_unit_training_experiment(
         HP: Namespace,
@@ -421,12 +426,12 @@ def _run_unit_training_experiment(
         lambda _: MHP.model(MHP),
         np.empty(EHP.model_shape), dtype=nn.Module,
     )
-    reference_module, ensembled_learned_kfs = utils.stack_module_arr(learned_kfs)
+    model_pair = utils.stack_module_arr(learned_kfs)
 
     # TODO: Load the initialization
     for k, v in initialization.items(include_nested=True, leaves_only=True):
-        if k in ensembled_learned_kfs.keys(include_nested=True, leaves_only=True):
-            ensembled_learned_kfs[k].data = v.expand_as(ensembled_learned_kfs[k])
+        if k in model_pair[1].keys(include_nested=True, leaves_only=True):
+            model_pair[1][k].data = v.expand_as(model_pair[1][k])
 
     # TODO: Slice the train dataset
     info.train.dataset = utils.multi_map(
@@ -440,7 +445,6 @@ def _run_unit_training_experiment(
     exclusive = Namespace(
         info=info,
         train_info=info.train[()],
-        reference_module=reference_module,
         n_train_systems=DHP.n_systems.train,
     )
 
@@ -457,8 +461,8 @@ def _run_unit_training_experiment(
             except Exception:
                 pass
     return {
-        "output": PTR(_run_training(HP, exclusive, ensembled_learned_kfs, checkpoint_paths).detach()),
-        "learned_kfs": (reference_module, ensembled_learned_kfs),
+        "output": PTR(_run_training(HP, exclusive, model_pair, checkpoint_paths).detach()),
+        "learned_kfs": model_pair,
     }
 
 
