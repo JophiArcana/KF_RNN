@@ -47,12 +47,12 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "mamba_new"
-    output_fname = "result_batch64x3"
+    output_dir = "mamba_finite_difference"
+    output_fname = "result"
     # output_fname = "result_batch_sweep_exponential_lr"
 
-    dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    # dist = ContinuousDistribution("gaussian", "gaussian", eps=0.01, W_std=1.0, V_std=1.0)
+    # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
+    dist = ContinuousDistribution("gaussian", "gaussian", eps=0.1, W_std=0.1, V_std=0.1)
     # dist = OrthonormalDistribution()
     # S_D, O_D = 10, 5,
     S_D = O_D = 5
@@ -120,10 +120,11 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
 
     # SECTION: Training hyperparameters
+    ARGS_TRANSFORMER.training.loss = "fd_mse"
     ARGS_TRANSFORMER.training.sampling = Namespace(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
-        batch_size=64,
+        batch_size=128,
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
         type="AdamW",
@@ -142,19 +143,21 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.experiment.metrics = Namespace(training={
         # "overfit",
         # "validation",
-        "noiseless_overfit",
-        "noiseless_validation",
+        "fd_noiseless_overfit",
+        "fd_noiseless_validation",
+    }, testing={
+        "fd_nl", # "fd_al", "fd_il", "fd_neil",
     })
     ARGS_TRANSFORMER.experiment.checkpoint_frequency = 5
     ARGS_TRANSFORMER.experiment.print_frequency = 1
 
     # configurations_transformer = []
     configurations_transformer = [
-        ("batch_size", {
-            # "training.sampling.batch_size": [16, 32, 64, 128,],
-            # "training.sampling.batch_size": [64, 128,],
-            "training.sampling.batch_size": [64, 64, 64,],
-        })
+        # ("batch_size", {
+        #     # "training.sampling.batch_size": [16, 32, 64, 128,],
+        #     # "training.sampling.batch_size": [64, 128,],
+        #     "training.sampling.batch_size": [64, 64, 64,],
+        # })
         # ("dataset_shape", {
         #     "dataset.n_systems.train": [80000, 40000, 20000, 10000,],
         #     "dataset.total_sequence_length.train": [125, 250, 500, 1000,],

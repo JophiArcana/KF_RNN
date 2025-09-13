@@ -80,6 +80,7 @@ class Predictor(Observer):
                 params.keys(),
                 torch.autograd.grad(out, (*params.values(),), allow_unused=True)
             )), batch_size=_dataset_slice.shape))
+
         return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
 
     @classmethod
@@ -93,18 +94,6 @@ class Predictor(Observer):
         mask = target_dict.get("mask", torch.full(target_dict.shape[-1:], True))
         result_ = torch.sum(losses * mask, dim=-1) / torch.sum(mask, dim=-1)
         return result_.mean(dim=-1) if batch_mean else result_
-
-    @classmethod
-    def compute_losses(
-        cls,
-        result: TensorDict[str, torch.Tensor],
-        dataset: TensorDict[str, torch.Tensor],
-        THP: Namespace,
-    ) -> torch.Tensor:
-        return Predictor.evaluate_run(
-            result["environment", "observation"],
-            dataset, ("environment", "observation")
-        )
 
     @classmethod
     def clone_parameter_state(cls, model_pair: "utils.ModelPair") -> "utils.ModelPair":

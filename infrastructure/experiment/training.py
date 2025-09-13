@@ -12,7 +12,8 @@ import torch.optim as optim
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.experiment.metrics import Metrics
+from infrastructure.experiment.losses import LOSS_DICT, LossFn
+from infrastructure.experiment.metrics import METRIC_DICT
 from infrastructure.settings import *
 from infrastructure.utils import ModelPair, PTR
 from model.base import Predictor
@@ -129,7 +130,6 @@ def _sample_dataset_indices(
         yield index_td[..., lo:min(hi, lo + batch_size)]
         lo += batch_size
 
-
 def _extract_dataset_from_indices(
         padded_train_dataset: TensorDict[str, torch.Tensor],
         indices: TensorDict[str, torch.Tensor],
@@ -171,6 +171,12 @@ def _extract_dataset_from_indices(
         subsequence_idx,
     ]
 
+def get_loss_fn(THP: Namespace) -> LossFn:
+    loss_fn: LossFn = getattr(THP, "loss", "mse")
+    if not callable(loss_fn):
+        loss_fn = LOSS_DICT[loss_fn]
+    return loss_fn
+
 def TERMINATE_DEFAULT(
         THP: Namespace,
         exclusive: Namespace,
@@ -179,12 +185,14 @@ def TERMINATE_DEFAULT(
 ) -> bool:
     if THP.scheduler.epochs is None:
         model_pair[0].eval()
+        loss_fn = get_loss_fn(THP)
+
         with torch.set_grad_enabled(True):
-            run = Predictor.run(model_pair, cache.padded_train_dataset)
-            loss = Predictor.evaluate_run(
-                run["environment", "observation"],
-                cache.padded_train_dataset, ("environment", "observation")
-            )
+            result = Predictor.run(model_pair, cache.padded_train_dataset)
+            losses = loss_fn(result, cache.padded_train_dataset, vars(THP))
+            mask = cache.padded_train_dataset.get("mask", torch.full(cache.padded_train_dataset.shape[-2:], True))
+            loss = torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
+
         grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
         grad_norm = torch.Tensor(sum(
             grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
@@ -219,19 +227,24 @@ def TRAIN_DEFAULT(
 
     # SECTION: Iterate through train indices and run gradient descent
     result = []
+    loss_fn: LossFn = getattr(THP, "loss", "mse")
+    if not callable(loss_fn):
+        loss_fn = LOSS_DICT[loss_fn]
+
     for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
         # DONE: Use indices to compute the mask for truncation and padding
         dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
 
         # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
-        reference_module: Predictor = model_pair[0].train()
-
+        model_pair[0].train()
         pre_runs: list[torch.Tensor] = []
         def compute_losses() -> torch.Tensor:
             if len(pre_runs) == 0:
                 with torch.set_grad_enabled(True):
                     result_ss = Predictor.run(model_pair, dataset_ss)
-                    return reference_module.compute_losses(result_ss, dataset_ss, THP)
+                    losses = loss_fn(result_ss, dataset_ss, vars(THP))
+                    mask = dataset_ss.get("mask", torch.full(dataset_ss.shape[-2:], True))
+                    return torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
             else:
                 return pre_runs.pop()
 
@@ -326,7 +339,7 @@ def _run_training(
         reference_module.eval()
         metric_cache = {}
         return TensorDict({
-            m: Metrics[m].evaluate(
+            m: METRIC_DICT[m].evaluate(
                 (exclusive, model_pair), metric_cache,
                 sweep_position="inside", with_batch_dim=False,
             ).detach()

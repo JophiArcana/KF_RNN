@@ -89,7 +89,7 @@ if __name__ == "__main__":
                 ).unflatten(0, (n_adversarial_systems, n_test_traces))
 
                 target = ("environment", "observation")
-                loss = Predictor.evaluate_run(out[target], ds, target)
+                loss = Predictor.evaluate_run_with_dict(out[target], ds, target)
                 zero_predictor_loss = utils.rgetattr(lsg.zero_predictor_loss, ".".join(target))
                 irreducible_loss = utils.rgetattr(lsg.irreducible_loss, ".".join(target))
 

@@ -20,7 +20,7 @@ from infrastructure.experiment.internals import (
     _process_info_dict,
     _populate_values,
 )
-from infrastructure.experiment.metrics import Metrics
+from infrastructure.experiment.metrics import METRIC_DICT
 from infrastructure.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
 from infrastructure.settings import DEVICE
@@ -344,7 +344,7 @@ def run_testing_experiments(
             )
             for m in metrics:
                 try:
-                    r = Metrics[m].evaluate(
+                    r = METRIC_DICT[m].evaluate(
                         (exclusive, ensembled_learned_kfs),
                         metric_cache, sweep_position="outside", with_batch_dim=True,
                     ).detach()
