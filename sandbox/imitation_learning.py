@@ -390,7 +390,7 @@ if __name__ == "__main__":
         plt.show()
     """
 
-    def loss(dataset: TensorDict[str, torch.Tensor]) -> torch.Tensor:
+    def loss(dataset: TensorDict) -> torch.Tensor:
         state_loss = (
                 dataset["environment", "state"][..., None, :] @
                 sum(lqg.controller.Q.values())[sys_idx] @
@@ -403,7 +403,7 @@ if __name__ == "__main__":
         return (state_loss + control_loss)[..., 0, 0]
 
     optimal_loss = loss(optimal_trace[0, 0, sys_idx])
-    def plot_cumulative_loss(dataset: TensorDict[str, torch.Tensor], color: np.ndarray, label: str, **kwargs) -> None:
+    def plot_cumulative_loss(dataset: TensorDict, color: np.ndarray, label: str, **kwargs) -> None:
         l = loss(dataset)
         x = torch.arange(horizon) + 1
         plt.plot(x, torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=label, **kwargs)
@@ -413,7 +413,7 @@ if __name__ == "__main__":
         )
 
     clip = 2
-    def plot_cumulative_regret(axs, dataset: TensorDict[str, torch.Tensor], color: np.ndarray, label: str, **kwargs) -> None:
+    def plot_cumulative_regret(axs, dataset: TensorDict, color: np.ndarray, label: str, **kwargs) -> None:
         l = loss(dataset)
         r = l - optimal_loss
 
@@ -531,7 +531,7 @@ if __name__ == "__main__":
     """
     # SECTION: Efficacy of transformer bias
     x = torch.arange(horizon) + 1
-    def plot_cumulative_regret_comparison(dataset1: TensorDict[str, torch.Tensor], dataset2: TensorDict[str, torch.Tensor], color: np.ndarray, label: str, **kwargs) -> None:
+    def plot_cumulative_regret_comparison(dataset1: TensorDict, dataset2: TensorDict, color: np.ndarray, label: str, **kwargs) -> None:
         l = loss(dataset1) - loss(dataset2)
         plt.plot(x, torch.cumsum(l, dim=-1).median(dim=-2).values.detach(), color=color, label=label, **kwargs)
         plt.fill_between(

@@ -83,9 +83,9 @@ TrainFunc = tuple[
 ]
 
 def _sample_dataset_indices(
-        dataset: TensorDict[str, torch.Tensor],                         # [N x E x S x B x L x ...]
+        dataset: TensorDict,                         # [N x E x S x B x L x ...]
         kwargs: dict[str, Any],
-) -> Iterable[TensorDict[str, torch.Tensor]]:
+) -> Iterable[TensorDict]:
     n_systems, n_traces, max_sequence_length = dataset.shape[-3:]
     model_shape = dataset.shape[:2]
 
@@ -131,9 +131,9 @@ def _sample_dataset_indices(
         lo += batch_size
 
 def _extract_dataset_from_indices(
-        padded_train_dataset: TensorDict[str, torch.Tensor],
-        indices: TensorDict[str, torch.Tensor],
-) -> TensorDict[str, torch.Tensor]:
+        padded_train_dataset: TensorDict,
+        indices: TensorDict,
+) -> TensorDict:
     sequence_indices, start_indices, stop_indices, system_indices = map(indices.__getitem__, (
         "sequence",
         "start",
@@ -212,7 +212,7 @@ def TRAIN_DEFAULT(
     # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
     if not hasattr(cache, "optimizer"):
         # TODO: Set up the dataset index sampler
-        dataset: TensorDict[str, torch.tensor] = exclusive.train_info.dataset.obj
+        dataset: TensorDict = exclusive.train_info.dataset.obj
         cache.padded_train_dataset = TensorDict.cat([
             dataset, dataset[..., -1:].apply(torch.zeros_like)
         ], dim=-1)
@@ -277,8 +277,8 @@ def TRAIN_DEFAULT(
 class Checkpoint:
     training_func_idx: int
     cache: Namespace
-    ensembled_learned_kfs: TensorDict[str, torch.Tensor]
-    results: list[TensorDict[str, torch.Tensor]]
+    ensembled_learned_kfs: TensorDict
+    results: list[TensorDict]
 
 
 # Full training scheme
@@ -335,7 +335,7 @@ def _run_training(
         "overfit_gradient_norm"
     } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
 
-    def evaluate_metrics() -> TensorDict[str, torch.Tensor]:
+    def evaluate_metrics() -> TensorDict:
         reference_module.eval()
         metric_cache = {}
         return TensorDict({
@@ -346,7 +346,7 @@ def _run_training(
             for m in metrics
         }, batch_size=EHP.model_shape,)
     
-    def print_losses(r: TensorDict[str, torch.Tensor], prefix: str, keys: Iterable[str]) -> None:
+    def print_losses(r: TensorDict, prefix: str, keys: Iterable[str]) -> None:
         mean_losses = [
             (loss_type, r[loss_type].reshape((*EHP.model_shape, -1,)).mean(dim=-1).median(dim=-1).values.mean())
             for loss_type in keys
@@ -424,7 +424,7 @@ def _run_unit_training_experiment(
         HP: Namespace,
         info: Namespace,
         checkpoint_paths: list[str],
-        initialization: TensorDict[str, torch.Tensor],
+        initialization: TensorDict,
         print_hyperparameters: bool = False
 ) -> dict[str, Any]:
 

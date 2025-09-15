@@ -10,7 +10,7 @@ class ModuleGroup(nn.Module):
         super().__init__()
         self.group_shape = (*map(int, group_shape),)
 
-    def td(self) -> TensorDict[str, torch.Tensor]:
+    def td(self) -> TensorDict:
         return TensorDict({
             (*k.split("."),): v
             for k, v in (

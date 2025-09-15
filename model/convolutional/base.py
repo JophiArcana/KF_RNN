@@ -12,9 +12,9 @@ from model.base import Predictor
 class ConvolutionalPredictor(Predictor):
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
         shape = utils.broadcast_shapes(kfs.shape, systems.shape)

@@ -263,7 +263,7 @@ if __name__ == "__main__":
 
     # """
     # SECTION: Plot cumulative loss over horizon
-    def loss(ds_: TensorDict[str, torch.Tensor], lqg_: LTISystem) -> torch.Tensor:
+    def loss(ds_: TensorDict, lqg_: LTISystem) -> torch.Tensor:
         state_loss = (
                 ds_["environment", "state"].unsqueeze(-2) @
                 sum(lqg_.controller.Q.values()) @

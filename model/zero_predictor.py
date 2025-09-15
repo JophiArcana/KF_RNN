@@ -12,9 +12,9 @@ from model.base import Predictor
 class ZeroPredictor(Predictor):
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
         shape = systems.shape if kfs is None else torch.broadcast_shapes(kfs.shape, systems.shape)
@@ -86,9 +86,9 @@ class ZeroPredictor(Predictor):
 class ZeroController(ZeroPredictor):
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
         result, cache = ZeroPredictor._analytical_error_and_cache(kfs, systems)
 
         # Variable definition

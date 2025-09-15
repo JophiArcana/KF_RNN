@@ -24,9 +24,9 @@ class SequentialPredictor(Predictor):
 
     # @classmethod
     # def _analytical_error_and_cache(cls,
-    #                                 kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-    #                                 systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    # ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+    #                                 kfs: TensorDict,         # [B... x ...]
+    #                                 systems: TensorDict,     # [B... x ...]
+    # ) -> Tuple[TensorDict, Namespace]:                       # [B...]
     #     # Variable definition
     #     controller_keys = systems.get(("environment", "B"), {}).keys()
     #     shape = utils.broadcast_shapes(kfs.shape, systems.shape)
@@ -121,9 +121,9 @@ class SequentialPredictor(Predictor):
 
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
         shape = utils.broadcast_shapes(kfs.shape, systems.shape)
@@ -230,7 +230,7 @@ class SequentialPredictor(Predictor):
             return torch.zeros(shape)
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], mode: str = None) -> Dict[str, Dict[str, torch.Tensor]]:
-        trace: TensorDict[str, torch.Tensor] = self.trace_to_td(trace)
+        trace: TensorDict = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment", "observation"]
 
         state_estimation = self.sample_initial_as_observations(observations, (*trace.shape[:-1], self.S_D,))
@@ -238,7 +238,7 @@ class SequentialPredictor(Predictor):
 
     def forward_with_initial(self,
                              state_estimation: torch.Tensor,
-                             actions: TensorDict[str, torch.Tensor],
+                             actions: TensorDict,
                              observations: torch.Tensor,
                              mode: str
     ) -> Dict[str, Dict[str, torch.Tensor]]:
@@ -276,9 +276,9 @@ class SequentialPredictor(Predictor):
 
     def _forward(self,
                  state: torch.Tensor,                   # [B x S_D]
-                 action: TensorDict[str, torch.Tensor], # [B x I_D]
+                 action: TensorDict, # [B x I_D]
                  observation: torch.Tensor,             # [B x O_D]
-    ) -> TensorDict[str, torch.Tensor]:                 # [B x S_D], [B x O_D]
+    ) -> TensorDict:                 # [B x S_D], [B x O_D]
         state_estimation = state @ self.F.mT + sum(ac @ self.B[ac_name].mT for ac_name, ac in action.items())
         observation_estimation = state_estimation @ self.H.mT
         state_estimation = state_estimation + (observation - observation_estimation) @ self.K.mT
@@ -302,7 +302,7 @@ class SequentialPredictor(Predictor):
         }
     """
     def _forward_generic(self,
-                         actions: TensorDict[str, torch.Tensor],
+                         actions: TensorDict,
                          observations: torch.Tensor,
                          mode: str
     ) -> Dict[str, Tuple[torch.Tensor, Sequence[torch.Tensor]]]:
@@ -376,9 +376,9 @@ class SequentialPredictor(Predictor):
 class SequentialController(Controller, SequentialPredictor):
     # @classmethod
     # def _analytical_error_and_cache(cls,
-    #                                 kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-    #                                 systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    # ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+    #                                 kfs: TensorDict,         # [B... x ...]
+    #                                 systems: TensorDict,     # [B... x ...]
+    # ) -> Tuple[TensorDict, Namespace]:                       # [B...]
     #     result, cache = SequentialPredictor._analytical_error_and_cache(kfs, systems)
 
     #     # Variable definition
@@ -445,9 +445,9 @@ class SequentialController(Controller, SequentialPredictor):
 
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
         result, cache = SequentialPredictor._analytical_error_and_cache(kfs, systems)
 
         # Variable definition

@@ -15,7 +15,7 @@ from system.environment import LTIEnvironment, LTIZeroNoiseEnvironment
 
 
 class LQGController(LinearControllerGroup):
-    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.Tensor], control_noise_std: float):
+    def __init__(self, problem_shape: Namespace, params: TensorDict, control_noise_std: float):
         LinearControllerGroup.__init__(self, problem_shape, params.shape)
 
         self.Q = nn.ParameterDict({
@@ -35,8 +35,8 @@ class LQGController(LinearControllerGroup):
         self.control_noise_std = control_noise_std
 
     def act(self,
-            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:
+            history: TensorDict  # [N... x B x L x ...]
+    ) -> TensorDict:
         return LinearControllerGroup.act(self, history).apply(
             lambda t: t + (self.control_noise_std * t.norm() / (t.numel() ** 0.5)) * torch.randn_like(t)
         )
@@ -47,7 +47,7 @@ class LTISystem(SystemGroup):
         def __init__(self):
             SystemDistribution.__init__(self, LTISystem)
 
-    def __init__(self, hyperparameters: Namespace, params: TensorDict[str, torch.tensor]):
+    def __init__(self, hyperparameters: Namespace, params: TensorDict):
         # SECTION: Set up controller
         problem_shape = hyperparameters.problem_shape
         auxiliary = hyperparameters.auxiliary
@@ -111,7 +111,7 @@ class LTIZeroNoiseSystem(LTISystem):
         def __init__(self):
             SystemDistribution.__init__(self, LTIZeroNoiseSystem)
 
-    def __init__(self, hyperparameters: Namespace, params: TensorDict[str, torch.tensor]):
+    def __init__(self, hyperparameters: Namespace, params: TensorDict):
         # SECTION: Set up controller
         problem_shape = hyperparameters.problem_shape
         auxiliary = hyperparameters.auxiliary
@@ -125,14 +125,15 @@ class LTIZeroNoiseSystem(LTISystem):
 
 
 class MOPDistribution(LTISystem.Distribution):
-    def __init__(self,
-                 F_mode: str,
-                 H_mode: str,
-                 W_std: float,
-                 V_std: float,
-                 B_scale: float = 1.0,
-                 Q_scale: float = 0.1,
-                 R_scale: float = 1.0,
+    def __init__(
+            self,
+            F_mode: str,
+            H_mode: str,
+            W_std: float,
+            V_std: float,
+            B_scale: float = 1.0,
+            Q_scale: float = 0.1,
+            R_scale: float = 1.0,
     ) -> None:
         LTISystem.Distribution.__init__(self)
         self.F_mode = F_mode
@@ -141,7 +142,7 @@ class MOPDistribution(LTISystem.Distribution):
         self.W_std, self.V_std = W_std, V_std
         self.B_scale, self.Q_scale, self.R_scale = B_scale, Q_scale, R_scale
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
         match self.F_mode:
@@ -180,12 +181,12 @@ class MOPDistribution(LTISystem.Distribution):
 
         return TensorDict.from_dict({
             "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R}
+            "controller": {"Q": Q, "R": R},
         }, batch_size=shape).apply(nn.Parameter)
 
 
 class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert S_D == O_D, "Orthonormal system setting is assumed to be fully observed."
         assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
@@ -206,17 +207,18 @@ class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
 
         return TensorDict.from_dict({
             "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R}
+            "controller": {"Q": Q, "R": R},
         }, batch_size=shape).apply(nn.Parameter)
 
 
 class ContinuousDistribution(LTISystem.Distribution):
-    def __init__(self,
-                 F_mode: str,
-                 H_mode: str,
-                 eps: float,
-                 W_std: float,
-                 V_std: float,
+    def __init__(
+            self,
+            F_mode: str,
+            H_mode: str,
+            eps: float,
+            W_std: float,
+            V_std: float,
     ) -> None:
         LTISystem.Distribution.__init__(self)
         self.F_mode = F_mode
@@ -225,7 +227,7 @@ class ContinuousDistribution(LTISystem.Distribution):
         self.eps = eps
         self.W_std, self.V_std = W_std, V_std
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
         match self.F_mode:
@@ -256,7 +258,55 @@ class ContinuousDistribution(LTISystem.Distribution):
 
         return TensorDict.from_dict({
             "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R}
+            "controller": {"Q": Q, "R": R},
+        }, batch_size=shape).apply(nn.Parameter)
+
+
+class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
+    def __init__(
+            self,
+            F_mode: str,
+            H_mode: str,
+            eps: float,
+    ) -> None:
+        LTIZeroNoiseSystem.Distribution.__init__(self)
+        self.F_mode = F_mode
+        self.H_mode = H_mode
+        self.eps = eps
+
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+        S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
+        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
+
+        match self.F_mode:
+            case "gaussian":
+                F = torch.randn((*shape, S_D, S_D))
+            case "uniform":
+                F = torch.zeros((*shape, S_D, S_D)).uniform_(-1., 1.)
+            case _:
+                raise ValueError(self.F_mode)
+        F /= torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None]
+        F = (1 - 2 * self.eps) * torch.eye(S_D) - self.eps * F
+
+        B = TensorDict({}, batch_size=(*shape, S_D))
+
+        match self.H_mode:
+            case "gaussian":
+                H = torch.randn((*shape, O_D, S_D)) / (3 ** 0.5)
+            case "uniform":
+                H = torch.zeros((*shape, O_D, S_D)).uniform_(-1., 1.)
+            case _:
+                raise ValueError(self.H_mode)
+
+        sqrt_S_W = torch.zeros((*shape, S_D, S_D,))
+        sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
+
+        Q = TensorDict({}, batch_size=(*shape, S_D, S_D))
+        R = TensorDict({}, batch_size=shape)
+
+        return TensorDict.from_dict({
+            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
+            "controller": {"Q": Q, "R": R},
         }, batch_size=shape).apply(nn.Parameter)
 
 

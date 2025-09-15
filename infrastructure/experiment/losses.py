@@ -21,7 +21,7 @@ def _mse_loss(output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     # mask = dataset.get("mask", torch.full(dataset.shape[-2:], True))
     # return torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
 
-def default_mse_loss(result: TensorDict[str, torch.Tensor], dataset: TensorDict[str, torch.Tensor], kwargs: dict[str, Any]) -> torch.Tensor:
+def default_mse_loss(result: TensorDict, dataset: TensorDict, kwargs: dict[str, Any]) -> torch.Tensor:
     obs_key = ("environment", "observation",)
     return _mse_loss(result[obs_key], dataset[obs_key]) + kwargs["control_coefficient"] * sum([
         _mse_loss(v, dataset["controller", k])
@@ -29,19 +29,19 @@ def default_mse_loss(result: TensorDict[str, torch.Tensor], dataset: TensorDict[
     ])
 
 def _get_mse_loss_fn_with_output_and_target_key(output_key: tuple[str, ...], target_key: tuple[str, ...]) -> LossFn:
-    def loss_fn(result: TensorDict[str, torch.Tensor], dataset: TensorDict[str, torch.Tensor], kwargs: dict[str, Any]) -> torch.Tensor:
+    def loss_fn(result: TensorDict, dataset: TensorDict, kwargs: dict[str, Any]) -> torch.Tensor:
         return _mse_loss(result[output_key], dataset[target_key])
     return loss_fn
 
 
 # SECTION: Finite difference MSE loss
-def _finite_difference_mse_loss(output: torch.Tensor, target: torch.Tensor, dataset: TensorDict[str, torch.Tensor]) -> torch.Tensor:
+def _finite_difference_mse_loss(output: torch.Tensor, target: torch.Tensor, dataset: TensorDict) -> torch.Tensor:
     target = target.clone()
     target[..., 1:, :] = target[..., 1:, :] - dataset["environment", "observation"][..., :-1, :]
     return _mse_loss(output, target)
 
 def _get_finite_difference_mse_loss_fn_with_output_and_target_key(output_key: tuple[str, ...], target_key: tuple[str, ...]) -> LossFn:
-    def loss_fn(result: TensorDict[str, torch.Tensor], dataset: TensorDict[str, torch.Tensor], kwargs: dict[str, Any]) -> torch.Tensor:
+    def loss_fn(result: TensorDict, dataset: TensorDict, kwargs: dict[str, Any]) -> torch.Tensor:
         return _finite_difference_mse_loss(result[output_key], dataset[target_key], dataset)
     return loss_fn
 

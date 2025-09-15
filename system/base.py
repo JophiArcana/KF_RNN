@@ -26,7 +26,7 @@ class SystemGroup(ModuleGroup):
         self.environment = environment
         self.controller = controller
 
-    def generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict[str, torch.Tensor]:
+    def generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict:
         return self.generate_dataset_with_controller_arr(utils.array_of(self.controller), batch_size, sequence_length)
 
     def generate_dataset_with_controller_arr(
@@ -34,7 +34,7 @@ class SystemGroup(ModuleGroup):
         controller_arr: np.typing.ArrayLike,
         batch_size: int,
         sequence_length: int,
-    ) -> TensorDict[str, torch.Tensor]:
+    ) -> TensorDict:
         controller_arr = np.array(controller_arr)
         group_shape = utils.broadcast_shapes(
             self.group_shape,
@@ -48,9 +48,9 @@ class SystemGroup(ModuleGroup):
         state = self.environment.sample_initial_state(batch_size).expand(*controller_arr.shape, *group_shape, batch_size)
 
         def construct_timestep(
-                ac: TensorDict[str, torch.Tensor],  # [C... x N... x B x ...]
-                st: TensorDict[str, torch.Tensor],  # [C... x N... x B x ...]
-        ) -> TensorDict[str, torch.Tensor]:         # [C... x N... x B x 1 x ...]
+                ac: TensorDict,  # [C... x N... x B x ...]
+                st: TensorDict,  # [C... x N... x B x ...]
+        ) -> TensorDict:         # [C... x N... x B x 1 x ...]
             return TensorDict({
                 "environment": st,
                 "controller": ac
@@ -89,7 +89,7 @@ class SystemDistribution(object):
     def __init__(self, system_type: type):
         self.system_type = system_type
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict[str, torch.Tensor]:
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
         raise NotImplementedError()
 
     def sample(

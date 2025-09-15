@@ -30,9 +30,9 @@ _T = TypeVar("_T")
 """
 System and model functions
 """
-ModelPair = tuple[nn.Module, TensorDict[str, torch.Tensor]]
+ModelPair = tuple[nn.Module, TensorDict]
 
-def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
+def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict]:
     tensor_list = [*tensor_arr.ravel()]
     if isinstance(t := tensor_list[0], torch.Tensor):
         result = torch.stack(tensor_list, dim=dim)
@@ -115,8 +115,8 @@ def multi_vmap(func: Callable, n: int, **kwargs: Any) -> Callable:
         f = torch.vmap(f, **kwargs)
     return f
 
-def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
-    def _buffer_dict(parent_module: nn.Module, td: TensorDict[str, torch.Tensor]) -> nn.Module:
+def buffer_dict(td: TensorDict) -> nn.Module:
+    def _buffer_dict(parent_module: nn.Module, td: TensorDict) -> nn.Module:
         for k, v in td.items(include_nested=False):
             if isinstance(v, torch.Tensor):
                 parent_module.register_buffer(k, v)
@@ -125,20 +125,20 @@ def buffer_dict(td: TensorDict[str, torch.Tensor]) -> nn.Module:
         return parent_module
     return _buffer_dict(nn.Module(), td)
 
-def td_items(td: TensorDict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+def td_items(td: TensorDict) -> Dict[str, torch.Tensor]:
     return {
         k if isinstance(k, str) else ".".join(k): v
         for k, v in td.items(include_nested=True, leaves_only=True)
     }
 
-def parameter_td(m: nn.Module) -> TensorDict[str, torch.Tensor]:
+def parameter_td(m: nn.Module) -> TensorDict:
     result = TensorDict({}, batch_size=())
     for k, v in m.named_parameters():
         k_ = (*k.split("."),)
         result[k_[0] if len(k_) == 1 else k_] = v
     return result
 
-def mask_dataset_with_total_sequence_length(ds: TensorDict[str, torch.Tensor], total_sequence_length: int) -> TensorDict[str, torch.Tensor]:
+def mask_dataset_with_total_sequence_length(ds: TensorDict, total_sequence_length: int) -> TensorDict:
     batch_size, sequence_length = ds.shape[-2:]
     ds["mask"] = torch.Tensor(torch.arange(batch_size * sequence_length) < total_sequence_length).view(
         sequence_length, batch_size
@@ -177,7 +177,7 @@ def sqrtm(t: torch.Tensor) -> torch.Tensor:
     L, V = torch.linalg.eig(t)
     return (V @ torch.diag_embed(L ** 0.5) @ torch.inverse(V)).real
 
-def complex(t: torch.Tensor | TensorDict[str, torch.Tensor]) -> Union[torch.Tensor, TensorDict[str, torch.Tensor]]:
+def complex(t: torch.Tensor | TensorDict) -> Union[torch.Tensor, TensorDict]:
     fn = lambda t_: t_ if torch.is_complex(t_) else torch.complex(t_, torch.zeros_like(t_))
     return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
 

@@ -19,19 +19,19 @@ class EnvironmentGroup(ModuleGroup):
     def sample_initial_state(
         self,
         batch_size: int                             # B
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         raise NotImplementedError()
 
     def step(
         self,
-        state: TensorDict[str, torch.Tensor],       # [N... x B x ...]
-        action: TensorDict[str, torch.Tensor]       # [N... x B x ...]
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+        state: TensorDict,       # [N... x B x ...]
+        action: TensorDict       # [N... x B x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         raise NotImplementedError()
 
 
 class LTIEnvironment(EnvironmentGroup):
-    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float, settings: Namespace,):
+    def __init__(self, problem_shape: Namespace, params: TensorDict, initial_state_scale: float, settings: Namespace,):
         EnvironmentGroup.__init__(self, problem_shape, params.shape)
 
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V",):
@@ -74,7 +74,7 @@ class LTIEnvironment(EnvironmentGroup):
     def sample_initial_state(
         self,
         batch_size: int                             # B
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
@@ -100,9 +100,9 @@ class LTIEnvironment(EnvironmentGroup):
 
     def step(
         self,
-        state: TensorDict[str, torch.Tensor],       # [C... x N... x B x ...]
-        action: TensorDict[str, torch.Tensor]       # [C... x N... x B x ...]
-    ) -> TensorDict[str, torch.Tensor]:             # [C... x N... x B x ...]
+        state: TensorDict,       # [C... x N... x B x ...]
+        action: TensorDict       # [C... x N... x B x ...]
+    ) -> TensorDict:             # [C... x N... x B x ...]
         batch_size = state.shape[-1]
 
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
@@ -137,7 +137,7 @@ class LTIEnvironment(EnvironmentGroup):
 
 
 class LTIZeroNoiseEnvironment(LTIEnvironment):
-    def __init__(self, problem_shape: Namespace, params: TensorDict[str, torch.tensor], initial_state_scale: float, settings: Namespace,):
+    def __init__(self, problem_shape: Namespace, params: TensorDict, initial_state_scale: float, settings: Namespace,):
         nn.Module.__init__(self)
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V",):
             if isinstance(param := params[param_name], nn.Parameter):
@@ -155,7 +155,7 @@ class LTIZeroNoiseEnvironment(LTIEnvironment):
     def sample_initial_state(
         self,
         batch_size: int                             # B
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         x = (self.initial_state_scale / self.S_D ** 0.5) * torch.randn((*self.group_shape, batch_size, self.S_D,), requires_grad=True)   # [N... x B x S_D]
         
         y = x @ self.H.mT

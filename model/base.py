@@ -30,10 +30,10 @@ class Predictor(Observer):
     @classmethod
     def run(cls,
             model_pair: "utils.ModelPair",
-            dataset: TensorDict[str, torch.Tensor],
+            dataset: TensorDict,
             kwargs: Dict[str, Any] = MappingProxyType(dict()),
             split_size: int = 1 << 20,
-    ) -> TensorDict[str, torch.Tensor]:
+    ) -> TensorDict:
         ensembled_kfs = model_pair[1]
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
@@ -57,10 +57,10 @@ class Predictor(Observer):
     @classmethod
     def gradient(cls,
                  model_pair: "utils.ModelPair",
-                 dataset: TensorDict[str, torch.Tensor],
+                 dataset: TensorDict,
                  kwargs: Dict[str, Any] = MappingProxyType(dict()),
                  split_size: int = 1 << 20
-    ) -> TensorDict[str, torch.Tensor]:
+    ) -> TensorDict:
         ensembled_kfs = model_pair[1]
         n = ensembled_kfs.ndim
         L = dataset.shape[-1]
@@ -86,7 +86,7 @@ class Predictor(Observer):
     @classmethod
     def evaluate_run(cls,
                      result: torch.Tensor | float,                          # [B... x N x B x L x ...]
-                     target_dict: TensorDict[str, torch.Tensor],            # [B... x N x B x L x ...]
+                     target_dict: TensorDict,            # [B... x N x B x L x ...]
                      target_key: Tuple[str, ...],
                      batch_mean: bool = True,
     ) -> torch.Tensor:
@@ -121,7 +121,7 @@ class Predictor(Observer):
     @classmethod
     def _train_with_initialization_and_error(cls,
                                              exclusive: Namespace,
-                                             ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                                             ensembled_learned_kfs: TensorDict,
                                              initialization_func: Callable[[
                                                  Namespace
                                              ], Tuple[Dict[str, Any], torch.Tensor]],
@@ -155,7 +155,7 @@ class Predictor(Observer):
         raise NotImplementedError()
 
     @classmethod
-    def trace_to_td(cls, trace: Dict[str, Dict[str, torch.Tensor]]) -> TensorDict[str, torch.Tensor]:
+    def trace_to_td(cls, trace: Dict[str, Dict[str, torch.Tensor]]) -> TensorDict:
         return TensorDict.from_dict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
 
     @classmethod
@@ -164,16 +164,16 @@ class Predictor(Observer):
 
     @classmethod
     def analytical_error(cls,
-                         kfs: TensorDict[str, torch.Tensor],                # [B... x ...]
-                         sg_td: TensorDict[str, torch.Tensor]               # [B... x ...]
-    ) -> TensorDict[str, torch.Tensor]:                                     # [B... x ...]
+                         kfs: TensorDict,                # [B... x ...]
+                         sg_td: TensorDict               # [B... x ...]
+    ) -> TensorDict:                                     # [B... x ...]
         return cls._analytical_error_and_cache(kfs, sg_td)[0]
 
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],     # [B... x ...]
-                                    sg_td: TensorDict[str, torch.Tensor]    # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                   # [B...]
+                                    kfs: TensorDict,     # [B... x ...]
+                                    sg_td: TensorDict    # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
 
@@ -183,8 +183,8 @@ class Controller(Predictor):
     @classmethod
     def compute_losses(
         cls,
-        result: TensorDict[str, torch.Tensor],
-        dataset: TensorDict[str, torch.Tensor],
+        result: TensorDict,
+        dataset: TensorDict,
         THP: Namespace,
     ) -> torch.Tensor:
         observation_losses = Predictor.evaluate_run(

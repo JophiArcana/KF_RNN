@@ -22,7 +22,7 @@ from transformers import (
 )
 
 # This line needs to be added since some terminals will not recognize the current directory
-os.chdir("/home/wentinn/workspace/KF_RNN/")
+os.chdir("/home/wentinn/Desktop/KF_RNN/")
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
@@ -43,17 +43,20 @@ from system.linear_time_invariant import (
     MOPDistribution,
     OrthonormalDistribution,
     ContinuousDistribution,
+    ContinuousNoiselessDistribution,
 )
 
 
 if __name__ == "__main__":
-    output_dir = "mamba_finite_difference"
+    output_dir = "mamba_finite_difference_noiseless"
     output_fname = "result"
     # output_fname = "result_batch_sweep_exponential_lr"
 
     # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    dist = ContinuousDistribution("gaussian", "gaussian", eps=0.1, W_std=0.1, V_std=0.1)
+    # dist = ContinuousDistribution("gaussian", "gaussian", eps=0.1, W_std=0.1, V_std=0.1)
+    dist = ContinuousNoiselessDistribution("gaussian", "gaussian", eps=0.1)
     # dist = OrthonormalDistribution()
+
     # S_D, O_D = 10, 5,
     S_D = O_D = 5
     SHP = Namespace(
@@ -113,7 +116,7 @@ if __name__ == "__main__":
 
     # SECTION: Dataset hyperparameters
     ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
-    ARGS_TRANSFORMER.system.settings = Namespace(include_analytical=True)
+    ARGS_TRANSFORMER.system.settings = Namespace(include_analytical=False)
     
     ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
     ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
@@ -124,7 +127,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.training.sampling = Namespace(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
-        batch_size=128,
+        batch_size=256,
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
         type="AdamW",

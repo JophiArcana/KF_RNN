@@ -35,7 +35,7 @@ class RnnAnalyticalPredictor(RnnPredictor):
     def train_analytical(cls,
                          THP: Namespace,
                          exclusive: Namespace,
-                         ensembled_learned_kfs: TensorDict[str, torch.Tensor],
+                         ensembled_learned_kfs: TensorDict,
                          cache: Namespace
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
@@ -100,9 +100,9 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
 
     @classmethod
     def _analytical_error_and_cache(cls,
-                                    kfs: TensorDict[str, torch.Tensor],         # [B... x ...]
-                                    systems: TensorDict[str, torch.Tensor],     # [B... x ...]
-    ) -> Tuple[TensorDict[str, torch.Tensor], Namespace]:                       # [B...]
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
         kfs = kfs.clone()
         F = torch.diag_embed(torch.exp(kfs["logD"])) + kfs["P"] @ kfs["H"]
         kfs["F"] = F
@@ -110,7 +110,7 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
         return SequentialPredictor._analytical_error_and_cache(kfs, systems)
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:
-        trace: TensorDict[str, torch.Tensor] = self.trace_to_td(trace)
+        trace: TensorDict = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment", "observation"]    # [B... x L x I_D?], [B... x L x O_D]
 
         L = trace.shape[-1]

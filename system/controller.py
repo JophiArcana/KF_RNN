@@ -16,11 +16,11 @@ class ControllerGroup(ModuleGroup):
         self.problem_shape = problem_shape
 
     def act(self,
-            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+            history: TensorDict  # [N... x B x L x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         raise NotImplementedError()
 
-    def get_zero_knowledge_action(self, batch_size) -> TensorDict[str, torch.Tensor]:
+    def get_zero_knowledge_action(self, batch_size) -> TensorDict:
         return TensorDict({
             k: torch.zeros((*self.group_shape, batch_size, d))
             for k, d in vars(self.problem_shape.controller).items()
@@ -29,8 +29,8 @@ class ControllerGroup(ModuleGroup):
 
 class ZeroControllerGroup(ControllerGroup):
     def act(self,
-            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+            history: TensorDict  # [N... x B x L x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         return history["controller"][..., -1].apply(torch.zeros_like)
 
 
@@ -40,8 +40,8 @@ class LinearControllerGroup(ControllerGroup):
         self.L = nn.Module()
 
     def act(self,
-            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+            history: TensorDict  # [N... x B x L x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         if len(vars(self.problem_shape.controller)) == 0:
             return TensorDict({}, batch_size=history.shape[:-1])
         else:
@@ -56,15 +56,15 @@ class NNControllerGroup(ControllerGroup):
     def __init__(self,
                  problem_shape: Namespace,
                  reference_module: Controller,
-                 ensembled_learned_controllers: TensorDict[str, torch.Tensor]
+                 ensembled_learned_controllers: TensorDict
     ):
         ControllerGroup.__init__(self, problem_shape, ensembled_learned_controllers.shape)
         self.reference_module = reference_module
         self.ensembled_learned_controllers = ensembled_learned_controllers
 
     def act(self,
-            history: TensorDict[str, torch.Tensor]  # [N... x B x L x ...]
-    ) -> TensorDict[str, torch.Tensor]:             # [N... x B x ...]
+            history: TensorDict  # [N... x B x L x ...]
+    ) -> TensorDict:             # [N... x B x ...]
         return TensorDict(utils.run_module_arr(
             self.reference_module,
             self.ensembled_learned_controllers,
