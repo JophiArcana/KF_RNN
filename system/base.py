@@ -53,7 +53,7 @@ class SystemGroup(ModuleGroup):
         ) -> TensorDict:         # [C... x N... x B x 1 x ...]
             return TensorDict({
                 "environment": st,
-                "controller": ac
+                "controller": ac,
             }, batch_size=(*controller_arr.shape, *group_shape, batch_size,))[..., None]
 
         # history = construct_timestep(action, state)

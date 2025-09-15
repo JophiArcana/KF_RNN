@@ -74,7 +74,7 @@ def run_module_arr(
         model_pair: ModelPair,
         args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
         kwargs: Dict[str, Any] = MappingProxyType(dict())
-) -> Dict[str, Dict[str, torch.Tensor]]:
+) -> Any:
     if "TensorDict" in type(args).__name__:
         args = args.to_dict()
 

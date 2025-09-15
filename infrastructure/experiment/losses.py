@@ -8,10 +8,15 @@ from model.base import Predictor
 
 
 ModelPair = tuple[Predictor, TensorDict,]
+SimpleLossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 LossFn = Callable[[TensorDict, TensorDict, dict[str, Any],], torch.Tensor]
 
+SIMPLE_LOSS_DICT: dict[str, SimpleLossFn] = collections.OrderedDict()
+def add_to_simple_losses(loss_fn: SimpleLossFn, name: str) -> None:
+    SIMPLE_LOSS_DICT[name] = loss_fn
+
 LOSS_DICT: dict[str, LossFn] = collections.OrderedDict()
-def add_to_losses(loss_fn: LossFn, name: str):
+def add_to_losses(loss_fn: LossFn, name: str) -> None:
     LOSS_DICT[name] = loss_fn
 
 
@@ -56,6 +61,8 @@ def _get_finite_difference_mse_loss_fn_with_output_and_target_key(output_key: tu
 #         else:
 #             target = dataset["environment", "observation"]
 #             return base_loss_fn(model_pair, dataset, kwargs, target)
+
+add_to_simple_losses(_mse_loss, "mse")
 
 add_to_losses(default_mse_loss, "mse")
 add_to_losses(_get_finite_difference_mse_loss_fn_with_output_and_target_key(("environment", "observation",), ("environment", "observation",)), "fd_mse")

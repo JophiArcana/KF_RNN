@@ -8,7 +8,7 @@ from tensordict import TensorDict
 from infrastructure import utils
 from infrastructure.discrete_are import solve_discrete_are
 from model.zero_predictor import ZeroController
-from model.convolutional import ConvolutionalPredictor
+from model.copy_predictor import CopyPredictor
 from system.base import SystemGroup, SystemDistribution
 from system.controller import LinearControllerGroup
 from system.environment import LTIEnvironment, LTIZeroNoiseEnvironment
@@ -99,10 +99,7 @@ class LTISystem(SystemGroup):
         self.register_module("irreducible_loss", utils.buffer_dict(irreducible_loss))
 
         assert len(vars(self.environment.problem_shape.controller)) == 0
-        copy_predictor_td = TensorDict({
-            "observation_IR": torch.eye(self.environment.O_D)[:, None, :],
-        }, batch_size=())[None, None]
-        copy_predictor_loss = ConvolutionalPredictor.analytical_error(copy_predictor_td, self.td())
+        copy_predictor_loss = CopyPredictor.analytical_error(None, self.td())
         self.register_module("copy_predictor_loss", utils.buffer_dict(copy_predictor_loss))
 
 

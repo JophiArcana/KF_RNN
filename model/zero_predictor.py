@@ -2,6 +2,7 @@ from argparse import Namespace
 from typing import *
 
 import torch
+import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
@@ -10,6 +11,9 @@ from model.base import Predictor
 
 
 class ZeroPredictor(Predictor):
+    def __init__(self, modelArgs: Namespace):
+        nn.Module.__init__(self)
+
     @classmethod
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
@@ -73,7 +77,6 @@ class ZeroPredictor(Predictor):
             Vinv_BL_F_BLK=Vinv_BL_F_BLK, Dj=Dj
         )
         return TensorDict.from_dict({"environment": {"observation": err.expand(shape)}}, batch_size=shape), cache
-
 
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
