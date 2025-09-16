@@ -10,7 +10,7 @@ from causal_conv1d.cpp_functions import causal_conv1d_fwd_function
 from tensordict import TensorDict, NonTensorData
 
 from infrastructure import utils
-from infrastructure.experiment.training import TrainFunc
+from infrastructure.static import TrainFunc
 from model.base import Predictor
 from model.sequential.base import SequentialPredictor
 from model.least_squares_predictor import LeastSquaresPredictor

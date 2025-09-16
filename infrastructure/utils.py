@@ -23,14 +23,17 @@ from tensordict import TensorDict
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
 from infrastructure.settings import DEVICE
-from infrastructure.static import TRAINING_DATASET_TYPES, TESTING_DATASET_TYPE
+from infrastructure.static import (
+    ModelPair,
+    TRAINING_DATASET_TYPES,
+    TESTING_DATASET_TYPE,
+)
 
 
 _T = TypeVar("_T")
 """
 System and model functions
 """
-ModelPair = tuple[nn.Module, TensorDict]
 
 def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict]:
     tensor_list = [*tensor_arr.ravel()]
@@ -366,10 +369,19 @@ def rhasattr(obj: object, attr: str) -> bool:
     except AttributeError:
         return False
 
-def rgetitem(obj: Dict[str, Any], item: str, *args):
-    def _getitem(obj: Dict[str, Any], item: str) -> Any:
+def rgetitem(obj: dict[str, Any], item: str, *args):
+    def _getitem(obj: dict[str, Any], item: str) -> Any:
         return obj.get(item, *args)
     return functools.reduce(_getitem, [obj] + item.split("."))
+
+def rsetitem(obj: dict[str, Any], item: str, value: Any) -> None:
+    def _rsetitem(obj: dict[str, Any], items: List[str], value: Any) -> None:
+        if len(items) == 1:
+            obj[items[0]] = value
+        else:
+            _rsetitem(next_obj := obj.get(items[0], {}), items[1:], value)
+            obj[items[0]] = next_obj
+    _rsetitem(obj, item.split("."), value)
 
 
 """
@@ -443,6 +455,15 @@ def print_namespace(n: Namespace) -> None:
 
 def hash_namespace(n: Namespace) -> str:
     return hashlib.sha256(str_namespace(n).encode("utf-8")).hexdigest()[:8]
+
+def print_dict(d: dict[str, Any] | object, n: int = 0, indent: int = 4,) -> None:
+    if isinstance(d, dict):
+        for k, v in d.items():
+            print(" " * (n * indent) + k)
+            print_dict(v, n=n + 1, indent=indent,)
+    else:
+        to_print = str(d)
+        print("\n".join([" " * (n * indent) + s for s in to_print.split("\n")]))
 
 
 """

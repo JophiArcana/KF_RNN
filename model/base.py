@@ -45,7 +45,7 @@ class Predictor(Observer):
         _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
-            _result_list.append(TensorDict.from_dict(utils.run_module_arr(
+            _result_list.append(TensorDict(utils.run_module_arr(
                 model_pair,
                 _dataset_slice,
                 kwargs,

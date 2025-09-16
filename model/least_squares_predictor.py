@@ -6,8 +6,8 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import ModelPair
-from infrastructure.experiment.training import TrainFunc
+from infrastructure.static import ModelPair
+from infrastructure.static import TrainFunc
 from model.base import Predictor
 
 

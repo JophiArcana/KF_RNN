@@ -2,7 +2,7 @@ import torch
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import ModelPair
+from infrastructure.static import ModelPair
 from model.base import Predictor
 from model.copy_predictor import CopyPredictor
 from model.zero_predictor import ZeroPredictor
@@ -21,23 +21,22 @@ def error(
 
     if model_pair == "irreducible":
         if isinstance(sg, SystemGroup):
-            if hasattr(sg, "irreducible_loss"):
-                return sg.irreducible_loss
-            else:
-                problem_shape = sg.environment.problem_shape
-                return TensorDict({
-                    (*k.split("."),): torch.zeros(sg.group_shape)
-                    for k in utils.nested_vars(problem_shape).keys()
-                }, batch_size=sg.group_shape)
+            problem_shape = sg.environment.problem_shape
+            def map_fn(k: str) -> torch.Tensor:
+                return utils.rgetattr(sg.irreducible_loss, k) if hasattr(sg, "irreducible_loss") else torch.zeros(sg.group_shape)
+            return TensorDict({
+                (*k.split("."),): map_fn(k)
+                for k in utils.nested_vars(problem_shape).keys()
+            }, batch_size=sg.group_shape)
         else:
             output_key = ("environment", "target_observation_estimation",)
             target_key = ("environment", "observation",)
             irreducible_observation_loss = loss_fn(sg.get(output_key, sg[target_key]), sg[target_key])
             controller_losses = {
-                ac_name: torch.zeros_like(irreducible_observation_loss)
+                ("controller", ac_name,): torch.zeros_like(irreducible_observation_loss)
                 for ac_name in sg["controller"].keys()
             }
-            return TensorDict({target_key: irreducible_observation_loss, "controller": controller_losses,}, batch_size=sg.shape)
+            return TensorDict({target_key: irreducible_observation_loss, **controller_losses,}, batch_size=sg.shape)
 
     elif isinstance(model_pair, str):
         match model_pair:
@@ -59,7 +58,7 @@ def error(
         run = Predictor.run(model_pair, sg)
         return TensorDict({
             k: loss_fn(v, sg[k])
-            for k, v in run.items()
+            for k, v in run.items(include_nested=True, leaves_only=True,)
         }, batch_size=sg.shape)
 
 

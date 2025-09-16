@@ -6,7 +6,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.experiment.training import TrainFunc
+from infrastructure.static import TrainFunc
 from model.base import Predictor
 
 
@@ -83,7 +83,12 @@ class ZeroPredictor(Predictor):
         return ()
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
-        return TensorDict.from_dict(trace, batch_size=()).apply(torch.zeros_like).to_dict()
+        trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
+        valid_keys = [("environment", "observation",),] + [("controller", ac_name) for ac_name in trace["controller"].keys()]
+        return TensorDict({
+            k: torch.zeros_like(v)
+            for k, v in trace.items(include_nested=True, leaves_only=True) if k in valid_keys
+        }, batch_size=trace.shape)
 
 
 class ZeroController(ZeroPredictor):

@@ -1,10 +1,15 @@
 import os
+import numpy as np
+import pandas as pd
 import torch
 
 
-torch.set_printoptions(sci_mode=False, linewidth=400)
+PRECISION: int = 8
+np.set_printoptions(precision=PRECISION,)
+pd.set_option("display.precision", PRECISION,)
+torch.set_printoptions(precision=PRECISION, sci_mode=False, linewidth=400,)
 
-_CUDA_NUM = 0
+_CUDA_NUM: int = 0
 DEVICE: str = f"cuda:{_CUDA_NUM}"
 DTYPE: torch.dtype = torch.float32
 PROJECT_NAME: str = "KF_RNN"

@@ -22,7 +22,7 @@ from transformers import (
 )
 
 # This line needs to be added since some terminals will not recognize the current directory
-os.chdir("/home/wentinn/Desktop/KF_RNN/")
+os.chdir("/home/wentinn/workspace/KF_RNN/")
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
@@ -116,7 +116,9 @@ if __name__ == "__main__":
 
     # SECTION: Dataset hyperparameters
     ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
-    ARGS_TRANSFORMER.system.settings = Namespace(include_analytical=False)
+    ARGS_TRANSFORMER.system.settings = Namespace(
+        include_analytical=False,
+    )
     
     ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
     ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
@@ -149,6 +151,7 @@ if __name__ == "__main__":
         "fd_noiseless_overfit",
         "fd_noiseless_validation",
     }, testing={
+        # "nl", "al", "il", "neil",
         "fd_nl", # "fd_al", "fd_il", "fd_neil",
     })
     ARGS_TRANSFORMER.experiment.checkpoint_frequency = 5

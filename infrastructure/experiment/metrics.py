@@ -8,7 +8,8 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import ModelPair, PTR
+from infrastructure.utils import PTR
+from infrastructure.static import ModelPair
 from infrastructure.experiment.losses import LossFn
 from model.base import Predictor
 from system.base import SystemGroup

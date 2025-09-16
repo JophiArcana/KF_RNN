@@ -6,7 +6,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.experiment.training import TrainFunc
+from infrastructure.static import TrainFunc
 from model.base import Predictor
 from model.convolutional import ConvolutionalPredictor
 
@@ -34,11 +34,16 @@ class CopyPredictor(Predictor):
         return ()
 
     def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
-        trace = TensorDict.from_dict(trace, auto_batch_size=True)
-        return TensorDict.cat((
+        trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
+        valid_keys = [("environment", "observation",),] + [("controller", ac_name) for ac_name in trace["controller"].keys()]        
+        result: TensorDict = TensorDict.cat((
             trace[..., -1:].apply(torch.zeros_like),
             trace[..., :-1],
         ), dim=-1)
+        for k in [*result.keys(include_nested=True, leaves_only=True),]:
+            if k not in valid_keys:
+                result.del_(k)
+        return result
 
 
 

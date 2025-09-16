@@ -1,10 +1,29 @@
+from argparse import Namespace
 from typing import *
 
 import numpy as np
+import torch
+import torch.nn as nn
 from tensordict import TensorDict
 
 from system.base import SystemGroup
 
+
+ModelPair = tuple[nn.Module, TensorDict]
+TrainFunc = tuple[
+    Callable[[
+        Namespace,
+        Namespace,
+        ModelPair,
+        Namespace
+    ], tuple[torch.Tensor, dict[str, torch.Tensor],]],
+    Callable[[
+        Namespace,
+        Namespace,
+        ModelPair,
+        Namespace
+    ], bool],
+]
 
 PARAM_GROUP_FORMATTER: str = "{0}_d({1})"
 TRAINING_DATASET_TYPES: List[str] = [

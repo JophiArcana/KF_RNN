@@ -1,4 +1,5 @@
-import copy
+import collections
+import itertools
 import json
 from argparse import Namespace
 from dataclasses import dataclass
@@ -7,15 +8,18 @@ from tqdm import tqdm
 from typing import Any, Callable, Iterable
 
 import numpy as np
+import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.utils import PTR
+from infrastructure.experiment.engine import error
 from infrastructure.experiment.losses import LOSS_DICT, LossFn
 from infrastructure.experiment.metrics import METRIC_DICT
 from infrastructure.settings import *
-from infrastructure.utils import ModelPair, PTR
+from infrastructure.static import ModelPair
 from model.base import Predictor
 
 
@@ -67,21 +71,6 @@ def _get_optimizer_and_scheduler(
         )
 
 # Training
-TrainFunc = tuple[
-    Callable[[
-        Namespace,
-        Namespace,
-        ModelPair,
-        Namespace
-    ], tuple[torch.Tensor, dict[str, torch.Tensor],]],
-    Callable[[
-        Namespace,
-        Namespace,
-        ModelPair,
-        Namespace
-    ], bool],
-]
-
 def _sample_dataset_indices(
         dataset: TensorDict,                         # [N x E x S x B x L x ...]
         kwargs: dict[str, Any],
@@ -355,6 +344,7 @@ def _run_training(
 
     # TODO: Run training functions starting from checkpoint if it exists
     for idx, (training_func, _terminate_func,) in enumerate(training_funcs, start=training_func_idx):
+        print("-" * 160)
         print(f'Training function {training_func.__name__}{signature(training_func)}')
         print("-" * 160)
 
@@ -461,18 +451,47 @@ def _run_unit_training_experiment(
         n_train_systems=DHP.n_systems.train,
     )
 
-    # Setup result and run training
-    avg = lambda t: t.mean().item()
-    for loss_type in ("zero_predictor_loss", "copy_predictor_loss", "irreducible_loss",):
-        print(f"Mean {loss_type.replace('_', ' ')} {'-' * 80}")
-        for ds_type, ds_info in vars(info).items():
+    # SECTION: Print baseline errors for comparison
+    loss_types = ("zero_predictor", "copy_predictor", "irreducible",)
+    for ds_type, ds_info in vars(info).items():
+        print(f"Mean loss for dataset type {ds_type} {'-' * 80}")
+        evaluation_targets = collections.OrderedDict([
+            ("analytical", ds_info.systems,),
+            ("empirical", utils.multi_map(lambda p: p.obj, ds_info.dataset, dtype=TensorDict,),),
+        ])
+        shape = [*evaluation_targets.values()][0].shape
+        assert all(arr.shape == shape for arr in evaluation_targets.values()), "Not sure when this is not true but we'll deal with it later."
+
+        loss_arr_dict = {}
+        for args in itertools.product(enumerate(evaluation_targets.items()), enumerate(loss_types),):
+            idx, ((target_type, td_arr), loss_type,) = zip(*args)
             try:
-                print(f"\t{ds_type}:", utils.multi_map(
-                    lambda sg: utils.map_dict(sg.td()[loss_type], avg),
-                    ds_info.systems, dtype=dict,
-                ))
-            except Exception:
+                err_dict_arr = utils.multi_map(lambda td: error(loss_type, td), td_arr, dtype=TensorDict,)
+                for k in err_dict_arr.ravel()[0].keys(include_nested=True, leaves_only=True):
+                    loss_arr_dict.setdefault(k, np.full((len(evaluation_targets), len(loss_types), *shape,), None, dtype=object))[idx] = utils.multi_map(
+                        lambda td: td[k].mean().item(), err_dict_arr, dtype=float,
+                    )
+            except Exception as excp:
                 pass
+        
+        df_dict = {}
+        for k, v in loss_arr_dict.items():
+            utils.rsetitem(df_dict, ".".join(map(str.upper, k)), pd.DataFrame(v, evaluation_targets.keys(), loss_types))  
+        utils.print_dict(df_dict)
+
+    # avg = lambda t: t.mean().item()
+    # for loss_type in ("zero_predictor_loss", "copy_predictor_loss", "irreducible_loss",):
+    #     print(f"Mean {loss_type.replace('_', ' ')} {'-' * 80}")
+    #     for ds_type, ds_info in vars(info).items():
+    #         try:
+    #             print(f"\t{ds_type}:", utils.multi_map(
+    #                 lambda sg: utils.map_dict(sg.td()[loss_type], avg),
+    #                 ds_info.systems, dtype=dict,
+    #             ))
+    #         except Exception:
+    #             pass
+
+    # SECTION: Setup result and run training
     return {
         "output": PTR(_run_training(HP, exclusive, model_pair, checkpoint_paths).detach()),
         "learned_kfs": model_pair,
