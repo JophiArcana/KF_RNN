@@ -418,7 +418,7 @@ def _run_unit_training_experiment(
         print_hyperparameters: bool = False
 ) -> dict[str, Any]:
 
-    MHP, DHP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "experiment"))
+    MHP, DHP, THP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "training", "experiment",))
     if print_hyperparameters:
         print("-" * 160)
         print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
@@ -471,7 +471,7 @@ def _run_unit_training_experiment(
                     loss_arr_dict.setdefault(k, np.full((len(evaluation_targets), len(loss_types), *shape,), None, dtype=object))[idx] = utils.multi_map(
                         lambda td: td[k].mean().item(), err_dict_arr, dtype=float,
                     )
-            except Exception as excp:
+            except Exception:
                 pass
         
         df_dict = {}

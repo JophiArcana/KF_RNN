@@ -28,10 +28,13 @@ def _mse_loss(output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 def default_mse_loss(result: TensorDict, dataset: TensorDict, kwargs: dict[str, Any]) -> torch.Tensor:
     obs_key = ("environment", "observation",)
-    return _mse_loss(result[obs_key], dataset[obs_key]) + kwargs["control_coefficient"] * sum([
+    loss = _mse_loss(result[obs_key], dataset[obs_key]) + kwargs["control_coefficient"] * sum([
         _mse_loss(v, dataset["controller", k])
         for k, v in result["controller"].items()
     ])
+    if kwargs["ignore_initial"]:
+        loss[..., 0] = 0.0
+    return loss
 
 def _get_mse_loss_fn_with_output_and_target_key(output_key: tuple[str, ...], target_key: tuple[str, ...]) -> LossFn:
     def loss_fn(result: TensorDict, dataset: TensorDict, kwargs: dict[str, Any]) -> torch.Tensor:
@@ -47,7 +50,10 @@ def _finite_difference_mse_loss(output: torch.Tensor, target: torch.Tensor, data
 
 def _get_finite_difference_mse_loss_fn_with_output_and_target_key(output_key: tuple[str, ...], target_key: tuple[str, ...]) -> LossFn:
     def loss_fn(result: TensorDict, dataset: TensorDict, kwargs: dict[str, Any]) -> torch.Tensor:
-        return _finite_difference_mse_loss(result[output_key], dataset[target_key], dataset)
+        loss = _finite_difference_mse_loss(result[output_key], dataset[target_key], dataset)
+        if kwargs.get("ignore_initial", False):
+            loss[..., 0] = 0.0
+        return loss
     return loss_fn
 
 

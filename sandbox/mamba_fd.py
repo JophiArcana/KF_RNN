@@ -22,7 +22,7 @@ from transformers import (
 )
 
 # This line needs to be added since some terminals will not recognize the current directory
-os.chdir("/home/wentinn/workspace/KF_RNN/")
+os.chdir("/home/wentinn/Desktop/KF_RNN/")
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
     # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     # dist = ContinuousDistribution("gaussian", "gaussian", eps=0.1, W_std=0.1, V_std=0.1)
-    dist = ContinuousNoiselessDistribution("gaussian", "gaussian", eps=0.1)
+    dist = ContinuousNoiselessDistribution("gaussian", "gaussian", 0.001)
     # dist = OrthonormalDistribution()
 
     # S_D, O_D = 10, 5,
@@ -126,6 +126,7 @@ if __name__ == "__main__":
 
     # SECTION: Training hyperparameters
     ARGS_TRANSFORMER.training.loss = "fd_mse"
+    ARGS_TRANSFORMER.training.ignore_initial = True
     ARGS_TRANSFORMER.training.sampling = Namespace(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
@@ -159,6 +160,9 @@ if __name__ == "__main__":
 
     # configurations_transformer = []
     configurations_transformer = [
+        ("ignore_initial", {
+            "training.ignore_initial": [False, True],
+        }),
         # ("batch_size", {
         #     # "training.sampling.batch_size": [16, 32, 64, 128,],
         #     # "training.sampling.batch_size": [64, 128,],
