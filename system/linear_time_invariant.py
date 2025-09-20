@@ -284,7 +284,8 @@ class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
             case _:
                 raise ValueError(self.F_mode)
         F /= torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None]
-        F = (1 - 2 * self.eps) * torch.eye(S_D) - self.eps * F
+        # F = (1 - 2 * self.eps) * torch.eye(S_D) - self.eps * F
+        F = torch.eye(S_D) - self.eps * F
 
         B = TensorDict({}, batch_size=(*shape, S_D))
 

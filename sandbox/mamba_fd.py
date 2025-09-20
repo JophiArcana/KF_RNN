@@ -48,7 +48,7 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "mamba_finite_difference_noiseless"
+    output_dir = "mamba_finite_difference_divergent"
     output_fname = "result"
     # output_fname = "result_batch_sweep_exponential_lr"
 
@@ -343,12 +343,12 @@ if __name__ == "__main__":
         ax_lr = ax.twinx()
 
         for j, (k, v) in enumerate([
-            ("noiseless_overfit", "train",),
-            ("noiseless_validation", "valid",)
+            ("fd_noiseless_overfit", "train",),
+            ("fd_noiseless_validation", "valid",)
         ]):
-            il = torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
+            il = 0.0 # torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
             l = torch.mean(log_td[k], dim=-1)
-            ax.plot((l - il).numpy(force=True), label=f"{hparam_name}{hparam_value}-{k}",)
+            ax.plot((l - il).numpy(force=True), label=f"{hparam_name}:{hparam_value}-{k}",)
             print((l - il).min())
         # ax_lr.plot(lr.numpy(force=True), color="green", linestyle="--", label="lr",)
 

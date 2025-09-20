@@ -45,8 +45,8 @@ class LTIEnvironment(EnvironmentGroup):
             for k in vars(self.problem_shape.controller)
         })
 
-        if not torch.all(torch.linalg.eigvals(self.F).abs() < 1 + 1e-5):
-            raise RuntimeError(f"Eigenvalues of F matrix {self.F.clone().detach()} are unstable.")
+        # if not torch.all(torch.linalg.eigvals(self.F).abs() < 1 + 1e-5):
+        #     raise RuntimeError(f"Eigenvalues of F matrix {self.F.clone().detach()} are unstable.")
 
         # SECTION: Define system group dimensions
         self.S_D = self.F.shape[-1]                 # State dimension
