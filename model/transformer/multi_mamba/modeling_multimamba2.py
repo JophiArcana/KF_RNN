@@ -56,7 +56,7 @@ else:
 
 is_fast_path_available = all((selective_state_update, causal_conv1d_fn, causal_conv1d_update))
 
-_CHECKPOINT_FOR_DOC = "mistralai/mamba-codestral-7B-v0.1"
+_CHECKPOINT_FOR_DOC = "mistralai/multi_mamba-codestral-7B-v0.1"
 _CONFIG_FOR_DOC = "Mamba2Config"
 
 
@@ -193,7 +193,7 @@ class MultiMamba2Mixer(nn.Module):
                 " https://github.com/Dao-AILab/causal-conv1d"
             )
 
-    def cuda_kernels_forward(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         cache_params: Optional[MultiMamba2Cache] = None,
@@ -234,7 +234,7 @@ class MultiMamba2Mixer(nn.Module):
                 self.conv1d.weight.squeeze(1),
                 bias=self.conv1d.bias,
                 activation=self.activation,
-            ).transpose(1, 2)[:, :seq_len]
+            ).transpose(1, 2)
 
         hidden_states, B, C = map(lambda t: t.unflatten(-1, (self.n_groups, -1,)), torch.split(
             hidden_states_B_C,
@@ -290,18 +290,6 @@ class MultiMamba2Mixer(nn.Module):
         out = self.out_proj(hidden_states)
 
         return out
-
-    def forward(
-        self,
-        hidden_states,
-        cache_params: Optional[MultiMamba2Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-    ):
-        if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
-            return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask)
-        else:
-            raise Exception("Fast path is unavailable or unsupported on CPU.")
 
 
 class MultiMamba2Block(nn.Module):
@@ -388,7 +376,7 @@ class MultiMamba2PreTrainedModel(PreTrainedModel):
 
 
 @dataclass
-# Copied from transformers.models.mamba.modeling_mamba.MambaOutput with MAMBA->MAMBA2,Mamba->Mamba2
+# Copied from transformers.models.multi_mamba.modeling_mamba.MambaOutput with MAMBA->MAMBA2,Mamba->Mamba2
 class MultiMamba2Output(ModelOutput):
     """
     Class for the MAMBA2 model outputs.
@@ -414,7 +402,7 @@ class MultiMamba2Output(ModelOutput):
 
 
 @dataclass
-# Copied from transformers.models.mamba.modeling_mamba.MambaCausalLMOutput with Mamba->Mamba2
+# Copied from transformers.models.multi_mamba.modeling_mamba.MambaCausalLMOutput with Mamba->Mamba2
 class Mamba2CausalLMOutput(ModelOutput):
     """
     Base class for causal language model (or autoregressive) outputs.

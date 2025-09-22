@@ -98,7 +98,7 @@ if __name__ == "__main__":
     #     n_head=8,
     # )
     # ARGS_TRANSFORMER.model.model = MambaInContextPredictor
-    # ARGS_TRANSFORMER.model.mamba = MambaConfig(
+    # ARGS_TRANSFORMER.model.multi_mamba = MambaConfig(
     #     state_size=256,
     #     hidden_size=hidden_size,
     #     num_hidden_layers=num_hidden_layers,
@@ -537,7 +537,7 @@ if __name__ == "__main__":
     #     # plot_analytical(rnn_al, "crimson", indices=rnn_indices)
     
     #     # SECTION: Plot transformers
-    #     plot_empirical(mamba_l, "mamba", "gold", error_bars=False, zorder=2)
+    #     plot_empirical(mamba_l, "multi_mamba", "gold", error_bars=False, zorder=2)
     
     #     plt.title(f"InContext-GaussianA0.95/GaussianC: System {system_idx}")
     #     plt.xscale("log")

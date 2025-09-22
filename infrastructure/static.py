@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from system.base import SystemGroup
+# from system.base import SystemGroup
 
 
 ModelPair = tuple[nn.Module, TensorDict]
@@ -37,7 +37,7 @@ DATASET_SUPPORT_PARAMS: List[str] = [
     "system.n_systems"
 ]
 INFO_DTYPE: np.dtype = np.dtype([
-    ("systems", SystemGroup),
+    ("systems", object), # ("systems", SystemGroup),
     ("system_params", object),
     ("dataset", object)
 ])

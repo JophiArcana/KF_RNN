@@ -11,6 +11,10 @@ from .xlnet_icpredictor import XLNetInContextPredictor
 from .llama_icpredictor import LlamaInContextPredictor
 
 from .mamba import (
+    Mamba2Config,
+    Mamba2Model,
+)
+from .multi_mamba import (
     MambaInContextPredictor,
     Mamba2InContextPredictor,
     

@@ -36,7 +36,7 @@ class MultiMamba2Config(PretrainedConfig):
 
     Args:
         num_heads (`int`, *optional*, defaults to 128):
-            Number of heads for the evolution matrices of mamba 2.
+            Number of heads for the evolution matrices of multi_mamba 2.
         head_dim (`int`, *optional*, defaults to 64):
             Dimension of each head.
         vocab_size (`int`, *optional*, defaults to 32768):
@@ -58,7 +58,7 @@ class MultiMamba2Config(PretrainedConfig):
         expand (`int`, *optional*, defaults to 2): Expanding factor used to determine the intermediate size.
         conv_kernel (`int`, *optional*, defaults to 4): Size of the convolution kernel.
         n_groups (`int`, *optional*, defaults to 8):
-            Number of groups for the evolution matrices of mamba 2.
+            Number of groups for the evolution matrices of multi_mamba 2.
         use_bias (`bool`, *optional*, defaults to `False`):
             Whether or not to use bias in ["in_proj", "out_proj"] of the mixer block
         use_conv_bias (`bool`, *optional*, defaults to `True`):

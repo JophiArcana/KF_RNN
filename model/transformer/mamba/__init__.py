@@ -1,8 +1,3 @@
-from .mamba_icpredictor import (
-    MambaInContextPredictor,
-    Mamba2InContextPredictor,
-)
-from .modeling_multimamba2 import (
-    MultiMamba2Config,
-    MultiMamba2Model,
-)
+from .configuration_mamba import Mamba2Config
+from .modeling_mamba import Mamba2Model
+
