@@ -50,18 +50,13 @@ if is_causal_conv1d_available():
 else:
     causal_conv1d_update, causal_conv1d_fn = None, None
 
-is_fast_path_available = all(
-    (
-        selective_state_update,
-        mamba_chunk_scan_combined,
-        mamba_split_conv1d_scan_combined,
-        causal_conv1d_fn,
-        causal_conv1d_update,
-    )
-)
-
-
-# Helper methods for segment sum computation
+is_fast_path_available = all((
+    selective_state_update,
+    mamba_chunk_scan_combined,
+    mamba_split_conv1d_scan_combined,
+    causal_conv1d_fn,
+    causal_conv1d_update,
+))
 
 
 def apply_mask_to_padding_states(hidden_states, attention_mask):
