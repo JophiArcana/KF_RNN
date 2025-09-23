@@ -18,6 +18,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Union
 
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
@@ -39,24 +40,26 @@ from .configuration_mamba import Mamba2Config
 logger = logging.get_logger(__name__)
 
 
-if is_mamba_2_ssm_available():
-    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
-else:
-    mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined, selective_state_update = None, None, None
+# if is_mamba_2_ssm_available():
+#     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+#     from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
+# else:
+#     mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined, selective_state_update = None, None, None
 
-if is_causal_conv1d_available():
-    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
-else:
-    causal_conv1d_update, causal_conv1d_fn = None, None
+# if is_causal_conv1d_available():
+#     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+# else:
+#     causal_conv1d_update, causal_conv1d_fn = None, None
 
-is_fast_path_available = all((
-    selective_state_update,
-    mamba_chunk_scan_combined,
-    mamba_split_conv1d_scan_combined,
-    causal_conv1d_fn,
-    causal_conv1d_update,
-))
+# is_fast_path_available = all((
+#     selective_state_update,
+#     mamba_chunk_scan_combined,
+#     mamba_split_conv1d_scan_combined,
+#     causal_conv1d_fn,
+#     causal_conv1d_update,
+# ))
+from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+from model.transformer.mamba.optimized_chunk_scan import mamba_chunk_scan_combined
 
 
 def apply_mask_to_padding_states(hidden_states, attention_mask):
@@ -204,8 +207,9 @@ class Mamba2Mixer(nn.Module):
             bias=config.use_conv_bias,
             kernel_size=config.conv_kernel,
             groups=self.conv_dim,
-            padding=config.conv_kernel - 1,
         )
+        # self.B_proj = nn.Linear(self.head_dim, self.ssm_state_size, bias=False)
+        # self.C_proj = nn.Linear(self.ssm_state_size, self.head_dim, bias=False)
 
         # projection of the input hidden states
         projection_size = self.intermediate_size + self.conv_dim + self.num_heads
@@ -231,13 +235,6 @@ class Mamba2Mixer(nn.Module):
 
         self.out_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.use_bias)
         self.use_bias = config.use_bias
-
-        if not is_fast_path_available:
-            logger.warning_once(
-                "The fast path is not available because on of `(selective_state_update, causal_conv1d_fn, causal_conv1d_update)`"
-                " is None. Falling back to the naive implementation. To install follow https://github.com/state-spaces/mamba/#installation and"
-                " https://github.com/Dao-AILab/causal-conv1d"
-            )
 
     def forward(
         self,
@@ -267,21 +264,22 @@ class Mamba2Mixer(nn.Module):
             padded_conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - 1, 0,))
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel_size:], cache_init=True)
 
-        hidden_states_B_C = self.act(Fn.conv1d(padded_conv_states, self.conv1d.weight, self.conv1d.bias, groups=self.conv_dim).transpose(1, 2))
-        hidden_states, B, C = map(lambda t: t.unflatten(-1, (self.n_groups, -1,)), torch.split(
-            hidden_states_B_C,
-            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,],
-            dim=-1,
-        ))
-        # hidden_states, B, C = torch.split(
-        #     hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
-        #     [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
-        #     dim=-1,
-        # )
+        hidden_states, B, C = torch.split(
+            self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
+            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
+        )
+        hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+        B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+        C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+
+
+
+
+
 
         A = -torch.exp(self.A_log.float())  # (nheads,)
-        if do_inference:
+        if do_inference:   
             dt = dt[:, 0, :, None].expand((-1, -1, self.head_dim,))
             dt_bias = self.dt_bias[:, None].expand((self.num_heads, self.head_dim,))
             A = A[:, None, None].expand((-1, self.head_dim, self.ssm_state_size,)).to(dtype=torch.float32)
@@ -303,10 +301,29 @@ class Mamba2Mixer(nn.Module):
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
                 dt_limit=self.time_step_limit,
-                return_final_states=True,
             )
             if ssm_state is not None and cache_params is not None:
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
+
+
+
+        # dt = Fn.softplus(dt + self.dt_bias)
+        # A = -torch.exp(self.A_log.float())  # (nheads,)
+        
+        # dA = torch.exp(dt * A[None, None, :])
+        # dB = self.B_proj(dt[..., None] * hidden_states) * B
+
+        # prod_states = torch.zeros((batch_size, seq_len, self.num_heads, self.ssm_state_size,))
+        # ssm_state = cache_params.ssm_states[self.layer_idx] if do_inference else torch.zeros((batch_size, self.num_heads, self.ssm_state_size,))
+        # for i in range(seq_len):
+        #     ssm_state = dA[:, i, :, None] * ssm_state + dB[:, i, :, :]
+        #     prod_states[:, i, :, :] = ssm_state * C[:, i, :, :]
+        # hidden_states = self.C_proj(prod_states) + hidden_states * self.D[:, None]
+
+        # if cache_params is not None:
+        #     cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
+
+
 
         # Multiply "gate" branch and apply extra normalization layer
         hidden_states = hidden_states.view((batch_size, seq_len, -1,))
