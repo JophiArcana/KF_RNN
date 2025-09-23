@@ -259,19 +259,62 @@ class Mamba2Mixer(nn.Module):
         if do_inference:
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=hidden_states_B_C, cache_init=False)
             padded_conv_states = cache_params.conv_states[self.layer_idx]
+
+
+
+
+            hidden_states, B, C = torch.split(
+                self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
+                [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size, ],
+                dim=-1,
+            )
+            hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
+            hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+            B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+            C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+
+
+
         else:
             # 1D Convolution
             padded_conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - 1, 0,))
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel_size:], cache_init=True)
 
-        hidden_states, B, C = torch.split(
-            self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
-            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
-        )
-        hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
-        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
-        B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-        C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+
+
+
+
+
+            from causal_conv1d import causal_conv1d_fn
+            hidden_states_B_C = causal_conv1d_fn(
+                x=hidden_states_B_C,
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+            ).transpose(1, 2)
+
+            hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
+            hidden_states, B, C = torch.split(
+                hidden_states_B_C,
+                [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size],
+                dim=-1,
+            )
+
+            hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
+            hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+            B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+            C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+
+
+
+        # hidden_states, B, C = torch.split(
+        #     self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
+        #     [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
+        # )
+        # hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
+        # hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+        # B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
+        # C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
 
 
 
@@ -293,15 +336,9 @@ class Mamba2Mixer(nn.Module):
             )
         # if no cache is found, calling the kernel
         else:
-            hidden_states, ssm_state = mamba_chunk_scan_combined(
-                hidden_states,
-                dt, A, B, C,
-                chunk_size=self.chunk_size,
-                D=self.D,
-                dt_bias=self.dt_bias,
-                dt_softplus=True,
-                dt_limit=self.time_step_limit,
-            )
+            hidden_states, ssm_state = mamba_chunk_scan_combined(hidden_states, dt, A, B, C, D=self.D,
+                                                                 chunk_size=self.chunk_size, dt_bias=self.dt_bias,
+                                                                 dt_limit=self.time_step_limit)
             if ssm_state is not None and cache_params is not None:
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 
