@@ -336,9 +336,8 @@ class Mamba2Mixer(nn.Module):
             )
         # if no cache is found, calling the kernel
         else:
-            hidden_states, ssm_state = mamba_chunk_scan_combined(hidden_states, dt, A, B, C, D=self.D,
-                                                                 chunk_size=self.chunk_size, dt_bias=self.dt_bias,
-                                                                 dt_limit=self.time_step_limit)
+            hidden_states, ssm_state = mamba_chunk_scan_combined(hidden_states, dt, self.dt_bias, A, B, C, self.D,
+                                                                 dt_limit=self.time_step_limit, chunk_size=self.chunk_size)
             if ssm_state is not None and cache_params is not None:
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 
