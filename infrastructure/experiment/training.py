@@ -19,7 +19,7 @@ from infrastructure.experiment.engine import error
 from infrastructure.experiment.losses import LOSS_DICT, LossFn
 from infrastructure.experiment.metrics import METRIC_DICT
 from infrastructure.settings import *
-from infrastructure.static import ModelPair
+from infrastructure.static import ModelPair, TrainFunc
 from model.base import Predictor
 
 

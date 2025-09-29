@@ -20,6 +20,8 @@ torch.set_default_device(DEVICE)
 torch.set_default_dtype(DTYPE)
 os.chdir(PROJECT_PATH)
 
+torch.autograd.set_detect_anomaly(True)
+
 
 # SECTION: Add safe globals for torch.load
 import dimarray

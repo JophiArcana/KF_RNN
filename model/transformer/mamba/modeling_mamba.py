@@ -33,33 +33,11 @@ from transformers.utils import (
     auto_docstring,
     logging,
 )
-from transformers.utils.import_utils import is_causal_conv1d_available, is_mamba_2_ssm_available
-from .configuration_mamba import Mamba2Config
+from .configuration_mamba import ObservableMambaConfig
+from .fast_conv_scan import conv_scan
 
 
 logger = logging.get_logger(__name__)
-
-
-# if is_mamba_2_ssm_available():
-#     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-#     from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
-# else:
-#     mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined, selective_state_update = None, None, None
-
-# if is_causal_conv1d_available():
-#     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
-# else:
-#     causal_conv1d_update, causal_conv1d_fn = None, None
-
-# is_fast_path_available = all((
-#     selective_state_update,
-#     mamba_chunk_scan_combined,
-#     mamba_split_conv1d_scan_combined,
-#     causal_conv1d_fn,
-#     causal_conv1d_update,
-# ))
-from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-from model.transformer.mamba.optimized_chunk_scan import mamba_chunk_scan_combined
 
 
 def apply_mask_to_padding_states(hidden_states, attention_mask):
@@ -73,10 +51,10 @@ def apply_mask_to_padding_states(hidden_states, attention_mask):
     return hidden_states
 
 
-class Mamba2Cache:
+class ObservableMambaCache:
     """
     Arguments:
-        config: Mamba2Config
+        config: ObservableMambaConfig
         batch_size: int
         dtype: torch.dtype
         device: torch.device
@@ -103,7 +81,7 @@ class Mamba2Cache:
     """
 
     def __init__(
-        self, config: Mamba2Config, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
+        self, config: ObservableMambaConfig, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
     ):
         self.dtype = dtype
         self.conv_kernel_size = config.conv_kernel
@@ -125,7 +103,6 @@ class Mamba2Cache:
             config.num_hidden_layers,
             batch_size,
             self.num_heads,
-            self.head_dim,
             self.state_size,
             device=device,
             dtype=dtype,
@@ -168,7 +145,7 @@ class MambaRMSNormGated(torch.nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-class Mamba2Mixer(nn.Module):
+class ObservableMambaMixer(nn.Module):
     """
     Compute ∆, A, B, C, and D the state space parameters and compute the `contextualized_states`.
     A, D are input independent (see Mamba paper [1] Section 3.5.2 "Interpretation of A" for why A isn't selective)
@@ -176,7 +153,7 @@ class Mamba2Mixer(nn.Module):
     and is why Mamba is called **selective** state spaces)
     """
 
-    def __init__(self, config: Mamba2Config, layer_idx: int):
+    def __init__(self, config: ObservableMambaConfig, layer_idx: int):
         super().__init__()
         self.num_heads = config.num_heads
         self.hidden_size = config.hidden_size
@@ -194,6 +171,7 @@ class Mamba2Mixer(nn.Module):
 
         self.n_groups = config.n_groups
         self.head_dim = config.head_dim
+        self.use_fast_conv_scan = config.use_fast_conv_scan
         self.chunk_size = config.chunk_size
 
         self.time_step_limit = config.time_step_limit
@@ -208,8 +186,8 @@ class Mamba2Mixer(nn.Module):
             kernel_size=config.conv_kernel,
             groups=self.conv_dim,
         )
-        # self.B_proj = nn.Linear(self.head_dim, self.ssm_state_size, bias=False)
-        # self.C_proj = nn.Linear(self.ssm_state_size, self.head_dim, bias=False)
+        self.B_proj = nn.Linear(self.head_dim, self.ssm_state_size, bias=False)
+        self.C_proj = nn.Linear(self.ssm_state_size, self.head_dim, bias=False)
 
         # projection of the input hidden states
         projection_size = self.intermediate_size + self.conv_dim + self.num_heads
@@ -239,7 +217,7 @@ class Mamba2Mixer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[ObservableMambaCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ):
@@ -247,119 +225,49 @@ class Mamba2Mixer(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
 
         # getting projected states from cache if it exists
-        do_inference = (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0)
-        if do_inference:
-            assert seq_len == 1, "Only supports inference for one token at a time."
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
-
         projected_states = self.in_proj(hidden_states)
         gate, hidden_states_B_C, dt = torch.split(projected_states, [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1)
         hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
 
-        if do_inference:
+        if (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0):
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=hidden_states_B_C, cache_init=False)
             padded_conv_states = cache_params.conv_states[self.layer_idx]
-
-
-
-
-            hidden_states, B, C = torch.split(
-                self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
-                [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size, ],
-                dim=-1,
-            )
-            hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
-            hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
-            B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-            C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-
-
-
+            ssm_state = cache_params.ssm_states[self.layer_idx]
         else:
             # 1D Convolution
             padded_conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - 1, 0,))
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel_size:], cache_init=True)
+            ssm_state = torch.zeros((batch_size, self.num_heads, self.ssm_state_size,))
 
+        hidden_states, B, C = torch.split(
+            self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
+            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
+        )
+        hidden_states = einops.rearrange(hidden_states, "... (h d) -> ... h d", h=self.num_heads)
+        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+        B = einops.repeat(B, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
+        C = einops.repeat(C, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
 
+        dt = Fn.softplus(dt + self.dt_bias)                 # float: [B x L x H]
+        A = -torch.exp(self.A_log.float())                  # float: [H] or [H x N]
+        if A.ndim == 1:
+            A = A[:, None]
+        dA = dt[..., None] * A                              # float: [B x L x H x N]
+        dB = self.B_proj(dt[..., None] * hidden_states) * B
 
-
-
-
-            from causal_conv1d import causal_conv1d_fn
-            hidden_states_B_C = causal_conv1d_fn(
-                x=hidden_states_B_C,
-                weight=self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-            ).transpose(1, 2)
-
-            hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
-            hidden_states, B, C = torch.split(
-                hidden_states_B_C,
-                [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size],
-                dim=-1,
-            )
-
-            hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
-            hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
-            B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-            C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-
-
-
-        # hidden_states, B, C = torch.split(
-        #     self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
-        #     [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
-        # )
-        # hidden_states = hidden_states.unflatten(-1, (self.num_heads, -1,))
-        # hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
-        # B = B.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-        # C = C.unflatten(-1, (self.n_groups, -1,)).repeat_interleave(self.num_heads // self.n_groups, dim=-2)
-
-
-
-
-
-
-        A = -torch.exp(self.A_log.float())  # (nheads,)
-        if do_inference:   
-            dt = dt[:, 0, :, None].expand((-1, -1, self.head_dim,))
-            dt_bias = self.dt_bias[:, None].expand((self.num_heads, self.head_dim,))
-            A = A[:, None, None].expand((-1, self.head_dim, self.ssm_state_size,)).to(dtype=torch.float32)
-            D = self.D[:, None].expand((self.num_heads, self.head_dim,))
-            hidden_states = selective_state_update(
-                cache_params.ssm_states[self.layer_idx],
-                hidden_states[:, 0],
-                dt, A, B[:, 0], C[:, 0], D,
-                dt_bias=dt_bias,
-                dt_softplus=True,
-            )
-        # if no cache is found, calling the kernel
+        if self.use_fast_conv_scan:
+            ssm_states = conv_scan(ssm_state, dA, dB, self.chunk_size)
         else:
-            hidden_states, ssm_state = mamba_chunk_scan_combined(hidden_states, dt, self.dt_bias, A, B, C, self.D,
-                                                                 dt_limit=self.time_step_limit, chunk_size=self.chunk_size)
-            if ssm_state is not None and cache_params is not None:
-                cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
+            ssm_states = torch.zeros((batch_size, seq_len, self.num_heads, self.ssm_state_size,))
+            for i in range(seq_len):
+                ssm_states[:, i] = ssm_state = torch.exp(dA[:, i, :, :]) * ssm_state + dB[:, i, :, :]
 
+        hidden_states = self.C_proj(ssm_states * C) + hidden_states * self.D[:, None]
+        ssm_state = ssm_states[..., -1, :, :]
 
-
-        # dt = Fn.softplus(dt + self.dt_bias)
-        # A = -torch.exp(self.A_log.float())  # (nheads,)
-        
-        # dA = torch.exp(dt * A[None, None, :])
-        # dB = self.B_proj(dt[..., None] * hidden_states) * B
-
-        # prod_states = torch.zeros((batch_size, seq_len, self.num_heads, self.ssm_state_size,))
-        # ssm_state = cache_params.ssm_states[self.layer_idx] if do_inference else torch.zeros((batch_size, self.num_heads, self.ssm_state_size,))
-        # for i in range(seq_len):
-        #     ssm_state = dA[:, i, :, None] * ssm_state + dB[:, i, :, :]
-        #     prod_states[:, i, :, :] = ssm_state * C[:, i, :, :]
-        # hidden_states = self.C_proj(prod_states) + hidden_states * self.D[:, None]
-
-        # if cache_params is not None:
-        #     cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
-
-
+        if cache_params is not None:
+            cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 
         # Multiply "gate" branch and apply extra normalization layer
         hidden_states = hidden_states.view((batch_size, seq_len, -1,))
@@ -369,10 +277,10 @@ class Mamba2Mixer(nn.Module):
         return out
 
 
-class Mamba2RMSNorm(nn.Module):
+class ObservableMambaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
-        Mamba2RMSNorm is equivalent to T5LayerNorm and LlamaRMSNorm
+        ObservableMambaRMSNorm is equivalent to T5LayerNorm and LlamaRMSNorm
         """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -386,19 +294,19 @@ class Mamba2RMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-class Mamba2Block(GradientCheckpointingLayer):
+class ObservableMambaBlock(GradientCheckpointingLayer):
     def __init__(self, config, layer_idx):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
         self.residual_in_fp32 = config.residual_in_fp32
-        self.norm = Mamba2RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
-        self.mixer = Mamba2Mixer(config, layer_idx=layer_idx)
+        self.norm = ObservableMambaRMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.mixer = ObservableMambaMixer(config, layer_idx=layer_idx)
 
     def forward(
         self,
         hidden_states,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[ObservableMambaCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ):
@@ -415,17 +323,17 @@ class Mamba2Block(GradientCheckpointingLayer):
 
 
 @auto_docstring
-class Mamba2PreTrainedModel(PreTrainedModel):
-    config: Mamba2Config
+class ObservableMambaPreTrainedModel(PreTrainedModel):
+    config: ObservableMambaConfig
     base_model_prefix = "backbone"
-    _no_split_modules = ["Mamba2Block"]
+    _no_split_modules = ["ObservableMambaBlock"]
     supports_gradient_checkpointing = True
     _is_stateful = True
 
     def _init_weights(self, module):
         """Initialize the weights."""
         std = self.config.initializer_range
-        if isinstance(module, Mamba2Mixer):
+        if isinstance(module, ObservableMambaMixer):
             # S4D real initialization. These are not discretized!
             # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
             A = torch.arange(1, self.config.num_heads + 1)
@@ -471,7 +379,7 @@ class Mamba2PreTrainedModel(PreTrainedModel):
             if module.bias is not None:
                 if not getattr(module.bias, "_no_reinit", False):
                     nn.init.zeros_(module.bias)
-        elif isinstance(module, (Mamba2RMSNorm, MambaRMSNormGated)):
+        elif isinstance(module, (ObservableMambaRMSNorm, MambaRMSNormGated)):
             module.weight.data.fill_(1.0)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=std)
@@ -483,10 +391,10 @@ class Mamba2PreTrainedModel(PreTrainedModel):
     Class for the MAMBA2 model outputs.
     """
 )
-# Copied from transformers.models.mamba.modeling_mamba.MambaOutput with MAMBA->MAMBA2,Mamba->Mamba2
-class Mamba2Output(ModelOutput):
+# Copied from transformers.models.mamba.modeling_mamba.MambaOutput with MAMBA->MAMBA2,Mamba->ObservableMamba
+class ObservableMambaOutput(ModelOutput):
     r"""
-    cache_params (`Mamba2Cache`):
+    cache_params (`ObservableMambaCache`):
         The state of the model at the last time step. Can be used in a forward method with the next `input_ids` to
         avoid providing the old `input_ids`.
 
@@ -494,7 +402,7 @@ class Mamba2Output(ModelOutput):
     """
 
     last_hidden_state: Optional[torch.FloatTensor] = None
-    cache_params: Optional[Mamba2Cache] = None
+    cache_params: Optional[ObservableMambaCache] = None
     hidden_states: Optional[tuple[torch.FloatTensor]] = None
 
 
@@ -504,14 +412,14 @@ class Mamba2Output(ModelOutput):
     Base class for causal language model (or autoregressive) outputs.
     """
 )
-# Copied from transformers.models.mamba.modeling_mamba.MambaCausalLMOutput with Mamba->Mamba2
-class Mamba2CausalLMOutput(ModelOutput):
+# Copied from transformers.models.mamba.modeling_mamba.MambaCausalLMOutput with Mamba->ObservableMamba
+class ObservableMambaCausalLMOutput(ModelOutput):
     r"""
     loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
         Language modeling loss (for next-token prediction).
     logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
         Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-    cache_params (`Mamba2Cache`):
+    cache_params (`ObservableMambaCache`):
         The state of the model at the last time step. Can be used in a forward method with the next `input_ids` to
         avoid providing the old `input_ids`.
 
@@ -520,20 +428,20 @@ class Mamba2CausalLMOutput(ModelOutput):
 
     loss: Optional[torch.FloatTensor] = None
     logits: Optional[torch.FloatTensor] = None
-    cache_params: Optional[Mamba2Cache] = None
+    cache_params: Optional[ObservableMambaCache] = None
     hidden_states: Optional[tuple[torch.FloatTensor]] = None
 
 
 @auto_docstring
-class Mamba2Model(Mamba2PreTrainedModel):
+class ObservableMambaModel(ObservableMambaPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([Mamba2Block(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([ObservableMambaBlock(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
 
         self.gradient_checkpointing = False
-        self.norm_f = Mamba2RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.norm_f = ObservableMambaRMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
         # Initialize weights and apply final processing
         self._register_load_state_dict_pre_hook(self.load_hook)
         self.post_init()
@@ -555,16 +463,16 @@ class Mamba2Model(Mamba2PreTrainedModel):
         self,
         input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.LongTensor] = None,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[ObservableMambaCache] = None,
         use_cache: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
-    ) -> Union[tuple, Mamba2Output]:
+    ) -> Union[tuple, ObservableMambaOutput]:
         r"""
-        cache_params (`Mamba2Cache`, *optional*):
+        cache_params (`ObservableMambaCache`, *optional*):
             If passed along, the model uses the previous state in all the blocks (which will give the output for the
             `input_ids` provided as if the model add `state_input_ids + input_ids` as context).
         use_cache (`bool`, *optional*):
@@ -590,7 +498,7 @@ class Mamba2Model(Mamba2PreTrainedModel):
 
         if use_cache:
             if cache_params is None:
-                cache_params = Mamba2Cache(
+                cache_params = ObservableMambaCache(
                     self.config, inputs_embeds.size(0), device=inputs_embeds.device, dtype=inputs_embeds.dtype
                 )
                 cache_position = torch.arange(0, self.config.conv_kernel, device=inputs_embeds.device)
@@ -627,7 +535,7 @@ class Mamba2Model(Mamba2PreTrainedModel):
         if not return_dict:
             return tuple(v for v in [hidden_states, cache_params, all_hidden_states] if v is not None)
 
-        return Mamba2Output(
+        return ObservableMambaOutput(
             last_hidden_state=hidden_states,
             cache_params=cache_params if use_cache else None,
             hidden_states=all_hidden_states,
@@ -640,12 +548,12 @@ class Mamba2Model(Mamba2PreTrainedModel):
     embeddings).
     """
 )
-class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
+class ObservableMambaForCausalLM(ObservableMambaPreTrainedModel, GenerationMixin):
     _tied_weights_keys = []
 
     def __init__(self, config):
         super().__init__(config)
-        self.backbone = Mamba2Model(config)
+        self.backbone = ObservableMambaModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         # Initialize weights and apply final processing
         self.post_init()
@@ -661,7 +569,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
         input_ids,
         inputs_embeds=None,
         use_cache=None,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[ObservableMambaCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
@@ -679,7 +587,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
                 max_batch_size = inputs_embeds.size(0)
             else:
                 max_batch_size = input_ids.size(0)
-            cache_params = Mamba2Cache(self.backbone.config, max_batch_size, device=self.device, dtype=self.dtype)
+            cache_params = ObservableMambaCache(self.backbone.config, max_batch_size, device=self.device, dtype=self.dtype)
 
         if use_cache and cache_position[0] > 0:
             model_inputs["input_ids"] = input_ids[:, -1].unsqueeze(-1).contiguous()
@@ -703,7 +611,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
         self,
         input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[ObservableMambaCache] = None,
         labels: Optional[torch.LongTensor] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -711,9 +619,9 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,  # for now we need this for generation and loss_function
-    ) -> Union[tuple, Mamba2CausalLMOutput]:
+    ) -> Union[tuple, ObservableMambaCausalLMOutput]:
         r"""
-        cache_params (`Mamba2Cache`, *optional*):
+        cache_params (`ObservableMambaCache`, *optional*):
             If passed along, the model uses the previous state in all the blocks (which will give the output for the
             `input_ids` provided as if the model add `state_input_ids + input_ids` as context).
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -750,7 +658,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
             output = (logits,) + mamba2_outputs[1:]
             return ((loss,) + output) if loss is not None else output
 
-        return Mamba2CausalLMOutput(
+        return ObservableMambaCausalLMOutput(
             loss=loss,
             logits=logits,
             cache_params=mamba2_outputs.cache_params,
@@ -758,4 +666,4 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
         )
 
 
-__all__ = ["Mamba2ForCausalLM", "Mamba2Model", "Mamba2PreTrainedModel"]
+__all__ = ["ObservableMambaForCausalLM", "ObservableMambaModel", "ObservableMambaPreTrainedModel"]

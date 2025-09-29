@@ -1,3 +1,11 @@
-from .configuration_mamba import Mamba2Config
-from .modeling_mamba import Mamba2Model
+from .mamba_icpredictor import (
+    ObservableMamba2InContextPredictor,
+)
+from .modeling_mamba import (
+    ObservableMambaConfig,
+    ObservableMambaModel,
+)
+
+
+
 

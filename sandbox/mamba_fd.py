@@ -37,6 +37,9 @@ from model.transformer import (
     GPT2InContextPredictor,
     MambaInContextPredictor,
     Mamba2InContextPredictor,
+
+    ObservableMambaConfig,
+    ObservableMamba2InContextPredictor,
 )
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import (
@@ -48,7 +51,7 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "mamba_finite_difference_divergent"
+    output_dir = "mamba_fd_model_comparison_test"
     output_fname = "result"
     # output_fname = "result_batch_sweep_exponential_lr"
 
@@ -113,6 +116,17 @@ if __name__ == "__main__":
         head_dim=int(expand * hidden_size / num_heads),
         expand=expand,
     )
+    ARGS_TRANSFORMER.model.model = ObservableMamba2InContextPredictor
+    ARGS_TRANSFORMER.model.mamba = ObservableMambaConfig(
+        state_size=state_size,
+        hidden_size=hidden_size,
+        num_hidden_layers=max_num_hidden_layers,
+        num_heads=num_heads,
+        head_dim=int(expand * hidden_size / num_heads),
+        expand=expand,
+        use_fast_conv_scan=True,
+        chunk_size=256,
+    )
 
     # SECTION: Dataset hyperparameters
     ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
@@ -140,7 +154,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.training.scheduler = Namespace(
         type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
         # type="exponential", lr_decay=0.982, warmup_duration=0,
-        epochs=200,
+        epochs=1, # 200,
     )
 
     ARGS_TRANSFORMER.experiment.n_experiments = 1
@@ -160,9 +174,9 @@ if __name__ == "__main__":
 
     # configurations_transformer = []
     configurations_transformer = [
-        ("ignore_initial", {
-            "training.ignore_initial": [False, True],
-        }),
+        # ("ignore_initial", {
+        #     "training.ignore_initial": [False, True],
+        # }),
         # ("batch_size", {
         #     # "training.sampling.batch_size": [16, 32, 64, 128,],
         #     # "training.sampling.batch_size": [64, 128,],
@@ -176,6 +190,9 @@ if __name__ == "__main__":
         # ("num_hidden_layers", {
         #     "model.mamba2.num_hidden_layers": n_layers,
         # }),
+        ("model", {
+            "model.model": [Mamba2InContextPredictor, ObservableMamba2InContextPredictor,],
+        })
     ]
     result_transformer, info_dict = run_experiments(
         ARGS_TRANSFORMER, configurations_transformer, {

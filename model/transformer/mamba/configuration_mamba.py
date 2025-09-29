@@ -23,7 +23,7 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
-class Mamba2Config(PretrainedConfig):
+class ObservableMambaConfig(PretrainedConfig):
     """
     This is the configuration class to store the configuration of a [`Mamba2Model`]. It is used to instantiate a MAMBA2
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
@@ -136,6 +136,7 @@ class Mamba2Config(PretrainedConfig):
         rescale_prenorm_residual: bool = False,
         use_cache: bool = True,
         rms_norm: bool = True,
+        use_fast_conv_scan: bool = True,
         chunk_size: int = 256,
         tie_word_embeddings: bool = False,
         **kwargs,
@@ -174,6 +175,7 @@ class Mamba2Config(PretrainedConfig):
         self.head_dim = head_dim
         self.rms_norm = rms_norm
         self.state_size = state_size
+        self.use_fast_conv_scan = use_fast_conv_scan
         self.chunk_size = chunk_size
         self.time_step_limit = time_step_limit
         self.tie_word_embeddings = tie_word_embeddings
@@ -187,4 +189,4 @@ class Mamba2Config(PretrainedConfig):
         )
 
 
-__all__ = ["Mamba2Config"]
+__all__ = ["ObservableMambaConfig"]
