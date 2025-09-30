@@ -249,15 +249,21 @@ class ObservableMambaMixer(nn.Module):
         B = einops.repeat(B, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
         C = einops.repeat(C, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
 
-        dt = Fn.softplus(dt + self.dt_bias)                 # float: [B x L x H]
-        A = -torch.exp(self.A_log.float())                  # float: [H] or [H x N]
+        dt = Fn.softplus(dt + self.dt_bias)                             # float: [B x L x H]
+        A = -torch.exp(self.A_log.float())                              # float: [H] or [H x N]
         if A.ndim == 1:
             A = A[:, None]
-        dA = dt[..., None] * A                              # float: [B x L x H x N]
-        dB = self.B_proj(dt[..., None] * hidden_states) * B
+        dA = dt[..., None] * A                                          # float: [B x L x H x N]
+        dB = self.B_proj(dt[..., None] * hidden_states) * B             # float: [B x L x H x N]
 
         if self.use_fast_conv_scan:
-            ssm_states = conv_scan(ssm_state, dA, dB, self.chunk_size)
+            dB = torch.cat((ssm_state[..., None, :, :], dB,), dim=-3)   # float: [B x (L + 1) x H x N]
+            ssm_states = einops.rearrange(conv_scan(
+                einops.rearrange(dA, "... l h d -> ... h d l"),
+                einops.rearrange(dB, "... l h d -> ... h d l"),
+                self.chunk_size,
+            ), "... h d l -> ... l h d")
+            ssm_states = ssm_states[..., 1:, :, :]
         else:
             ssm_states = torch.zeros((batch_size, seq_len, self.num_heads, self.ssm_state_size,))
             for i in range(seq_len):
