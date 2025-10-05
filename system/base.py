@@ -97,7 +97,7 @@ class SystemDistribution(object):
         SHP: Namespace,
         shape: Tuple[int, ...],
     ) -> SystemGroup:
-        return self.system_type(SHP.problem_shape, SHP.auxiliary, self.sample_parameters(SHP, shape))
+        return self.system_type(SHP, self.sample_parameters(SHP, shape))
 
 
 

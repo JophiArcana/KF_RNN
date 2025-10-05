@@ -205,7 +205,10 @@ class ObservableMambaMixer(nn.Module):
         # S4D real initialization. These are not discretized!
         # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
         A = torch.arange(1, self.num_heads + 1)
-        self.A_log = nn.Parameter(torch.log(A))
+        if config.use_scalar_A:
+            self.A_log = nn.Parameter(torch.log(A))
+        else:
+            self.A_log = nn.Parameter(torch.log(A)[:, None].expand((self.num_heads, self.ssm_state_size,)).clone())
         self.A_log._no_weight_decay = True
         self.norm = MambaRMSNormGated(self.intermediate_size, eps=self.layer_norm_epsilon)
         self.D = nn.Parameter(torch.ones((self.num_heads,)))
@@ -240,8 +243,9 @@ class ObservableMambaMixer(nn.Module):
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel_size:], cache_init=True)
             ssm_state = torch.zeros((batch_size, self.num_heads, self.ssm_state_size,))
 
+        hidden_states_B_C = self.act(self.conv1d(padded_conv_states).transpose(1, 2))
         hidden_states, B, C = torch.split(
-            self.act(self.conv1d(padded_conv_states).transpose(1, 2)),
+            apply_mask_to_padding_states(hidden_states_B_C, attention_mask),
             [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
         )
         hidden_states = einops.rearrange(hidden_states, "... (h d) -> ... h d", h=self.num_heads)
@@ -343,7 +347,10 @@ class ObservableMambaPreTrainedModel(PreTrainedModel):
             # S4D real initialization. These are not discretized!
             # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
             A = torch.arange(1, self.config.num_heads + 1)
-            module.A_log.copy_(torch.log(A))
+            if module.A_log.ndim == 1:
+                module.A_log.copy_(torch.log(A))
+            else:
+                module.A_log.copy_(torch.log(A)[:, None].expand_as(module.A_log))
             module.A_log._no_weight_decay = True
             module.D._no_weight_decay = True
             module.D.data.fill_(1.0)

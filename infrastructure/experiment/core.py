@@ -345,16 +345,14 @@ def run_testing_experiments(
             for m in metrics:
                 try:
                     r = METRIC_DICT[m].evaluate(
-                        (exclusive, ensembled_learned_kfs),
+                        (exclusive, (reference_module, ensembled_learned_kfs,),),
                         metric_cache, sweep_position="outside", with_batch_dim=True,
                     ).detach()
                     metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
                 except Exception:
                     pass
-            try:
-                metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
-            except KeyError:
-                pass
+            metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
+
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
             experiment_record.metrics = PTR(metric_result)
 

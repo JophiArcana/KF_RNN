@@ -6,7 +6,7 @@ from model.transformer.base import TransformerPredictor
 from .modeling_mamba import ObservableMambaConfig, ObservableMambaModel
 
 
-class ObservableMamba2InContextPredictor(TransformerPredictor):
+class ObservableMambaInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
         self.config: ObservableMambaConfig = modelArgs.mamba
         TransformerPredictor.__init__(self, modelArgs, ObservableMambaModel(self.config), self.config.hidden_size)

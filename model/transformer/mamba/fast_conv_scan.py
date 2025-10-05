@@ -16,29 +16,6 @@ class Timer:
         return out
 
 
-def segment_sum(x):
-    """
-    More stable segment sum calculation. Uses cumulative sums and masking instead of direct subtractions.
-    """
-    *bsz, seqlen = x.shape
-    # 1. expand input tensor to have an additional dimension and repeat along that dimension
-    # [..., seqlen] -> [..., seqlen, seqlen]
-    # x = x[..., None].expand(bsz + [seqlen, seqlen,])
-    padded_x = torch.zeros(bsz + [seqlen + 1, seqlen + 1,])
-    padded_x[..., 1:, :-1] = x[..., None]
-
-    # 2. create a lower triangular mask with the diagonal set to 0 to 0 out elements above diag
-    padded_x.tril_(diagonal=-1)
-
-    # 3. compute actual cumsum
-    segsum = torch.cumsum(padded_x, dim=-2)
-
-    # 4. apply mask to keep only the lower triangular part of the cumulative sum result (incl diagonal this time)
-    mask = torch.triu(torch.full((seqlen + 1, seqlen + 1,), True), diagonal=1)
-    segsum.masked_fill_(mask, -torch.inf)
-    return segsum
-
-
 def exp_segment_sum(x):
     """
     More stable segment sum calculation. Uses cumulative sums and masking instead of direct subtractions.
@@ -62,8 +39,6 @@ def exp_segment_sum(x):
     return segsum
 
 
-
-
 class ConvScanFn(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -73,8 +48,8 @@ class ConvScanFn(torch.autograd.Function):
             chunk_size: int,        # int: C
     ) -> torch.Tensor:              # float: [... x (L + 1)]
         with torch.no_grad():
-            out, cache = _conv_scan_fwd(A, B, chunk_size)
-        ctx.cache = cache
+            out = _conv_scan_fwd(A, B, chunk_size=chunk_size)
+        ctx.save_for_backward(A, out)
         ctx.chunk_size = chunk_size
         return out
 
@@ -83,8 +58,10 @@ class ConvScanFn(torch.autograd.Function):
             ctx,
             dout: torch.Tensor,     # float: [... x (L + 1)]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        torch.set_default_device(dout.device)
+        A, out = ctx.saved_tensors
         with torch.no_grad():
-            dA, dB = _conv_scan_bwd(dout, ctx.cache, ctx.chunk_size)
+            dA, dB = _conv_scan_bwd(dout, {"A": A, "out": out,}, ctx.chunk_size)
         return dA, dB, None
 
 
@@ -92,10 +69,9 @@ def _conv_scan_fwd(
         A: torch.Tensor,    # float: [... x L]
         B: torch.Tensor,    # float: [... x (L + 1)]
         chunk_size: int,    # int: C
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:      # float: [... x (L + 1)]
+) -> torch.Tensor:          # float: [... x (L + 1)]
     L, C = A.shape[-1], chunk_size
 
-    cache = {}
     if L < C:
         exp_A_ss = exp_segment_sum(A)                                                       # float: [... x (L + 1) x (L + 1)]
         out = einops.einsum(exp_A_ss, B, "... l1 l2, ... l2 -> ... l1")                     # float: [... x (L + 1)]
@@ -115,14 +91,8 @@ def _conv_scan_fwd(
         out_diag[..., 1:, :] += out_lr
 
         out = out_diag.flatten(-2, -1)[..., :L + 1]                                         # float: [... x (L + 1)]
-        cache.update({"padded_A": padded_A,})
 
-    cache.update({
-        "exp_A_ss": exp_A_ss,
-        "A": A,
-        "out": out,
-    })
-    return out, cache
+    return out
 
 
 def _conv_scan_bwd(
@@ -132,27 +102,33 @@ def _conv_scan_bwd(
 ) -> tuple[torch.Tensor, torch.Tensor]:     # float: [... x L], [... x (L + 1)]
     L, C = dout.shape[-1] - 1, chunk_size
 
-    exp_A_ss = cache["exp_A_ss"]            # float: [... x (L + 1) x (L + 1)] or [... x (~L // C) x C x C]
+    A = cache["A"]                                                                                  # float: [... x L]
+    dB = _conv_scan_fwd(A.flip(dims=(-1,)), dout, chunk_size=chunk_size).flip(dims=(-1,))           # float: [... x (L + 1)]
+    # print(dB.squeeze())
+    #
+    # exp_A_ss = cache["exp_A_ss"]            # float: [... x (L + 1) x (L + 1)] or [... x (~L // C) x C x C]
     out = cache["out"]                      # float: [... x (L + 1)]
-    if L < C:
-        dB = einops.einsum(exp_A_ss, dout, "... l1 l2, ... l1 -> ... l2")                           # float: [... x (L + 1)]
-    else:
-        p = (L + C) // C * C
-        padded_A = cache["padded_A"]                                                                # float: [... x ~L]
+    # if L < C:
+    #     dB = einops.einsum(exp_A_ss, dout, "... l1 l2, ... l1 -> ... l2")                           # float: [... x (L + 1)]
+    # else:
+    #     p = (L + C) // C * C
+    #     padded_A = cache["padded_A"]                                                                # float: [... x ~L]
+    #
+    #     dout = Fn.pad(dout, (0, p - L - 1,), mode="constant", value=0.0).unflatten(-1, (-1, C,))    # float: [... x (~L // C) x C]
+    #     dB_diag = einops.einsum(exp_A_ss, dout, "... c1 c2, ... c1 -> ... c2")                      # float: [... x (~L // C) x C]
+    #
+    #     l_ss = padded_A[..., :-C].unflatten(-1, (-1, C,)).flip(dims=(-1,)).cumsum(dim=-1).flip(dims=(-1,))  # float: [... x (L // C) x C]
+    #     c_ss = exp_segment_sum(l_ss[..., 1:, 0])                                                    # float: [... x (L // C) x (L // C)]
+    #     r_ss = dB_diag[..., -(L // C):, 0]                                                          # float: [... x (L // C)]
+    #
+    #     dB_lr = einops.einsum(torch.exp(l_ss), c_ss, r_ss, "... l1 c, ... l2 l1, ... l2 -> ... l1 c")  # float: [... x (~L // C - 1) x C]
+    #     dB_diag[..., :-1, :] += dB_lr
+    #
+    #     dB = dB_diag.flatten(-2, -1)[..., :L + 1]                                                   # float: [... x (L + 1)]
+    #     print(dB.squeeze())
+    #     raise Exception()
 
-        dout = Fn.pad(dout, (0, p - L - 1,), mode="constant", value=0.0).unflatten(-1, (-1, C,))    # float: [... x (~L // C) x C]
-        dB_diag = einops.einsum(exp_A_ss, dout, "... c1 c2, ... c1 -> ... c2")                      # float: [... x (~L // C) x C]
-
-        l_ss = padded_A[..., :-C].unflatten(-1, (-1, C,)).flip(dims=(-1,)).cumsum(dim=-1).flip(dims=(-1,))  # float: [... x (L // C) x C]
-        c_ss = exp_segment_sum(l_ss[..., 1:, 0])                                                    # float: [... x (L // C) x (L // C)]
-        r_ss = dB_diag[..., -(L // C):, 0]                                                          # float: [... x (L // C)]
-
-        dB_lr = einops.einsum(torch.exp(l_ss), c_ss, r_ss, "... l1 c, ... l2 l1, ... l2 -> ... l1 c")  # float: [... x (~L // C - 1) x C]
-        dB_diag[..., :-1, :] += dB_lr
-
-        dB = dB_diag.flatten(-2, -1)[..., :L + 1]                                                   # float: [... x (L + 1)]
-
-    exp_A = torch.exp(cache["A"])                                                                   # float: [... x L]
+    exp_A = torch.exp(A)                                                                            # float: [... x L]
     dA = einops.einsum(dB[..., 1:], out[..., :-1], exp_A, "..., ..., ... -> ...")                   # float: [... x L]
     return dA, dB
 
@@ -175,11 +151,11 @@ if __name__ == "__main__":
     torch.manual_seed(1212)
     torch.set_printoptions(linewidth=500, sci_mode=False, precision=6)
     torch.set_default_dtype(torch.float64)
-    # torch.set_default_device("cuda")
+    torch.set_default_device("cuda")
 
     # bsz, l, h, d, c = 3, 1000, 8, 32, 256
-    bsz, l, c = (12,), 124, 17
-    # bsz, l, h, d, c = 1, 6, 1, 1, 17
+    bsz, l, c = (400,), 1000, 16
+    # bsz, l, c = (), 11, 5
     logA = nn.Parameter(0.01 * torch.randn(bsz + (l,)))
     B = nn.Parameter(torch.randn(bsz + (l + 1,)))
 

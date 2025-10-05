@@ -19,16 +19,19 @@ from model.transformer.multi_mamba.modeling_multimamba2 import MultiMamba2Mixer,
 if __name__ == "__main__":
     SEED = 1212 # torch.randint(0, 1000000, ()).item()
     torch.manual_seed(SEED)
-    x = torch.randn((1, 1000, 256), device="cuda:0")
-    kwargs = dict(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1, conv_kernel=4)
+    x = torch.randn((1, 10, 256), device="cuda:0")
+    kwargs = dict(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1, conv_kernel=4, use_fast_conv_scan=True)
 
     torch.manual_seed(SEED)
     c = Mamba2Config(**kwargs)
     m = Mamba2Model(config=c).to("cuda:0").eval()
     # m = Mamba2Mixer(c, 0).to("cuda:0").eval()
 
+    start_t = time.perf_counter()
     out = m.forward(inputs_embeds=x[..., :-1, :], use_cache=True)
     _out = m.forward(inputs_embeds=x[..., -1:, :], cache_params=out.cache_params, use_cache=True, cache_position=torch.LongTensor([4]))
+    end_t = time.perf_counter()
+    print(end_t - start_t)
     # out = m.forward(inputs_embeds=x[:, :-1, :], use_cache=True)
     # _out = m.forward(inputs_embeds=x[:, -1:, :], use_cache=True, cache_params=out.cache_params, cache_position=torch.randn((4,)))
     grad = torch.autograd.grad(out.last_hidden_state.norm() ** 2, m.parameters(), allow_unused=True)

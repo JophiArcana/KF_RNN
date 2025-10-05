@@ -1,5 +1,5 @@
 from .mamba_icpredictor import (
-    ObservableMamba2InContextPredictor,
+    ObservableMambaInContextPredictor,
 )
 from .modeling_mamba import (
     ObservableMambaConfig,

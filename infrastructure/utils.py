@@ -499,12 +499,11 @@ def empty_cache():
     torch.cuda.empty_cache()
 
 def print_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)):
-    for obj in gc.get_objects():
-        try:
-            if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None))):
-                print(type(obj), obj.size())
-        except:
-            pass
+    tensors = [obj for obj in gc.get_objects() if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None)))]
+    indices = np.argsort([t.numel() for t in tensors])[::-1]
+    for idx in indices:
+        t = tensors[idx]
+        print(type(t), t.size(), t.numel())
 
 def get_all_hooks(module: nn.Module) -> Dict[str, Dict[int, Callable]]:
     """
