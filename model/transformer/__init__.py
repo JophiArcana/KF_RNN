@@ -10,6 +10,15 @@ from .transformerxl_icpredictor import (
 from .xlnet_icpredictor import XLNetInContextPredictor
 from .llama_icpredictor import LlamaInContextPredictor
 
+from .dinov2_icpredictor import (
+    Dinov2InContextPredictor,
+    Dinov2AssociativeInContextPredictor,
+)
+
+from .adasync import (
+    AdaSyncSSMConfig,
+    AdaSyncSSMModel,
+)
 from .mamba import (
     ObservableMambaInContextPredictor,
 
@@ -19,14 +28,9 @@ from .mamba import (
 from .multi_mamba import (
     MambaInContextPredictor,
     Mamba2InContextPredictor,
-    
+
     MultiMamba2Config,
     MultiMamba2Model,
-)
-
-from .dinov2_icpredictor import (
-    Dinov2InContextPredictor,
-    Dinov2AssociativeInContextPredictor,
 )
 
 

@@ -48,13 +48,13 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "mamba_periodic_interpolation"
+    output_dir = "mamba_v_mamba2_periodic"
     output_fname = "result"
     # output_fname = "result_batch_sweep_exponential_lr"
 
     # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    periods = [*range(2, 18, 2)]
-    test_periods = [*range(2, 25)]
+    periods = [*range(3, 19, 2)]
+    test_periods = [*range(1, 25)]
     # test_periods = [*range(11, 21)]
     dist = PeriodicDistribution(periods, deterministic=False)
     test_dist = PeriodicDistribution(test_periods, deterministic=True)
@@ -101,13 +101,13 @@ if __name__ == "__main__":
         n_layer=max_num_hidden_layers,
         n_head=8,
     )
-    # ARGS_TRANSFORMER.model.model = MambaInContextPredictor
-    # ARGS_TRANSFORMER.model.multi_mamba = MambaConfig(
-    #     state_size=256,
-    #     hidden_size=hidden_size,
-    #     num_hidden_layers=num_hidden_layers,
-    #     # expand=expand,
-    # )
+    ARGS_TRANSFORMER.model.model = MambaInContextPredictor
+    ARGS_TRANSFORMER.model.mamba = MambaConfig(
+        state_size=state_size,
+        hidden_size=hidden_size,
+        num_hidden_layers=max_num_hidden_layers,
+        # expand=expand,
+    )
     ARGS_TRANSFORMER.model.model = Mamba2InContextPredictor
     ARGS_TRANSFORMER.model.mamba2 = Mamba2Config(
         state_size=state_size,
@@ -132,7 +132,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.training.sampling = Namespace(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
-        batch_size=128,
+        batch_size=256,
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
         type="AdamW",
@@ -160,7 +160,8 @@ if __name__ == "__main__":
     # configurations_transformer = []
     configurations_transformer = [
         ("model", {
-            "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
+            "model.model": [MambaInContextPredictor, Mamba2InContextPredictor,],
+            # "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
         })
     ]
     result_transformer, info_dict = run_experiments(
@@ -321,34 +322,34 @@ if __name__ == "__main__":
 
     clist = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     nrows = len(hparam_values)
-    # plt.rcParams["figure.figsize"] = (10.0, 5.0 * nrows,)
-    # fig, axs = plt.subplots(nrows=nrows,)
-    #
-    # for i, (hparam_value, log_td) in enumerate(zip(hparam_values, training_log)):
-    #     ax: Axes = axs[i]
-    #     ax_lr = ax.twinx()
-    #
-    #     for j, (k, v) in enumerate([
-    #         ("noiseless_overfit", "train",),
-    #         ("noiseless_validation", "valid",)
-    #     ]):
-    #         il = 0.0 # torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
-    #         l = torch.mean(log_td[k], dim=-1)
-    #         ax.plot((l - il).numpy(force=True), label=f"{hparam_name}{hparam_value}-{k}",)
-    #         print((l - il).min())
-    #     # ax_lr.plot(lr.numpy(force=True), color="green", linestyle="--", label="lr",)
-    #
-    #     ax.set_xlabel("epochs", fontsize=10)
-    #     ax.set_ylabel("loss", fontsize=10)
-    #     ax.set_yscale("log")
-    #     ax.legend(fontsize=10)
-    #
-    #     ax_lr.set_ylabel("learning_rate")
-    #     ax_lr.set_yscale("log")
-    #     ax_lr.legend(fontsize=10)
-    #
-    # plt.show()
-    # plt.rcdefaults()
+    plt.rcParams["figure.figsize"] = (10.0, 5.0 * nrows,)
+    fig, axs = plt.subplots(nrows=nrows,)
+
+    for i, (hparam_value, log_td) in enumerate(zip(hparam_values, training_log)):
+        ax: Axes = axs[i]
+        ax_lr = ax.twinx()
+
+        for j, (k, v) in enumerate([
+            ("noiseless_overfit", "train",),
+            ("noiseless_validation", "valid",)
+        ]):
+            il = 0.0 # torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
+            l = torch.mean(log_td[k], dim=-1)
+            ax.plot((l - il).numpy(force=True), label=f"{hparam_name}{hparam_value}-{k}",)
+            print((l - il).min())
+        # ax_lr.plot(lr.numpy(force=True), color="green", linestyle="--", label="lr",)
+
+        ax.set_xlabel("epochs", fontsize=10)
+        ax.set_ylabel("loss", fontsize=10)
+        ax.set_yscale("log")
+        ax.legend(fontsize=10)
+
+        ax_lr.set_ylabel("learning_rate")
+        ax_lr.set_yscale("log")
+        ax_lr.legend(fontsize=10)
+
+    plt.show()
+    plt.rcdefaults()
 
     metrics = utils.stack_tensor_arr(utils.multi_map(
         lambda p: p.obj, get_result_attr(result_transformer, "metrics"),
@@ -404,7 +405,7 @@ if __name__ == "__main__":
             ax.set_ylabel("loss", fontsize=10)
             ax.set_yscale("log")
             ax.legend(fontsize=10)
-            ax.set_title(f"{hparam_name}{hparam_value}_period{period}", fontsize=14)
+            ax.set_title(f"period{period}", fontsize=14)
 
     plt.show()
     plt.rcdefaults()
