@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
 
+from infrastructure import utils
+
 
 import time
 class Timer:
@@ -16,7 +18,7 @@ class Timer:
         return out
 
 
-def exp_segment_sum(x):
+def exp_segment_sum(x: torch.Tensor):
     """
     More stable segment sum calculation. Uses cumulative sums and masking instead of direct subtractions.
     """
@@ -24,7 +26,7 @@ def exp_segment_sum(x):
     # 1. expand input tensor to have an additional dimension and repeat along that dimension
     # [..., seqlen] -> [..., seqlen, seqlen]
     # x = x[..., None].expand(bsz + [seqlen, seqlen,])
-    padded_x = torch.zeros(bsz + [seqlen + 1, seqlen + 1,])
+    padded_x = torch.zeros(bsz + [seqlen + 1, seqlen + 1,], dtype=x.dtype)
     padded_x[..., 1:, :-1] = x[..., None]
 
     # 2. create a lower triangular mask with the diagonal set to 0 to 0 out elements above diag
@@ -76,6 +78,8 @@ def _conv_scan_fwd(
         exp_A_ss = exp_segment_sum(A)                                                       # float: [... x (L + 1) x (L + 1)]
         out = einops.einsum(exp_A_ss, B, "... l1 l2, ... l2 -> ... l1")                     # float: [... x (L + 1)]
     else:
+        t_dict_start = utils.get_tensors_in_memory()
+
         p = (L + C) // C * C
         padded_A = Fn.pad(A, (0, p - L,), mode="constant", value=0.0)                       # float: [... x ~L]
         exp_A_ss = exp_segment_sum(padded_A.unflatten(-1, (-1, C,))[..., :-1])              # float: [... x (~L // C) x C x C]
@@ -83,14 +87,24 @@ def _conv_scan_fwd(
         B = Fn.pad(B, (0, p - L - 1,), mode="constant", value=0.0).unflatten(-1, (-1, C,))  # float: [... x (~L // C) x C]
         out_diag = einops.einsum(exp_A_ss, B, "... c1 c2, ... c2 -> ... c1")                # float: [... x (~L // C) x C]
 
-        l_ss = padded_A[..., C - 1:-1].unflatten(-1, (-1, C,)).cumsum(dim=-1)               # float: [... x (L // C) x C]
-        c_ss = exp_segment_sum(l_ss[..., :-1, -1])                                          # float: [... x (L // C) x (L // C)]
+        out_lr = padded_A[..., C - 1:-1].unflatten(-1, (-1, C,)).cumsum_(dim=-1)            # float: [... x (L // C) x C]
+        c_ss = exp_segment_sum(out_lr[..., :-1, -1])                                        # float: [... x (L // C) x (L // C)]
         r_ss = out_diag[..., :L // C, -1]                                                   # float: [... x (L // C)]
+        out_lr.exp_()
 
-        out_lr = einops.einsum(torch.exp(l_ss), c_ss, r_ss, "... l1 c, ... l1 l2, ... l2 -> ... l1 c")  # float: [... x (~L // C - 1) x C]
+        out_lr *= (c_ss @ r_ss[..., None])
         out_diag[..., 1:, :] += out_lr
 
         out = out_diag.flatten(-2, -1)[..., :L + 1]                                         # float: [... x (L + 1)]
+
+        t_dict_end = utils.get_tensors_in_memory()
+
+        diff = {k: v.shape for k, v in t_dict_end.items() if k not in t_dict_start}
+        local_names = {id(v): k for k, v in locals().items()}
+        print(diff.values())
+        print()
+
+
 
     return out
 

@@ -142,7 +142,9 @@ class AdaSyncSSMMixer(nn.Module):
         self.num_heads = config.num_heads
         self.hidden_size = config.hidden_size
         self.ssm_state_size = config.state_size
+        self.head_dim = config.head_dim
         self.conv_kernel_size = config.conv_kernel
+        self.timestep_scale = config.timestep_scale
 
         self.layer_idx = layer_idx
         self.use_conv_bias = config.use_conv_bias
@@ -152,8 +154,8 @@ class AdaSyncSSMMixer(nn.Module):
         self.layer_norm_epsilon = config.layer_norm_epsilon
         self.rms_norm = config.rms_norm
 
-        self.head_dim = config.head_dim
         self.use_fast_conv_scan = config.use_fast_conv_scan
+
         self.chunk_size = config.chunk_size
         self.cdtype = config.cdtype
 
@@ -166,9 +168,13 @@ class AdaSyncSSMMixer(nn.Module):
 
         self.gate_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.use_bias, dtype=config.cdtype,)
 
-        self.A_log_proj_weight = nn.Parameter(torch.randn((self.num_heads, self.ssm_state_size, self.ssm_state_size,), dtype=config.cdtype,))
-        self.A_log_proj_bias = nn.Parameter(torch.randn((self.num_heads, self.ssm_state_size,), dtype=config.cdtype,)) if config.use_bias else None
-        self.A_log_proj_weight._no_weight_decay = True
+        self.A_log_proj = nn.Linear(self.hidden_size, self.num_heads * self.ssm_state_size, bias=config.use_bias, dtype=config.cdtype)
+        self.A_log_proj.weight._no_weight_decay = True
+        # self.A_log_proj_weight = nn.Parameter(torch.randn((self.num_heads, self.ssm_state_size, self.ssm_state_size,), dtype=config.cdtype,))
+        # self.A_log_proj_bias = nn.Parameter(torch.randn((self.num_heads, self.ssm_state_size,), dtype=config.cdtype,)) if config.use_bias else None
+        # self.A_log_proj_weight._no_weight_decay = True
+        
+        
         self.B_conv = nn.Conv1d(
             self.hidden_size, self.num_heads * self.ssm_state_size,
             kernel_size=self.conv_kernel_size, groups=self.num_heads, bias=config.use_conv_bias, dtype=config.cdtype,
@@ -196,10 +202,16 @@ class AdaSyncSSMMixer(nn.Module):
 
         if dt is None:
             dt = torch.ones((batch_size, seq_len,))                                                         # float: [bsz x seq_len]
+        dt = dt * self.timestep_scale
 
         # getting projected states from cache if it exists
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)                         # complex: [bsz x seq_len x hidden_size]
         gate = self.gate_proj(hidden_states)                                                                # complex: [bsz x seq_len x hidden_size]
+
+        A_log = self.A_log_proj(hidden_states)                                                              # complex: [bsz x seq_len x (num_heads * ssm_state_size)]
+        dA_log = A_log * dt[:, :, None]                                                                     # complex: [bsz x seq_len x (num_heads * ssm_state_size)]
+        dA_log = einops.rearrange(dA_log, "... l (h d) -> ... h d l", h=self.num_heads,)                    # complex: [bsz x num_heads x ssm_state_size x seq_len]
+
 
 
         hidden_states = einops.rearrange(hidden_states, "... l d -> ... d l")                               # complex: [bsz x hidden_size x seq_len]
@@ -213,31 +225,40 @@ class AdaSyncSSMMixer(nn.Module):
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel_size:], cache_init=True)
             ssm_state = torch.zeros((batch_size, self.num_heads, self.ssm_state_size,), dtype=self.cdtype)  # complex: [bsz x num_heads x ssm_state_size]
 
-        B = self.B_conv(padded_conv_states)
-        B = einops.rearrange(B, "... (h d) l -> ... h l d", h=self.num_heads, d=self.ssm_state_size)        # complex: [bsz x num_heads x seq_len x ssm_state_size]
-        dB = B * dt[:, None, :, None]                                                                       # complex: [bsz x num_heads x seq_len x ssm_state_size]
+        B = self.B_conv(padded_conv_states)                                                                 # complex: [bsz x hidden_size x seq_len]
+        dB = B * dt[:, None, :]                                                                             # complex: [bsz x (num_heads * ssm_state_size) x seq_len]
+        dB = einops.rearrange(dB, "... (h d) l -> ... h d l", h=self.num_heads,)                            # complex: [bsz x num_heads x ssm_state_size x seq_len]
+        
+ 
 
 
-        ssm_states = torch.zeros((batch_size, self.num_heads, seq_len, self.ssm_state_size,), dtype=self.cdtype)    # complex: [bsz x num_heads x seq_len x ssm_state_size]
-        for i in range(seq_len):
-            A_log = (ssm_state[..., None, :] @ self.A_log_proj_weight.mT)[..., 0, :]
-            if self.use_bias:
-                A_log = A_log + self.A_log_proj_bias                                                        # complex: [bsz x num_heads x ssm_state_size]
-            dA_log = A_log * dt[:, i, None, None]                                                           # complex: [bsz x num_heads x ssm_state_size]
-            ssm_states[:, :, i, :] = ssm_state = torch.exp(dA_log) * ssm_state + dB[:, :, i, :]
+
+
+
+
+        if self.use_fast_conv_scan:
+            dB = torch.cat((ssm_state[..., None], dB,), dim=-1)
+            ssm_states = conv_scan(dA_log, dB, self.chunk_size)[..., 1:]
+            ssm_state = ssm_states[..., -1]
+            ssm_states = einops.rearrange(ssm_states, "... h d l -> ... l h d")
+        else:
+            ssm_states = torch.zeros((batch_size, seq_len, self.num_heads, self.ssm_state_size,))
+            for i in range(seq_len):
+                ssm_states[:, i] = ssm_state = torch.exp(dA_log[..., i]) * ssm_state + dB[..., i]
 
         if cache_params is not None:
             cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 
-        projected_states = ssm_states @ self.C_proj_weight.mT
+        projected_states = (ssm_states[..., None, :] @ self.C_proj_weight.mT)[..., 0, :]
         if self.use_bias:
-            projected_states = projected_states + self.C_proj_bias                                          # complex: [bsz x num_heads x seq_len x head_dim]
+            projected_states = projected_states + self.C_proj_bias                                          # complex: [bsz x seq_len x num_heads x head_dim]
 
-        hidden_states = einops.rearrange(hidden_states, "... (h d) l -> ... h l d", h=self.num_heads, d=self.head_dim)
-        hidden_states = projected_states + hidden_states * self.D[:, None, None]                            # complex: [bsz x num_heads x seq_len x head_dim]
+
+        hidden_states = einops.rearrange(hidden_states, "... (h d) l -> ... l h d", h=self.num_heads,)
+        hidden_states = projected_states + hidden_states * self.D[:, None]                                  # complex: [bsz x seq_len x num_heads x head_dim]
 
         # Multiply "gate" branch and apply extra normalization layer
-        hidden_states = einops.rearrange(hidden_states, "... h l d -> ... l (h d)")                         # complex: [bsz x seq_len x hidden_size]
+        hidden_states = hidden_states.view((batch_size, seq_len, -1,))                                      # complex: [bsz x seq_len x hidden_size]
         hidden_states = self.norm(hidden_states, gate)
         out = self.out_proj(hidden_states)
 
@@ -301,9 +322,9 @@ class AdaSyncSSMPreTrainedModel(PreTrainedModel):
             # S4D real initialization. These are not discretized!
             # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
             relu_a = 5 ** 0.5
-            nn.init.kaiming_normal_(module.A_log_proj_weight, a=relu_a)
-            if module.A_log_proj_bias is not None:
-                nn.init.zeros_(module.A_log_proj_bias)
+            nn.init.kaiming_normal_(module.A_log_proj.weight, a=relu_a)
+            if module.A_log_proj.bias is not None:
+                nn.init.zeros_(module.A_log_proj.bias)
 
             nn.init.kaiming_uniform_(module.B_conv.weight, a=relu_a)
             if module.B_conv.bias is not None:
@@ -430,6 +451,8 @@ class AdaSyncSSMModel(AdaSyncSSMPreTrainedModel):
         **kwargs,
     ) -> Union[tuple, AdaSyncSSMOutput]:
         r"""
+        dt (`torch.Tensor`, *optional*):
+            Time-step increment for discretization (`torch.FloatTensor` of shape `(batch_size, seq_len,)`)
         cache_params (`AdaSyncSSMCache`, *optional*):
             If passed along, the model uses the previous state in all the blocks (which will give the output for the
             `input_ids` provided as if the model add `state_input_ids + input_ids` as context).

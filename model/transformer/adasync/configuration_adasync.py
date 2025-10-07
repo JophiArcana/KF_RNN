@@ -91,29 +91,30 @@ class AdaSyncSSMConfig(PretrainedConfig):
 
     def __init__(
         self,
-            num_heads: int = 128,
-            head_dim: int = 64,
-            vocab_size: int = 32768,
-            hidden_size: int = 4096,
-            state_size: int = 128,
-            num_hidden_layers: int = 64,
-            layer_norm_epsilon: float = 1e-5,
-            pad_token_id: int = 1,
-            bos_token_id: int = 0,
-            eos_token_id: int = 2,
-            conv_kernel: int = 4,
-            use_scalar_A: bool = True,
-            use_bias: bool = False,
-            use_conv_bias: bool = True,
-            hidden_act="silu",
-            initializer_range: float = 0.1,
-            rescale_prenorm_residual: bool = False,
-            use_cache: bool = True,
-            rms_norm: bool = True,
-            use_fast_conv_scan: bool = True,
-            chunk_size: int = 256,
-            tie_word_embeddings: bool = False,
-            **kwargs,
+        num_heads: int = 8,
+        head_dim: int = 64,
+        vocab_size: int = 32768,
+        hidden_size: int = 512,
+        state_size: int = 128,
+        num_hidden_layers: int = 64,
+        layer_norm_epsilon: float = 1e-5,
+        pad_token_id: int = 1,
+        bos_token_id: int = 0,
+        eos_token_id: int = 2,
+        conv_kernel: int = 4,
+        timestep_scale: float = 0.001,
+        use_scalar_A: bool = True,
+        use_bias: bool = False,
+        use_conv_bias: bool = True,
+        hidden_act="silu",
+        initializer_range: float = 0.1,
+        rescale_prenorm_residual: bool = False,
+        use_cache: bool = True,
+        rms_norm: bool = True,
+        use_fast_conv_scan: bool = True,
+        chunk_size: int = 256,
+        tie_word_embeddings: bool = False,
+        **kwargs,
     ):
         if hidden_size != (num_heads * head_dim):
             raise ValueError(
@@ -129,6 +130,7 @@ class AdaSyncSSMConfig(PretrainedConfig):
         self.layer_norm_epsilon = layer_norm_epsilon
         self.conv_kernel = conv_kernel
         self.use_scalar_A = use_scalar_A
+        self.timestep_scale = timestep_scale
 
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id

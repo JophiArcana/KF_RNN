@@ -16,6 +16,8 @@ from .dinov2_icpredictor import (
 )
 
 from .adasync import (
+    AdaSyncSSMInContextPredictor,
+
     AdaSyncSSMConfig,
     AdaSyncSSMModel,
 )
