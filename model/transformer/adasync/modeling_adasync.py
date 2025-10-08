@@ -164,15 +164,11 @@ class AdaSyncSSMMixer(nn.Module):
 
 
 
+        self.in_proj = nn.Linear(self.hidden_size, self.hidden_size + (self.num_heads * self.ssm_state_size), bias=config.use_bias, dtype=config.cdtype)
 
-
-        self.gate_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.use_bias, dtype=config.cdtype,)
-
-        self.A_log_proj = nn.Linear(self.hidden_size, self.num_heads * self.ssm_state_size, bias=config.use_bias, dtype=config.cdtype)
-        self.A_log_proj.weight._no_weight_decay = True
-        # self.A_log_proj_weight = nn.Parameter(torch.randn((self.num_heads, self.ssm_state_size, self.ssm_state_size,), dtype=config.cdtype,))
-        # self.A_log_proj_bias = nn.Parameter(torch.randn((self.num_heads, self.ssm_state_size,), dtype=config.cdtype,)) if config.use_bias else None
-        # self.A_log_proj_weight._no_weight_decay = True
+        # self.gate_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.use_bias, dtype=config.cdtype,)
+        # self.A_log_proj = nn.Linear(self.hidden_size, self.num_heads * self.ssm_state_size, bias=config.use_bias, dtype=config.cdtype)
+        # self.A_log_proj.weight._no_weight_decay = True
         
         
         self.B_conv = nn.Conv1d(
@@ -206,13 +202,14 @@ class AdaSyncSSMMixer(nn.Module):
 
         # getting projected states from cache if it exists
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)                         # complex: [bsz x seq_len x hidden_size]
-        gate = self.gate_proj(hidden_states)                                                                # complex: [bsz x seq_len x hidden_size]
 
-        A_log = self.A_log_proj(hidden_states)                                                              # complex: [bsz x seq_len x (num_heads * ssm_state_size)]
+        gate, A_log = torch.split(self.in_proj(hidden_states), [
+            self.hidden_size,
+            self.num_heads * self.ssm_state_size,
+        ], dim=-1)                                                                                          # complex: [bsz x seq_len x hidden_size], [bsz x seq_len x (num_heads * ssm_state_size)]
+
         dA_log = A_log * dt[:, :, None]                                                                     # complex: [bsz x seq_len x (num_heads * ssm_state_size)]
         dA_log = einops.rearrange(dA_log, "... l (h d) -> ... h d l", h=self.num_heads,)                    # complex: [bsz x num_heads x ssm_state_size x seq_len]
-
-
 
         hidden_states = einops.rearrange(hidden_states, "... l d -> ... d l")                               # complex: [bsz x hidden_size x seq_len]
         if (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0):
@@ -226,6 +223,7 @@ class AdaSyncSSMMixer(nn.Module):
             ssm_state = torch.zeros((batch_size, self.num_heads, self.ssm_state_size,), dtype=self.cdtype)  # complex: [bsz x num_heads x ssm_state_size]
 
         B = self.B_conv(padded_conv_states)                                                                 # complex: [bsz x hidden_size x seq_len]
+        B = torch.complex(self.act(B.real), self.act(B.imag))                                               # complex: [bsz x hidden_size x seq_len]
         dB = B * dt[:, None, :]                                                                             # complex: [bsz x (num_heads * ssm_state_size) x seq_len]
         dB = einops.rearrange(dB, "... (h d) l -> ... h d l", h=self.num_heads,)                            # complex: [bsz x num_heads x ssm_state_size x seq_len]
         
@@ -248,6 +246,7 @@ class AdaSyncSSMMixer(nn.Module):
 
         if cache_params is not None:
             cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
+
 
         projected_states = (ssm_states[..., None, :] @ self.C_proj_weight.mT)[..., 0, :]
         if self.use_bias:
@@ -322,18 +321,11 @@ class AdaSyncSSMPreTrainedModel(PreTrainedModel):
             # S4D real initialization. These are not discretized!
             # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
             relu_a = 5 ** 0.5
-            nn.init.kaiming_normal_(module.A_log_proj.weight, a=relu_a)
-            if module.A_log_proj.bias is not None:
-                nn.init.zeros_(module.A_log_proj.bias)
 
             nn.init.kaiming_uniform_(module.B_conv.weight, a=relu_a)
             if module.B_conv.bias is not None:
                 if not getattr(module.B_conv.bias, "_no_reinit", False):
                     nn.init.zeros_(module.B_conv.bias)
-
-            nn.init.kaiming_normal_(module.C_proj_weight, a=relu_a)
-            if module.C_proj_bias is not None:
-                nn.init.zeros_(module.C_proj_bias)
 
             module.D._no_weight_decay = True
             module.D.data.fill_(1.0)

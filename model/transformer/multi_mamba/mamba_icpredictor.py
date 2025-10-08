@@ -13,14 +13,14 @@ from model.transformer.base import TransformerPredictor
 
 class MambaInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config: MambaConfig = modelArgs.mamba
+        self.config: MambaConfig = modelArgs.config
         TransformerPredictor.__init__(self, modelArgs, MambaModel(self.config), self.config.hidden_size)
 
 
 from .modeling_multimamba2 import MultiMamba2Model
 class Mamba2InContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config: Mamba2Config = modelArgs.mamba2
+        self.config: Mamba2Config = modelArgs.config
         # TransformerPredictor.__init__(self, modelArgs, MultiMamba2Model(self.config), self.config.hidden_size)
         TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
 

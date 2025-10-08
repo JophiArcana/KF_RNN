@@ -8,7 +8,7 @@ from .modeling_mamba import ObservableMambaConfig, ObservableMambaModel
 
 class ObservableMambaInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config: ObservableMambaConfig = modelArgs.mamba
+        self.config: ObservableMambaConfig = modelArgs.config
         TransformerPredictor.__init__(self, modelArgs, ObservableMambaModel(self.config), self.config.hidden_size)
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:

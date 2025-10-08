@@ -1,6 +1,4 @@
 #%%
-import os
-import sys
 from argparse import Namespace
 from typing import *
 
@@ -21,11 +19,6 @@ from transformers import (
     Mamba2Config,
 )
 
-# This line needs to be added since some terminals will not recognize the current directory
-os.chdir("/home/wentinn/workspace/KF_RNN/")
-if os.getcwd() not in sys.path:
-    sys.path.insert(0, os.getcwd())
-
 from infrastructure import loader
 from infrastructure import utils
 from infrastructure.experiment import *
@@ -38,6 +31,7 @@ from model.transformer import (
     MambaInContextPredictor,
     Mamba2InContextPredictor,
     AdaSyncSSMInContextPredictor, AdaSyncSSMConfig,
+    ObservableMambaInContextPredictor, ObservableMambaConfig,
 )
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import (
@@ -98,9 +92,10 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.model.adapter = True
 
 
-    ARGS_TRANSFORMER.model.model = AdaSyncSSMInContextPredictor
+    ARGS_TRANSFORMER.model.model = ObservableMambaInContextPredictor
+    # ARGS_TRANSFORMER.model.model = AdaSyncSSMInContextPredictor
     # SUBSECTION: GPT2 Config
-    ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
+    gpt2_config = GPT2Config(
         n_positions=context_length,
         n_embd=128,
         n_layer=max_num_hidden_layers,
@@ -108,13 +103,13 @@ if __name__ == "__main__":
     )
 
     # SUBSECTION: Mamba(2) Config
-    ARGS_TRANSFORMER.model.mamba = MambaConfig(
+    mamba_config = MambaConfig(
         state_size=state_size,
         hidden_size=hidden_size,
         num_hidden_layers=max_num_hidden_layers,
         # expand=expand,
     )
-    ARGS_TRANSFORMER.model.mamba2 = Mamba2Config(
+    mamba2_config = Mamba2Config(
         state_size=state_size,
         hidden_size=hidden_size,
         num_hidden_layers=max_num_hidden_layers,
@@ -122,12 +117,24 @@ if __name__ == "__main__":
         head_dim=int(expand * hidden_size / num_heads),
         expand=expand,
     )
+    observable_mamba_config = ObservableMambaConfig(
+        state_size=state_size,
+        hidden_size=hidden_size,
+        num_hidden_layers=max_num_hidden_layers,
+        num_heads=num_heads,
+        head_dim=int(expand * hidden_size / num_heads),
+        expand=expand,
+        use_scalar_A=False,
+        use_fast_conv_scan=True,
+        chunk_size=16,
+    )
+    ARGS_TRANSFORMER.model.config = observable_mamba_config
 
     # SUBSECTION: Adasync Config
     ARGS_TRANSFORMER.model.adasync = AdaSyncSSMConfig(
         state_size=state_size, # int(state_size / num_heads),
         hidden_size=hidden_size,
-        num_hidden_layers=max_num_hidden_layers,
+        num_hidden_layers=6, # max_num_hidden_layers,
         num_heads=num_heads,
         head_dim=int(hidden_size / num_heads),
         chunk_size=16,
@@ -149,7 +156,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.training.sampling = Namespace(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
-        batch_size=128,
+        batch_size=192,
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
         type="AdamW",
@@ -176,10 +183,11 @@ if __name__ == "__main__":
 
     # configurations_transformer = []
     configurations_transformer = [
-        # ("model", {
-        #     "model.model": [MambaInContextPredictor, Mamba2InContextPredictor,],
-        #     # "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
-        # })
+        ("model", {
+            "model.model": [ObservableMambaInContextPredictor, Mamba2InContextPredictor,],
+            "model.config": [observable_mamba_config, mamba2_config,],
+            # "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
+        })
     ]
     result_transformer, info_dict = run_experiments(
         ARGS_TRANSFORMER, configurations_transformer, {

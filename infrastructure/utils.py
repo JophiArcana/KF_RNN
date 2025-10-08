@@ -471,15 +471,14 @@ def print_dict(d: dict[str, Any] | object, n: int = 0, indent: int = 4,) -> None
 Miscellaneous
 """
 class Timer:
-    _start_t: float = None
-    
-    @classmethod
-    def start(cls):
-        cls._start_t = time.perf_counter()
-    
-    @classmethod
-    def stop(cls) -> float:
-        return time.perf_counter() - cls._start_t
+    def __init__(self):
+        self.t = time.perf_counter()
+
+    def reset(self):
+        t = time.perf_counter()
+        out = t - self.t
+        self.t = t
+        return out
 
 def identity(x: Any) -> Any:
     return x
