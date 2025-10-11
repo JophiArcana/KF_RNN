@@ -131,7 +131,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.model.config = observable_mamba_config
 
     # SUBSECTION: Adasync Config
-    ARGS_TRANSFORMER.model.adasync = AdaSyncSSMConfig(
+    adasync_config = AdaSyncSSMConfig(
         state_size=state_size, # int(state_size / num_heads),
         hidden_size=hidden_size,
         num_hidden_layers=6, # max_num_hidden_layers,
@@ -156,11 +156,11 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.training.sampling = Namespace(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
-        batch_size=192,
+        batch_size=128,
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
         type="AdamW",
-        max_lr=1e-2, min_lr=1e-6,
+        max_lr=1e-3, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9,
     )
     ARGS_TRANSFORMER.training.scheduler = Namespace(

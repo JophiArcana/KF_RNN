@@ -62,7 +62,7 @@ class ObservableMambaCache:
     Attributes:
         dtype: (`torch.dtype`):
             The default `dtype` used to initializing the cache.
-        conv_kernel_size: (`int`):
+        conv_kernel: (`int`):
             Model's convolution kernel size taken from config.
         n_groups: (`int`):
             Model's number of groups taken from the config - similar to tensor parallel in Transformer.
@@ -84,7 +84,8 @@ class ObservableMambaCache:
         self, config: ObservableMambaConfig, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
     ):
         self.dtype = dtype
-        self.conv_kernel_size = config.conv_kernel
+        self.conv_dim = (config.input_degree - 1 + config.output_degree) * config.n_groups * config.state_size
+        self.conv_kernel = config.conv_kernel
         self.n_groups = config.n_groups
         self.state_size = config.state_size
         self.num_heads = config.num_heads
@@ -94,8 +95,8 @@ class ObservableMambaCache:
         self.conv_states = torch.zeros(
             config.num_hidden_layers,
             batch_size,
-            self.intermediate_size + 2 * self.n_groups * self.state_size,
-            self.conv_kernel_size,
+            self.conv_dim,
+            self.conv_kernel,
             device=device,
             dtype=dtype,
         )
@@ -157,10 +158,13 @@ class ObservableMambaMixer(nn.Module):
         super().__init__()
         self.num_heads = config.num_heads
         self.hidden_size = config.hidden_size
-        self.ssm_state_size = config.state_size
-        self.conv_kernel_size = config.conv_kernel
+        self.n_groups = config.n_groups
+        self.head_dim = config.head_dim
+        self.state_size = config.state_size
+        self.input_degree = config.input_degree
+        self.output_degree = config.output_degree
+        self.conv_kernel = config.conv_kernel
         self.intermediate_size = int(config.expand * self.hidden_size)
-        self.time_step_rank = int(config.time_step_rank)
         self.layer_idx = layer_idx
         self.use_conv_bias = config.use_conv_bias
         self.activation = config.hidden_act
@@ -169,16 +173,15 @@ class ObservableMambaMixer(nn.Module):
         self.layer_norm_epsilon = config.layer_norm_epsilon
         self.rms_norm = config.rms_norm
 
-        self.n_groups = config.n_groups
-        self.head_dim = config.head_dim
         self.use_fast_conv_scan = config.use_fast_conv_scan
         self.chunk_size = config.chunk_size
 
+        self.time_step_rank = int(config.time_step_rank)
         self.time_step_limit = config.time_step_limit
         self.time_step_min = config.time_step_min
         self.time_step_max = config.time_step_max
 
-        self.conv_dim = self.intermediate_size + 2 * self.n_groups * self.ssm_state_size
+        self.conv_dim = (self.input_degree - 1 + self.output_degree) * self.n_groups * self.state_size
         self.conv1d = nn.Conv1d(
             in_channels=self.conv_dim,
             out_channels=self.conv_dim,
@@ -186,8 +189,7 @@ class ObservableMambaMixer(nn.Module):
             kernel_size=config.conv_kernel,
             groups=self.conv_dim,
         )
-        self.B_proj = nn.Linear(self.head_dim, self.ssm_state_size, bias=False)
-        self.C_proj = nn.Linear(self.ssm_state_size, self.head_dim, bias=False)
+        self.C_proj = nn.Parameter(torch.randn((self.num_heads, self.head_dim, self.state_size,)))
 
         # projection of the input hidden states
         projection_size = self.intermediate_size + self.conv_dim + self.num_heads
@@ -208,7 +210,7 @@ class ObservableMambaMixer(nn.Module):
         if config.use_scalar_A:
             self.A_log = nn.Parameter(torch.log(A))
         else:
-            self.A_log = nn.Parameter(torch.log(A)[:, None].expand((self.num_heads, self.ssm_state_size,)).clone())
+            self.A_log = nn.Parameter(torch.log(A)[:, None].expand((self.num_heads, self.state_size,)).clone())
         self.A_log._no_weight_decay = True
         self.norm = MambaRMSNormGated(self.intermediate_size, eps=self.layer_norm_epsilon)
         self.D = nn.Parameter(torch.ones((self.num_heads,)))
@@ -230,26 +232,24 @@ class ObservableMambaMixer(nn.Module):
         # getting projected states from cache if it exists
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         projected_states = self.in_proj(hidden_states)
-        gate, hidden_states_B_C, dt = torch.split(projected_states, [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1)
-        hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
+        gate, B_C, dt = torch.split(projected_states, [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1)
+        B_C = B_C.transpose(1, 2)
 
         if (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0):
-            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=hidden_states_B_C, cache_init=False)
+            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=B_C, cache_init=False)
             padded_conv_states = cache_params.conv_states[self.layer_idx]
             ssm_state = cache_params.ssm_states[self.layer_idx]
         else:
             # 1D Convolution
-            padded_conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - 1, 0,))
-            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel_size:], cache_init=True)
-            ssm_state = torch.zeros((batch_size, self.num_heads, self.ssm_state_size,))
+            padded_conv_states = Fn.pad(B_C, (self.conv_kernel - 1, 0,))
+            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel:], cache_init=True)
+            ssm_state = torch.zeros((batch_size, self.num_heads, self.state_size,))
 
-        hidden_states_B_C = self.act(self.conv1d(padded_conv_states).transpose(1, 2))
-        hidden_states, B, C = torch.split(
-            apply_mask_to_padding_states(hidden_states_B_C, attention_mask),
-            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,], dim=-1,
-        )
-        hidden_states = einops.rearrange(hidden_states, "... (h d) -> ... h d", h=self.num_heads)
-        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+        B_C = einops.rearrange(self.conv1d(padded_conv_states), "... (deg d) l -> ... l d deg", d=self.n_groups * self.state_size)
+        B, C = torch.split(B_C, [self.input_degree - 1, self.output_degree,], dim=-1)
+        B = apply_mask_to_padding_states(torch.prod(B, dim=-1), attention_mask)
+        C = apply_mask_to_padding_states(torch.prod(C, dim=-1), attention_mask)
+
         B = einops.repeat(B, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
         C = einops.repeat(C, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
 
@@ -258,7 +258,7 @@ class ObservableMambaMixer(nn.Module):
         if A.ndim == 1:
             A = A[:, None]
         dA = dt[..., None] * A                                          # float: [B x L x H x N]
-        dB = self.B_proj(dt[..., None] * hidden_states) * B             # float: [B x L x H x N]
+        dB = dt[..., None] * B                                          # float: [B x L x H x N]
 
         if self.use_fast_conv_scan:
             dB = torch.cat((ssm_state[..., None, :, :], dB,), dim=-3)   # float: [B x (L + 1) x H x N]
@@ -267,13 +267,18 @@ class ObservableMambaMixer(nn.Module):
                 einops.rearrange(dB, "... l h d -> ... h d l"),
                 self.chunk_size,
             ), "... h d l -> ... l h d")
-            ssm_states = ssm_states[..., 1:, :, :]
+            ssm_states = ssm_states[..., 1:, :, :]                      # float: [B x L x H x N]
         else:
-            ssm_states = torch.zeros((batch_size, seq_len, self.num_heads, self.ssm_state_size,))
+            ssm_states = torch.zeros((batch_size, seq_len, self.num_heads, self.state_size,))
             for i in range(seq_len):
                 ssm_states[:, i] = ssm_state = torch.exp(dA[:, i, :, :]) * ssm_state + dB[:, i, :, :]
 
-        hidden_states = self.C_proj(ssm_states * C) + hidden_states * self.D[:, None]
+        hidden_states = ssm_states * C
+        hidden_states = (self.C_proj @ hidden_states[..., None])[..., 0]
+
+        # print(projected_states.shape)
+        # raise Exception()
+        # hidden_states = projected_states + hidden_states * self.D[:, None]
         ssm_state = ssm_states[..., -1, :, :]
 
         if cache_params is not None:
@@ -343,6 +348,7 @@ class ObservableMambaPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         """Initialize the weights."""
         std = self.config.initializer_range
+        a = 5 ** 0.5
         if isinstance(module, ObservableMambaMixer):
             # S4D real initialization. These are not discretized!
             # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
@@ -366,12 +372,14 @@ class ObservableMambaPreTrainedModel(PreTrainedModel):
             module.dt_bias.copy_(inv_dt)
             module.dt_bias._no_reinit = True
 
-            nn.init.kaiming_uniform_(module.conv1d.weight, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(module.conv1d.weight, a=a)
             if module.conv1d.bias is not None:
                 if not getattr(module.conv1d.bias, "_no_reinit", False):
                     nn.init.zeros_(module.conv1d.bias)
-            nn.init.kaiming_uniform_(module.out_proj.weight, a=math.sqrt(5))
 
+            nn.init.normal_(module.C_proj, std=std)
+
+            nn.init.kaiming_uniform_(module.out_proj.weight, a=a)
             if self.config.rescale_prenorm_residual:
                 # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
                 #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale

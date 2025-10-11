@@ -123,13 +123,15 @@ class ObservableMambaConfig(PretrainedConfig):
             expand: int = 2,
             conv_kernel: int = 4,
             n_groups: int = 8,
+            input_degree: int = 3,
+            output_degree: int = 1,
             use_scalar_A: bool = True,
             use_bias: bool = False,
             use_conv_bias: bool = True,
-            hidden_act="silu",
+            hidden_act: str = "silu",
             initializer_range: float = 0.1,
             residual_in_fp32: bool = True,
-            time_step_rank="auto",
+            time_step_rank: int | str = "auto",
             time_step_min: float = 0.001,
             time_step_max: float = 0.1,
             time_step_floor: float = 1e-4,
@@ -149,15 +151,20 @@ class ObservableMambaConfig(PretrainedConfig):
                 f"({num_heads * head_dim})."
             )
 
-        self.vocab_size = vocab_size
+        self.num_heads = num_heads
+        self.head_dim = head_dim
         self.hidden_size = hidden_size
         self.state_size = state_size
         self.num_hidden_layers = num_hidden_layers
         self.layer_norm_epsilon = layer_norm_epsilon
         self.conv_kernel = conv_kernel
         self.expand = expand
+        self.n_groups = n_groups
+        self.input_degree = input_degree
+        self.output_degree = output_degree
         self.use_scalar_A = use_scalar_A
 
+        self.vocab_size = vocab_size
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.pad_token_id = pad_token_id
@@ -172,9 +179,6 @@ class ObservableMambaConfig(PretrainedConfig):
         self.rescale_prenorm_residual = rescale_prenorm_residual
         self.residual_in_fp32 = residual_in_fp32
         self.use_cache = use_cache
-        self.n_groups = n_groups
-        self.num_heads = num_heads
-        self.head_dim = head_dim
         self.rms_norm = rms_norm
         self.state_size = state_size
         self.use_fast_conv_scan = use_fast_conv_scan
