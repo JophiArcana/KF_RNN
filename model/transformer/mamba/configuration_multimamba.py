@@ -23,7 +23,7 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
-class ObservableMambaConfig(PretrainedConfig):
+class TestMamba2Config(PretrainedConfig):
     """
     This is the configuration class to store the configuration of a [`Mamba2Model`]. It is used to instantiate a MAMBA2
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
@@ -36,7 +36,7 @@ class ObservableMambaConfig(PretrainedConfig):
 
     Args:
         num_heads (`int`, *optional*, defaults to 128):
-            Number of heads for the evolution matrices of mamba 2.
+            Number of heads for the evolution matrices of multi_mamba 2.
         head_dim (`int`, *optional*, defaults to 64):
             Dimension of each head.
         vocab_size (`int`, *optional*, defaults to 32768):
@@ -58,7 +58,7 @@ class ObservableMambaConfig(PretrainedConfig):
         expand (`int`, *optional*, defaults to 2): Expanding factor used to determine the intermediate size.
         conv_kernel (`int`, *optional*, defaults to 4): Size of the convolution kernel.
         n_groups (`int`, *optional*, defaults to 8):
-            Number of groups for the evolution matrices of mamba 2.
+            Number of groups for the evolution matrices of multi_mamba 2.
         use_bias (`bool`, *optional*, defaults to `False`):
             Whether or not to use bias in ["in_proj", "out_proj"] of the mixer block
         use_conv_bias (`bool`, *optional*, defaults to `True`):
@@ -89,82 +89,50 @@ class ObservableMambaConfig(PretrainedConfig):
             Size of the chunks that will comprise the sequence.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether to tie word embeddings or not.
-
-
-    Example:
-
-    ```python
-    >>> from transformers import Mamba2Config, Mamba2Model
-
-    >>> # Initializing a Mamba2 configuration
-    >>> configuration = Mamba2Config()
-
-    >>> # Initializing a model (with random weights) from the configuration
-    >>> model = Mamba2Model(configuration)
-
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
+    """
 
     model_type = "mamba2"
 
     def __init__(
         self,
-            num_heads: int = 128,
-            head_dim: int = 64,
-            vocab_size: int = 32768,
-            hidden_size: int = 4096,
-            state_size: int = 128,
-            num_hidden_layers: int = 64,
-            layer_norm_epsilon: float = 1e-5,
-            pad_token_id: int = 1,
-            bos_token_id: int = 0,
-            eos_token_id: int = 2,
-            expand: int = 2,
-            conv_kernel: int = 4,
-            n_groups: int = 8,
-            input_degree: int = 3,
-            output_degree: int = 1,
-            use_scalar_A: bool = True,
-            use_bias: bool = False,
-            use_conv_bias: bool = True,
-            hidden_act: str = "silu",
-            initializer_range: float = 0.1,
-            residual_in_fp32: bool = True,
-            time_step_rank: int | str = "auto",
-            time_step_min: float = 0.001,
-            time_step_max: float = 0.1,
-            time_step_floor: float = 1e-4,
-            time_step_limit: tuple[float, float] = (0.0, float("inf")),
-            rescale_prenorm_residual: bool = False,
-            use_cache: bool = True,
-            rms_norm: bool = True,
-            use_fast_conv_scan: bool = True,
-            chunk_size: int = 256,
-            tie_word_embeddings: bool = False,
-            **kwargs,
+        num_heads=128,
+        head_dim=64,
+        vocab_size=32768,
+        hidden_size=4096,
+        state_size=128,
+        num_hidden_layers=64,
+        layer_norm_epsilon=1e-5,
+        pad_token_id=1,
+        bos_token_id=0,
+        eos_token_id=2,
+        expand=2,
+        conv_kernel=4,
+        n_groups=8,
+        use_bias=False,
+        use_conv_bias=True,
+        hidden_act="silu",
+        initializer_range=0.1,
+        residual_in_fp32=True,
+        time_step_rank="auto",
+        time_step_min=0.001,
+        time_step_max=0.1,
+        time_step_floor=1e-4,
+        time_step_limit=(0.0, float("inf")),
+        rescale_prenorm_residual=False,
+        use_cache=True,
+        rms_norm=True,
+        chunk_size=256,
+        tie_word_embeddings=False,
+        **kwargs,
     ):
-        if (hidden_size * expand) != (num_heads * head_dim):
-            raise ValueError(
-                "Inconsistent configuration: hidden_size * expand "
-                f"({hidden_size * expand}) must equal num_heads * head_dim "
-                f"({num_heads * head_dim})."
-            )
-
-        self.num_heads = num_heads
-        self.head_dim = head_dim
+        self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.state_size = state_size
         self.num_hidden_layers = num_hidden_layers
         self.layer_norm_epsilon = layer_norm_epsilon
         self.conv_kernel = conv_kernel
         self.expand = expand
-        self.n_groups = n_groups
-        self.input_degree = input_degree
-        self.output_degree = output_degree
-        self.use_scalar_A = use_scalar_A
 
-        self.vocab_size = vocab_size
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.pad_token_id = pad_token_id
@@ -179,9 +147,11 @@ class ObservableMambaConfig(PretrainedConfig):
         self.rescale_prenorm_residual = rescale_prenorm_residual
         self.residual_in_fp32 = residual_in_fp32
         self.use_cache = use_cache
+        self.n_groups = n_groups
+        self.num_heads = num_heads
+        self.head_dim = head_dim
         self.rms_norm = rms_norm
         self.state_size = state_size
-        self.use_fast_conv_scan = use_fast_conv_scan
         self.chunk_size = chunk_size
         self.time_step_limit = time_step_limit
         self.tie_word_embeddings = tie_word_embeddings
@@ -193,6 +163,3 @@ class ObservableMambaConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
-
-
-__all__ = ["ObservableMambaConfig"]

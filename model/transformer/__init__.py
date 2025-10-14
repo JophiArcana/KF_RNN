@@ -21,18 +21,20 @@ from .adasync import (
     AdaSyncSSMConfig,
     AdaSyncSSMModel,
 )
-from .mamba import (
+from .observable_mamba import (
     ObservableMambaInContextPredictor,
 
     ObservableMambaConfig,
     ObservableMambaModel,
 )
-from .multi_mamba import (
+from .mamba import (
     MambaInContextPredictor,
     Mamba2InContextPredictor,
 
-    MultiMamba2Config,
-    MultiMamba2Model,
+    TestMamba2InContextPredictor,
+
+    TestMamba2Config,
+    TestMamba2Model,
 )
 
 

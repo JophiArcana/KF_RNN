@@ -1,15 +1,27 @@
 from argparse import Namespace
 
 import torch
+from transformers import (
+    MambaConfig,
+    MambaModel,
+    Mamba2Config,
+    Mamba2Model,
+)
 
 from model.transformer.base import TransformerPredictor
-from .modeling_mamba import ObservableMambaConfig, ObservableMambaModel
+from model.transformer.mamba.modeling_testmamba2 import TestMamba2Config, TestMamba2Model
 
 
-class ObservableMambaInContextPredictor(TransformerPredictor):
+class MambaInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config: ObservableMambaConfig = modelArgs.config
-        TransformerPredictor.__init__(self, modelArgs, ObservableMambaModel(self.config), self.config.hidden_size)
+        self.config: MambaConfig = modelArgs.config
+        TransformerPredictor.__init__(self, modelArgs, MambaModel(self.config), self.config.hidden_size)
+
+
+class Mamba2InContextPredictor(TransformerPredictor):
+    def __init__(self, modelArgs: Namespace):
+        self.config: Mamba2Config = modelArgs.config
+        TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
@@ -29,6 +41,12 @@ class ObservableMambaInContextPredictor(TransformerPredictor):
         ).hidden_states[-1]                                     # [B x L x S_D]
 
         return self.embedding_to_output({"environment": out})
+
+
+class TestMamba2InContextPredictor(Mamba2InContextPredictor):
+    def __init__(self, modelArgs: Namespace):
+        self.config: TestMamba2Config = modelArgs.config
+        TransformerPredictor.__init__(self, modelArgs, TestMamba2Model(self.config), self.config.hidden_size)
 
 
 

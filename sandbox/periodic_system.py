@@ -32,6 +32,7 @@ from model.transformer import (
     Mamba2InContextPredictor,
     AdaSyncSSMInContextPredictor, AdaSyncSSMConfig,
     ObservableMambaInContextPredictor, ObservableMambaConfig,
+    TestMamba2InContextPredictor, TestMamba2Config,
 )
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import (
@@ -43,8 +44,8 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "adasync_test"
-    output_fname = "result"
+    output_dir = "debugging_mamba"
+    output_fname = "result_test_mamba"
     # output_fname = "result_batch_sweep_exponential_lr"
 
     # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
@@ -117,6 +118,14 @@ if __name__ == "__main__":
         head_dim=int(expand * hidden_size / num_heads),
         expand=expand,
     )
+    test_mamba2_config = TestMamba2Config(
+        state_size=state_size,
+        hidden_size=hidden_size,
+        num_hidden_layers=max_num_hidden_layers,
+        num_heads=num_heads,
+        head_dim=int(expand * hidden_size / num_heads),
+        expand=expand,
+    )
     observable_mamba_config = ObservableMambaConfig(
         state_size=state_size,
         hidden_size=hidden_size,
@@ -160,13 +169,13 @@ if __name__ == "__main__":
     )
     ARGS_TRANSFORMER.training.optimizer = Namespace(
         type="AdamW",
-        max_lr=1e-3, min_lr=1e-6,
+        max_lr=1e-2, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9,
     )
     ARGS_TRANSFORMER.training.scheduler = Namespace(
         type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
         # type="exponential", lr_decay=0.982, warmup_duration=0,
-        epochs=200,
+        epochs=20,
     )
 
     ARGS_TRANSFORMER.experiment.n_experiments = 1
@@ -184,8 +193,8 @@ if __name__ == "__main__":
     # configurations_transformer = []
     configurations_transformer = [
         ("model", {
-            "model.model": [ObservableMambaInContextPredictor, Mamba2InContextPredictor,],
-            "model.config": [observable_mamba_config, mamba2_config,],
+            "model.model": [TestMamba2InContextPredictor, ObservableMambaInContextPredictor,],
+            "model.config": [test_mamba2_config, observable_mamba_config,],
             # "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
         })
     ]

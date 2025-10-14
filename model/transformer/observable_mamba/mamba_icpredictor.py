@@ -1,28 +1,15 @@
 from argparse import Namespace
 
 import torch
-from transformers import (
-    MambaConfig,
-    MambaModel,
-    Mamba2Config,
-    Mamba2Model,
-)
 
 from model.transformer.base import TransformerPredictor
+from .modeling_mamba import ObservableMambaConfig, ObservableMambaModel
 
 
-class MambaInContextPredictor(TransformerPredictor):
+class ObservableMambaInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config: MambaConfig = modelArgs.config
-        TransformerPredictor.__init__(self, modelArgs, MambaModel(self.config), self.config.hidden_size)
-
-
-from .modeling_multimamba2 import MultiMamba2Model
-class Mamba2InContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
-        self.config: Mamba2Config = modelArgs.config
-        # TransformerPredictor.__init__(self, modelArgs, MultiMamba2Model(self.config), self.config.hidden_size)
-        TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
+        self.config: ObservableMambaConfig = modelArgs.config
+        TransformerPredictor.__init__(self, modelArgs, ObservableMambaModel(self.config), self.config.hidden_size)
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]

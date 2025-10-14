@@ -7,7 +7,7 @@ from transformers.models.mamba2.modeling_mamba2 import Mamba2Mixer, Mamba2Config
 
 from infrastructure import utils
 from infrastructure.settings import *
-from model.transformer.multi_mamba.modeling_multimamba2 import MultiMamba2Mixer, MultiMamba2Config
+from model.transformer.mamba.modeling_testmamba2 import TestMamba2Model, TestMamba2Mixer, TestMamba2Config
 
 
 if __name__ == "__main__":
@@ -17,8 +17,9 @@ if __name__ == "__main__":
 
     cms = [
         (Mamba2Config(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1, conv_kernel=4, use_fast_conv_scan=True), Mamba2Model,),
-        (ObservableMambaConfig(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1, conv_kernel=4, use_fast_conv_scan=True), ObservableMambaModel,),
-        (AdaSyncSSMConfig(hidden_size=256, state_size=128, num_hidden_layers=1, num_heads=8, head_dim=32, conv_kernel=4), AdaSyncSSMModel,),
+        (TestMamba2Config(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1, conv_kernel=4, use_fast_conv_scan=True), TestMamba2Model,),
+        # (ObservableMambaConfig(hidden_size=256, num_hidden_layers=1, num_heads=8, head_dim=32, expand=1, conv_kernel=4, use_fast_conv_scan=True), ObservableMambaModel,),
+        # (AdaSyncSSMConfig(hidden_size=256, state_size=128, num_hidden_layers=1, num_heads=8, head_dim=32, conv_kernel=4), AdaSyncSSMModel,),
     ]
 
     out_list, _out_list, grad_list = [], [], []

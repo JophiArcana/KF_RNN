@@ -84,7 +84,7 @@ class ObservableMambaCache:
         self, config: ObservableMambaConfig, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
     ):
         self.dtype = dtype
-        self.conv_dim = (config.input_degree - 1 + config.output_degree) * config.n_groups * config.state_size
+        self.conv_dim = config.conv_dim
         self.conv_kernel = config.conv_kernel
         self.n_groups = config.n_groups
         self.state_size = config.state_size
@@ -181,7 +181,7 @@ class ObservableMambaMixer(nn.Module):
         self.time_step_min = config.time_step_min
         self.time_step_max = config.time_step_max
 
-        self.conv_dim = (self.input_degree - 1 + self.output_degree) * self.n_groups * self.state_size
+        self.conv_dim = config.conv_dim
         self.conv1d = nn.Conv1d(
             in_channels=self.conv_dim,
             out_channels=self.conv_dim,
@@ -232,24 +232,28 @@ class ObservableMambaMixer(nn.Module):
         # getting projected states from cache if it exists
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         projected_states = self.in_proj(hidden_states)
-        gate, B_C, dt = torch.split(projected_states, [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1)
-        B_C = B_C.transpose(1, 2)
+        gate, hidden_states_B_C, dt = torch.split(projected_states, [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1)
+        hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
 
         if (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0):
-            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=B_C, cache_init=False)
+            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=hidden_states_B_C, cache_init=False)
             padded_conv_states = cache_params.conv_states[self.layer_idx]
             ssm_state = cache_params.ssm_states[self.layer_idx]
         else:
             # 1D Convolution
-            padded_conv_states = Fn.pad(B_C, (self.conv_kernel - 1, 0,))
+            padded_conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel - 1, 0,))
             cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel:], cache_init=True)
             ssm_state = torch.zeros((batch_size, self.num_heads, self.state_size,))
 
-        B_C = einops.rearrange(self.conv1d(padded_conv_states), "... (deg d) l -> ... l d deg", d=self.n_groups * self.state_size)
+        hidden_states_B_C = self.conv1d(padded_conv_states)
+        hidden_states, B_C = torch.split(hidden_states_B_C, [self.intermediate_size, self.conv_dim - self.intermediate_size,], dim=-2)
+
+        B_C = einops.rearrange(B_C, "... (deg d) l -> ... l d deg", d=self.n_groups * self.state_size)
         B, C = torch.split(B_C, [self.input_degree - 1, self.output_degree,], dim=-1)
         B = apply_mask_to_padding_states(torch.prod(B, dim=-1), attention_mask)
         C = apply_mask_to_padding_states(torch.prod(C, dim=-1), attention_mask)
 
+        hidden_states = einops.rearrange(hidden_states, "... (h d) l -> ... l h d", h=self.num_heads)
         B = einops.repeat(B, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
         C = einops.repeat(C, "... (g d) -> ... (g n) d", g=self.n_groups, n=self.num_heads // self.n_groups)
 
@@ -273,12 +277,10 @@ class ObservableMambaMixer(nn.Module):
             for i in range(seq_len):
                 ssm_states[:, i] = ssm_state = torch.exp(dA[:, i, :, :]) * ssm_state + dB[:, i, :, :]
 
-        hidden_states = ssm_states * C
-        hidden_states = (self.C_proj @ hidden_states[..., None])[..., 0]
+        projected_states = ssm_states * C
+        projected_states = (self.C_proj @ projected_states[..., None])[..., 0]
+        hidden_states = projected_states + hidden_states * self.D[:, None]
 
-        # print(projected_states.shape)
-        # raise Exception()
-        # hidden_states = projected_states + hidden_states * self.D[:, None]
         ssm_state = ssm_states[..., -1, :, :]
 
         if cache_params is not None:

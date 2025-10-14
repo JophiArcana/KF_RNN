@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import torch
-import torch.utils.checkpoint
-from torch import nn
+import torch.nn as nn
+import torch.nn.functional as Fn
 from torch.nn import CrossEntropyLoss
 
 from transformers.activations import ACT2FN
@@ -31,23 +31,21 @@ from transformers.utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    logging,
+    logging, auto_docstring,
 )
 from transformers.utils.import_utils import is_causal_conv1d_available, is_mamba_2_ssm_available
 from transformers.models.mamba2.modeling_mamba2 import MambaRMSNormGated, Mamba2RMSNorm
 
-from .configuration_multimamba import MultiMamba2Config
-from .vmap_ssd_combined import mamba_chunk_scan_combined
-
+from .configuration_multimamba import TestMamba2Config
 
 logger = logging.get_logger(__name__)
 
 
 if is_mamba_2_ssm_available():
     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined as mamba_chunk_scan_combined_old
+    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
 else:
-    selective_state_update = None
+    mamba_chunk_scan_combined, selective_state_update = None, None
 
 if is_causal_conv1d_available():
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -56,11 +54,20 @@ else:
 
 is_fast_path_available = all((selective_state_update, causal_conv1d_fn, causal_conv1d_update))
 
-_CHECKPOINT_FOR_DOC = "mistralai/multi_mamba-codestral-7B-v0.1"
-_CONFIG_FOR_DOC = "Mamba2Config"
+
+def apply_mask_to_padding_states(hidden_states, attention_mask):
+    """
+    Tunes out the hidden states for padding tokens, see https://github.com/state-spaces/mamba/issues/66
+    """
+    if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
+        dtype = hidden_states.dtype
+        expand = (ellipsis(),) + (None,) * (hidden_states.ndim - 2)
+        hidden_states = (hidden_states * attention_mask[expand]).to(dtype)
+
+    return hidden_states
 
 
-class MultiMamba2Cache:
+class TestMamba2Cache:
     """
     Arguments:
         config: Mamba2Config
@@ -76,50 +83,54 @@ class MultiMamba2Cache:
     """
 
     def __init__(
-        self, config: MultiMamba2Config, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
+        self, config: TestMamba2Config, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
     ):
-        self.seqlen_offset = 0
         self.dtype = dtype
         self.conv_kernel_size = config.conv_kernel
+        self.n_groups = config.n_groups
+        self.state_size = config.state_size
+        self.num_heads = config.num_heads
+        self.head_dim = config.head_dim
         self.intermediate_size = int(config.expand * config.hidden_size)
 
-        self.conv_states = {
-            i: torch.zeros(
-                batch_size,
-                self.intermediate_size + 2 * config.n_groups * config.state_size,
-                self.conv_kernel_size,
-                device=device,
-                dtype=dtype,
-            )
-            for i in range(config.num_hidden_layers)
-        }
-        self.ssm_states = {
-            i: torch.zeros(
-                batch_size, config.num_heads, config.head_dim, config.state_size, device=device, dtype=dtype
-            )
-            for i in range(config.num_hidden_layers)
-        }
-        self.activation = config.hidden_act
-        self.act = ACT2FN[config.hidden_act]
+        self.conv_states = torch.zeros(
+            config.num_hidden_layers,
+            batch_size,
+            self.intermediate_size + 2 * self.n_groups * self.state_size,
+            self.conv_kernel_size,
+            device=device,
+            dtype=dtype,
+        )
+        self.ssm_states = torch.zeros(
+            config.num_hidden_layers,
+            batch_size,
+            self.num_heads,
+            self.head_dim,
+            self.state_size,
+            device=device,
+            dtype=dtype,
+        )
 
     def update_conv_state(
-        self, layer_idx: int, new_conv_state: torch.Tensor, cache_position: torch.LongTensor
+        self, layer_idx: int, new_conv_state: torch.Tensor, cache_init: bool = False
     ) -> torch.Tensor:
-        conv_state = self.conv_states[layer_idx]
-        cache_position = cache_position.clamp(0, self.conv_kernel_size - 1)
-
-        conv_state = conv_state.roll(shifts=-1, dims=-1)
-        conv_state[:, :, cache_position] = new_conv_state.to(conv_state.device)
-        self.conv_states[layer_idx].zero_()
-        self.conv_states[layer_idx] += conv_state
+        if cache_init:
+            self.conv_states[layer_idx] = new_conv_state.to(self.conv_states.device)
+        else:
+            self.conv_states[layer_idx] = self.conv_states[layer_idx].roll(shifts=-1, dims=-1)
+            self.conv_states[layer_idx][:, :, -1] = new_conv_state[:, 0, :].to(self.conv_states.device)
         return self.conv_states[layer_idx]
+
+    def update_ssm_state(self, layer_idx: int, new_ssm_state: torch.Tensor):
+        self.ssm_states[layer_idx] = new_ssm_state.to(self.ssm_states.device)
+        return self.ssm_states[layer_idx]
 
     def reset(self):
         self.conv_states.zero_()
         self.ssm_states.zero_()
 
 
-class MultiMamba2Mixer(nn.Module):
+class TestMamba2Mixer(nn.Module):
     """
     Compute ∆, A, B, C, and D the state space parameters and compute the `contextualized_states`.
     A, D are input independent (see Mamba paper [1] Section 3.5.2 "Interpretation of A" for why A isn't selective)
@@ -127,7 +138,7 @@ class MultiMamba2Mixer(nn.Module):
     and is why Mamba is called **selective** state spaces)
     """
 
-    def __init__(self, config: MultiMamba2Config, layer_idx: int):
+    def __init__(self, config: TestMamba2Config, layer_idx: int):
         super().__init__()
         self.num_heads = config.num_heads
         self.hidden_size = config.hidden_size
@@ -168,7 +179,7 @@ class MultiMamba2Mixer(nn.Module):
             projection_size,
             bias=config.use_bias,
         )
-        # selective projection used to make dt, B and C input dependant
+        # selective projection used to make dt, B and C input dependent
 
         # time step projection (discretization)
         # instantiate once and copy inv_dt in init_weights of PretrainedModel
@@ -196,7 +207,7 @@ class MultiMamba2Mixer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cache_params: Optional[MultiMamba2Cache] = None,
+        cache_params: Optional[TestMamba2Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ):
@@ -204,14 +215,12 @@ class MultiMamba2Mixer(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
 
         # getting projected states from cache if it exists
-        do_inference = (cache_params is not None) and (cache_params.seqlen_offset > 0)
+        do_inference = (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0)
         if do_inference:
             assert seq_len == 1, "Only supports inference for one token at a time."
             hidden_states = hidden_states.squeeze(1)    # (B 2D)
-        elif attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
-            # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
-            dtype = hidden_states.dtype
-            hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
+        else:
+            apply_mask_to_padding_states(hidden_states, attention_mask)
 
         projected_states = self.in_proj(hidden_states)
         gate, hidden_states_B_C, dt = torch.split(
@@ -228,30 +237,34 @@ class MultiMamba2Mixer(nn.Module):
                 activation=self.activation,
             )
         else:
+            hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
+            conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - seq_len, 0,),)
+            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=conv_states, cache_init=True)
+
             # 1D Convolution
             hidden_states_B_C = causal_conv1d_fn(
-                hidden_states_B_C.transpose(1, 2),
+                hidden_states_B_C,
                 self.conv1d.weight.squeeze(1),
                 bias=self.conv1d.bias,
                 activation=self.activation,
             ).transpose(1, 2)
 
-        hidden_states, B, C = map(lambda t: t.unflatten(-1, (self.n_groups, -1,)), torch.split(
-            hidden_states_B_C,
-            [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,],
-            dim=-1,
-        ))
-        # hidden_states, B, C = torch.split(
-        #     hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
-        #     [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
+        # hidden_states, B, C = map(lambda t: t.unflatten(-1, (self.n_groups, -1,)), torch.split(
+        #     hidden_states_B_C,
+        #     [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,],
         #     dim=-1,
-        # )
+        # ))
+        hidden_states, B, C = torch.split(
+            hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
+            [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
+            dim=-1,
+        )
 
         A = -torch.exp(self.A_log.float())  # (nheads,)
         if do_inference:
             dt = dt[:, :, None].expand((-1, -1, self.head_dim,))
             dt_bias = self.dt_bias[:, None].expand((self.num_heads, self.head_dim,))
-            A = A[:, None, None].expand((-1, self.head_dim, self.ssm_state_size,)).to(dtype=torch.float32)
+            A = A[:, None, None].expand((-1, self.head_dim, self.ssm_state_size,))
             D = self.D[:, None].expand((self.num_heads, self.head_dim,))
             hidden_states = selective_state_update(
                 cache_params.ssm_states[self.layer_idx],
@@ -262,27 +275,21 @@ class MultiMamba2Mixer(nn.Module):
             )
         # if no cache is found, calling the kernel
         else:
-            if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
-                # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
-                dtype = hidden_states.dtype
-                hidden_states = (hidden_states * attention_mask[:, :, None, None]).to(dtype)
-
+            apply_mask_to_padding_states(hidden_states, attention_mask)
             hidden_states, ssm_state = mamba_chunk_scan_combined(
                 hidden_states,
-                dt, A, B, torch.stack([C, C, C,], dim=0),
-                # dt, A, B, C,
+                dt, A, B, C,
                 chunk_size=self.chunk_size,
-                D=self.D,
+                D=torch.zeros_like(self.D),
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
                 dt_limit=self.time_step_limit,
-                # return_final_states=True,
+                return_final_states=True,
             )
-            hidden_states = hidden_states[0]
-            print("var", torch.sum(hidden_states.var(dim=0)))
-            hidden_states = hidden_states.mean(dim=0)
+
+            # Init cache
             if ssm_state is not None and cache_params is not None:
-                cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
+                cache_params.update_ssm_state(layer_idx=self.layer_idx, new_ssm_state=ssm_state)
 
         # Multiply "gate" branch and apply extra normalization layer
         hidden_states = hidden_states.view((batch_size, seq_len, -1,))
@@ -292,19 +299,19 @@ class MultiMamba2Mixer(nn.Module):
         return out
 
 
-class MultiMamba2Block(nn.Module):
+class TestMamba2Block(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
         self.residual_in_fp32 = config.residual_in_fp32
         self.norm = Mamba2RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
-        self.mixer = MultiMamba2Mixer(config, layer_idx=layer_idx)
+        self.mixer = TestMamba2Mixer(config, layer_idx=layer_idx)
 
     def forward(
         self,
         hidden_states,
-        cache_params: Optional[MultiMamba2Cache] = None,
+        cache_params: Optional[TestMamba2Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ):
@@ -320,13 +327,9 @@ class MultiMamba2Block(nn.Module):
         return hidden_states
 
 
-class MultiMamba2PreTrainedModel(PreTrainedModel):
-    """
-    An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
-    models.
-    """
-
-    config_class = MultiMamba2Config
+@auto_docstring
+class TestMamba2PreTrainedModel(PreTrainedModel):
+    config_class = TestMamba2Config
     base_model_prefix = "backbone"
     _no_split_modules = ["Mamba2Block"]
     supports_gradient_checkpointing = True
@@ -334,9 +337,15 @@ class MultiMamba2PreTrainedModel(PreTrainedModel):
 
     def _init_weights(self, module):
         """Initialize the weights."""
-        if isinstance(module, MultiMamba2Mixer):
+        std = self.config.initializer_range
+        if isinstance(module, TestMamba2Mixer):
+            # S4D real initialization. These are not discretized!
+            # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
+            A = torch.arange(1, self.config.num_heads + 1)
+            module.A_log.copy_(torch.log(A))
             module.A_log._no_weight_decay = True
             module.D._no_weight_decay = True
+            module.D.data.fill_(1.0)
 
             dt = torch.exp(
                 torch.rand(self.config.num_heads)
@@ -346,45 +355,51 @@ class MultiMamba2PreTrainedModel(PreTrainedModel):
 
             # # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
             inv_dt = dt + torch.log(-torch.expm1(-dt))
-            with torch.no_grad():
-                module.dt_bias.copy_(inv_dt)
+            module.dt_bias.copy_(inv_dt)
             module.dt_bias._no_reinit = True
 
+            nn.init.kaiming_uniform_(module.conv1d.weight, a=math.sqrt(5))
+            if module.conv1d.bias is not None:
+                if not getattr(module.conv1d.bias, "_no_reinit", False):
+                    nn.init.zeros_(module.conv1d.bias)
+            nn.init.kaiming_uniform_(module.out_proj.weight, a=math.sqrt(5))
+
+            if self.config.rescale_prenorm_residual:
+                # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
+                #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
+                #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
+                #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
+                #
+                # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
+                # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
+                # Following Pytorch init, except scale by 1/sqrt(2 * n_layer)
+                # We need to reinit p since this code could be called multiple times
+                # Having just p *= scale would repeatedly scale it down
+                p = module.out_proj.weight
+                p /= math.sqrt(self.config.num_hidden_layers)
+
         if isinstance(module, nn.Linear):
+            if not getattr(module.weight, "_no_reinit", False):
+                nn.init.normal_(module.weight, std=std)
             if module.bias is not None:
                 if not getattr(module.bias, "_no_reinit", False):
                     nn.init.zeros_(module.bias)
+        elif isinstance(module, (Mamba2RMSNorm, MambaRMSNormGated)):
+            module.weight.data.fill_(1.0)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, std=self.config.initializer_range)
-
-        if self.config.rescale_prenorm_residual:
-            # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
-            #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
-            #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
-            #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
-            #
-            # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
-            for name, p in module.named_parameters():
-                if name in ["out_proj.weight"]:
-                    # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
-                    # Following Pytorch init, except scale by 1/sqrt(2 * n_layer)
-                    # We need to reinit p since this code could be called multiple times
-                    # Having just p *= scale would repeatedly scale it down
-                    nn.init.kaiming_uniform_(p, a=math.sqrt(5))
-                    with torch.no_grad():
-                        p /= math.sqrt(self.config.num_hidden_layers)
+            nn.init.normal_(module.weight, std=std)
 
 
 @dataclass
 # Copied from transformers.models.multi_mamba.modeling_mamba.MambaOutput with MAMBA->MAMBA2,Mamba->Mamba2
-class MultiMamba2Output(ModelOutput):
+class TestMamba2Output(ModelOutput):
     """
     Class for the MAMBA2 model outputs.
 
     Args:
         last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
             Sequence of hidden-states at the output of the last layer of the model.
-        cache_params (`MultiMamba2Cache`):
+        cache_params (`TestMamba2Cache`):
             The state of the model at the last time step. Can be used in a forward method with the next `input_ids` to
             avoid providing the old `input_ids`.
 
@@ -397,7 +412,7 @@ class MultiMamba2Output(ModelOutput):
     """
 
     last_hidden_state: Optional[torch.FloatTensor] = None
-    cache_params: Optional[MultiMamba2Cache] = None
+    cache_params: Optional[TestMamba2Cache] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
@@ -412,7 +427,7 @@ class Mamba2CausalLMOutput(ModelOutput):
             Language modeling loss (for next-token prediction).
         logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
             Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-        cache_params (`MultiMamba2Cache`):
+        cache_params (`TestMamba2Cache`):
             The state of the model at the last time step. Can be used in a forward method with the next `input_ids` to
             avoid providing the old `input_ids`.
 
@@ -426,7 +441,7 @@ class Mamba2CausalLMOutput(ModelOutput):
 
     loss: Optional[torch.FloatTensor] = None
     logits: Optional[torch.FloatTensor] = None
-    cache_params: Optional[MultiMamba2Cache] = None
+    cache_params: Optional[TestMamba2Cache] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
@@ -479,12 +494,12 @@ MAMBA2_INPUTS_DOCSTRING = r"""
     "The bare MAMBA2 Model transformer outputting raw hidden-states without any specific head on top.",
     MAMBA2_START_DOCSTRING,
 )
-class MultiMamba2Model(MultiMamba2PreTrainedModel):
+class TestMamba2Model(TestMamba2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([MultiMamba2Block(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([TestMamba2Block(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
 
         self.gradient_checkpointing = False
         self.norm_f = Mamba2RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
@@ -504,24 +519,29 @@ class MultiMamba2Model(MultiMamba2PreTrainedModel):
     def set_input_embeddings(self, new_embeddings):
         self.embeddings = new_embeddings
 
-    @add_start_docstrings_to_model_forward(MAMBA2_INPUTS_DOCSTRING)
-    @add_code_sample_docstrings(
-        checkpoint=_CHECKPOINT_FOR_DOC,
-        output_type=MultiMamba2Output,
-        config_class=_CONFIG_FOR_DOC,
-    )
+    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.LongTensor] = None,
-        cache_params: Optional[MultiMamba2Cache] = None,
+        cache_params: Optional[TestMamba2Cache] = None,
         use_cache: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
-    ) -> Union[Tuple, MultiMamba2Output]:
+    ) -> Union[Tuple, TestMamba2Output]:
+        r"""
+        cache_params (`Mamba2Cache`, *optional*):
+            If passed along, the model uses the previous state in all the blocks (which will give the output for the
+            `input_ids` provided as if the model add `state_input_ids + input_ids` as context).
+        use_cache (`bool`, *optional*):
+            If set to `True`, the `cache_params` is returned and can be used to quickly generate the next logits.
+        cache_position (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            The position of the current input in the cache. This is used to ensure that the cache is correctly updated.
+            If `cache_params` is passed, `cache_position` should also be passed.
+        """
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -539,7 +559,7 @@ class MultiMamba2Model(MultiMamba2PreTrainedModel):
 
         if use_cache:
             if cache_params is None:
-                cache_params = MultiMamba2Cache(
+                cache_params = TestMamba2Cache(
                     self.config, inputs_embeds.size(0), device=inputs_embeds.device, dtype=inputs_embeds.dtype
                 )
                 cache_position = torch.arange(0, self.config.conv_kernel, device=inputs_embeds.device)
@@ -573,9 +593,6 @@ class MultiMamba2Model(MultiMamba2PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-        if use_cache:
-            cache_params.seqlen_offset += inputs_embeds.shape[1]
-
         hidden_states = self.norm_f(hidden_states)
 
         if output_hidden_states:
@@ -584,7 +601,7 @@ class MultiMamba2Model(MultiMamba2PreTrainedModel):
         if not return_dict:
             return tuple(v for v in [hidden_states, cache_params, all_hidden_states] if v is not None)
 
-        return MultiMamba2Output(
+        return TestMamba2Output(
             last_hidden_state=hidden_states,
             cache_params=cache_params if use_cache else None,
             hidden_states=all_hidden_states,
@@ -598,12 +615,12 @@ class MultiMamba2Model(MultiMamba2PreTrainedModel):
     """,
     MAMBA2_START_DOCSTRING,
 )
-class MultiMamba2ForCausalLM(MultiMamba2PreTrainedModel, GenerationMixin):
+class TestMamba2ForCausalLM(TestMamba2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = []
 
     def __init__(self, config):
         super().__init__(config)
-        self.backbone = MultiMamba2Model(config)
+        self.backbone = TestMamba2Model(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         # Initialize weights and apply final processing
         self.post_init()
@@ -625,7 +642,7 @@ class MultiMamba2ForCausalLM(MultiMamba2PreTrainedModel, GenerationMixin):
         input_ids,
         inputs_embeds=None,
         use_cache=None,
-        cache_params: Optional[MultiMamba2Cache] = None,
+        cache_params: Optional[TestMamba2Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
@@ -676,27 +693,20 @@ class MultiMamba2ForCausalLM(MultiMamba2PreTrainedModel, GenerationMixin):
         else:
             model_inputs = {"input_ids": input_ids}
 
-        model_inputs.update(
-            {
-                "attention_mask": attention_mask,
-                "cache_params": cache_params,
-                "use_cache": use_cache,
-                "cache_position": cache_position,
-            }
-        )
+        model_inputs.update({
+            "attention_mask": attention_mask,
+            "cache_params": cache_params,
+            "use_cache": use_cache,
+            "cache_position": cache_position,
+        })
         return model_inputs
 
-    @add_start_docstrings_to_model_forward(MAMBA2_INPUTS_DOCSTRING)
-    @add_code_sample_docstrings(
-        checkpoint=_CHECKPOINT_FOR_DOC,
-        output_type=Mamba2CausalLMOutput,
-        config_class=_CONFIG_FOR_DOC,
-    )
+    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        cache_params: Optional[MultiMamba2Cache] = None,
+        cache_params: Optional[TestMamba2Cache] = None,
         labels: Optional[torch.LongTensor] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -706,10 +716,18 @@ class MultiMamba2ForCausalLM(MultiMamba2PreTrainedModel, GenerationMixin):
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, Mamba2CausalLMOutput]:
         r"""
+        cache_params (`Mamba2Cache`, *optional*):
+            If passed along, the model uses the previous state in all the blocks (which will give the output for the
+            `input_ids` provided as if the model add `state_input_ids + input_ids` as context).
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
+        use_cache (`bool`, *optional*):
+            If set to `True`, the `cache_params` is returned and can be used to quickly generate the next logits.
+        cache_position (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            The position of the current input in the cache. This is used to ensure that the cache is correctly updated.
+            If `cache_params` is passed, `cache_position` should also be passed.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
