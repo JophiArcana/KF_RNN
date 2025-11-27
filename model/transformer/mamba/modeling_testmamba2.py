@@ -79,7 +79,7 @@ class TestMamba2Cache:
         seqlen_offset: int
         dtype: torch.dtype
         conv_states: Dict[int, torch.Tensor] # layer_idx -> [batch_size, intermediate_size, conv_kernel_size]
-        ssm_states: Dict[int, torch.Tensor] # layer_idx -> [batch_size, intermediate_size, ssm_state_size]
+        ssm_states: Dict[int, torch.Tensor] # layer_idx -> [batch_size, intermediate_size, state_size]
     """
 
     def __init__(
@@ -142,8 +142,8 @@ class TestMamba2Mixer(nn.Module):
         super().__init__()
         self.num_heads = config.num_heads
         self.hidden_size = config.hidden_size
-        self.ssm_state_size = config.state_size
-        self.conv_kernel_size = config.conv_kernel
+        self.state_size = config.state_size
+        self.conv_kernel = config.conv_kernel
         self.intermediate_size = int(config.expand * self.hidden_size)
         self.time_step_rank = int(config.time_step_rank)
         self.layer_idx = layer_idx
@@ -162,14 +162,14 @@ class TestMamba2Mixer(nn.Module):
         self.time_step_min = config.time_step_min
         self.time_step_max = config.time_step_max
 
-        self.conv_dim = self.intermediate_size + 2 * self.n_groups * self.ssm_state_size
+        self.conv_dim = self.intermediate_size + 2 * self.n_groups * self.state_size
         self.conv1d = nn.Conv1d(
             in_channels=self.conv_dim,
             out_channels=self.conv_dim,
             bias=config.use_conv_bias,
             kernel_size=config.conv_kernel,
             groups=self.conv_dim,
-            padding=config.conv_kernel - 1,
+            # padding=config.conv_kernel - 1,
         )
 
         # projection of the input hidden states
@@ -218,7 +218,7 @@ class TestMamba2Mixer(nn.Module):
         do_inference = (cache_params is not None) and (cache_position is not None) and (cache_position[0] > 0)
         if do_inference:
             assert seq_len == 1, "Only supports inference for one token at a time."
-            hidden_states = hidden_states.squeeze(1)    # (B 2D)
+            # hidden_states = hidden_states.squeeze(1)    # (B 2D)
         else:
             apply_mask_to_padding_states(hidden_states, attention_mask)
 
@@ -228,43 +228,60 @@ class TestMamba2Mixer(nn.Module):
             dim=-1,
         )
 
-        if do_inference:
-            hidden_states_B_C = causal_conv1d_update(
-                hidden_states_B_C,
-                cache_params.conv_states[self.layer_idx],
-                self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-            )
-        else:
-            hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
-            conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - seq_len, 0,),)
-            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=conv_states, cache_init=True)
+        # if do_inference:
+        #     hidden_states_B_C = causal_conv1d_update(
+        #         hidden_states_B_C,
+        #         cache_params.conv_states[self.layer_idx],
+        #         self.conv1d.weight.squeeze(1),
+        #         bias=self.conv1d.bias,
+        #         activation=self.activation,
+        #     )
+        # else:
+        #     hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
+        #     conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel_size - seq_len, 0,),)
+        #     cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=conv_states, cache_init=True)
+        #
+        #     # 1D Convolution
+        #     hidden_states_B_C = causal_conv1d_fn(
+        #         hidden_states_B_C,
+        #         self.conv1d.weight.squeeze(1),
+        #         bias=self.conv1d.bias,
+        #         activation=self.activation,
+        #     ).transpose(1, 2)
 
+        hidden_states_B_C = hidden_states_B_C.transpose(1, 2)
+        if do_inference:
+            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=hidden_states_B_C, cache_init=False)
+            padded_conv_states = cache_params.conv_states[self.layer_idx]
+        else:
             # 1D Convolution
-            hidden_states_B_C = causal_conv1d_fn(
-                hidden_states_B_C,
-                self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-            ).transpose(1, 2)
+            padded_conv_states = Fn.pad(hidden_states_B_C, (self.conv_kernel - 1, 0,))
+            cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=padded_conv_states[..., -self.conv_kernel:], cache_init=True)
+        hidden_states_B_C = self.conv1d(padded_conv_states).mT
+
+        if do_inference:
+            hidden_states_B_C = hidden_states_B_C.squeeze(1)
+
+
 
         # hidden_states, B, C = map(lambda t: t.unflatten(-1, (self.n_groups, -1,)), torch.split(
         #     hidden_states_B_C,
-        #     [self.intermediate_size, self.n_groups * self.ssm_state_size, self.n_groups * self.ssm_state_size,],
+        #     [self.intermediate_size, self.n_groups * self.state_size, self.n_groups * self.state_size, ],
         #     dim=-1,
         # ))
+        # print(hidden_states_B_C.shape)
         hidden_states, B, C = torch.split(
             hidden_states_B_C.unflatten(-1, (self.n_groups, -1,)),
-            [self.intermediate_size // self.n_groups, self.ssm_state_size, self.ssm_state_size,],
+            [self.intermediate_size // self.n_groups, self.state_size, self.state_size,],
             dim=-1,
         )
 
         A = -torch.exp(self.A_log.float())  # (nheads,)
         if do_inference:
-            dt = dt[:, :, None].expand((-1, -1, self.head_dim,))
+            # dt = dt[:, :, None].expand((-1, -1, self.head_dim,))
+            dt = dt[:, 0, :, None].expand((-1, -1, self.head_dim,))
             dt_bias = self.dt_bias[:, None].expand((self.num_heads, self.head_dim,))
-            A = A[:, None, None].expand((-1, self.head_dim, self.ssm_state_size,))
+            A = A[:, None, None].expand((-1, self.head_dim, self.state_size,))
             D = self.D[:, None].expand((self.num_heads, self.head_dim,))
             hidden_states = selective_state_update(
                 cache_params.ssm_states[self.layer_idx],
@@ -281,6 +298,7 @@ class TestMamba2Mixer(nn.Module):
                 dt, A, B, C,
                 chunk_size=self.chunk_size,
                 D=torch.zeros_like(self.D),
+                # D=self.D,
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
                 dt_limit=self.time_step_limit,

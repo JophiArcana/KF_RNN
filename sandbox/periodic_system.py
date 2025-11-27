@@ -45,7 +45,7 @@ from system.linear_time_invariant import (
 
 if __name__ == "__main__":
     output_dir = "debugging_mamba"
-    output_fname = "result_test_mamba"
+    output_fname = "result2_test_mamba"
     # output_fname = "result_batch_sweep_exponential_lr"
 
     # dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
@@ -92,9 +92,6 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.model.bias = False
     ARGS_TRANSFORMER.model.adapter = True
 
-
-    ARGS_TRANSFORMER.model.model = ObservableMambaInContextPredictor
-    # ARGS_TRANSFORMER.model.model = AdaSyncSSMInContextPredictor
     # SUBSECTION: GPT2 Config
     gpt2_config = GPT2Config(
         n_positions=context_length,
@@ -137,7 +134,7 @@ if __name__ == "__main__":
         use_fast_conv_scan=True,
         chunk_size=16,
     )
-    ARGS_TRANSFORMER.model.config = observable_mamba_config
+    ARGS_TRANSFORMER.model.model, ARGS_TRANSFORMER.model.config = TestMamba2InContextPredictor, test_mamba2_config
 
     # SUBSECTION: Adasync Config
     adasync_config = AdaSyncSSMConfig(
@@ -175,7 +172,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.training.scheduler = Namespace(
         type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
         # type="exponential", lr_decay=0.982, warmup_duration=0,
-        epochs=20,
+        epochs=30,
     )
 
     ARGS_TRANSFORMER.experiment.n_experiments = 1
@@ -193,8 +190,8 @@ if __name__ == "__main__":
     # configurations_transformer = []
     configurations_transformer = [
         ("model", {
-            "model.model": [TestMamba2InContextPredictor, ObservableMambaInContextPredictor,],
-            "model.config": [test_mamba2_config, observable_mamba_config,],
+            "model.model": [TestMamba2InContextPredictor, Mamba2InContextPredictor,],
+            "model.config": [test_mamba2_config, mamba2_config,],
             # "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
         })
     ]
