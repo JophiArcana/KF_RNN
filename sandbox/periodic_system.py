@@ -44,7 +44,7 @@ from system.linear_time_invariant import (
 
 
 if __name__ == "__main__":
-    output_dir = "debugging_mamba"
+    output_dir = "debugging_mamba_copy"
     output_fname = "result2_test_mamba"
     # output_fname = "result_batch_sweep_exponential_lr"
 
@@ -352,12 +352,15 @@ if __name__ == "__main__":
     hparam_values = [*configurations_transformer[0][1].values()][0]
 
     clist = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    nrows = len(hparam_values)
-    plt.rcParams["figure.figsize"] = (10.0, 5.0 * nrows,)
-    fig, axs = plt.subplots(nrows=nrows,)
+    plt.rcParams["figure.figsize"] = (10.0, 5.0,)
+    fig, ax = plt.subplots()
+    ax: Axes
 
-    for i, (hparam_value, log_td) in enumerate(zip(hparam_values, training_log)):
-        ax: Axes = axs[i]
+    plot_kwargs_list = [
+        dict(),
+        dict(linestyle="--",),
+    ]
+    for i, (hparam_value, log_td, plot_kwargs) in enumerate(zip(hparam_values, training_log, plot_kwargs_list)):
         ax_lr = ax.twinx()
 
         for j, (k, v) in enumerate([
@@ -366,7 +369,7 @@ if __name__ == "__main__":
         ]):
             il = 0.0 # torch.mean(einops.rearrange(info_dict[v]["systems"].values[()].irreducible_loss.environment.observation, "1 b -> b",), dim=-1)
             l = torch.mean(log_td[k], dim=-1)
-            ax.plot((l - il).numpy(force=True), label=f"{hparam_name}{hparam_value}-{k}",)
+            ax.plot((l - il).numpy(force=True), color=clist[j], label=f"{hparam_name}{hparam_value}-{k}", **plot_kwargs,)
             print((l - il).min())
         # ax_lr.plot(lr.numpy(force=True), color="green", linestyle="--", label="lr",)
 
@@ -420,16 +423,16 @@ if __name__ == "__main__":
     """
     x = torch.arange(context_length)
 
-    plt.rcParams["figure.figsize"] = (10.0 * len(test_periods), 5.0 * nrows,)
-    fig, axs = plt.subplots(nrows=nrows, ncols=len(test_periods), sharey="row",)
-    for i, (hparam_value, log_td) in enumerate(zip(hparam_values, training_log)):
+    plt.rcParams["figure.figsize"] = (10.0 * len(test_periods), 5.0,)
+    fig, axs = plt.subplots(ncols=len(test_periods), sharey="row",)
+    for i, (hparam_value, log_td, plot_kwargs) in enumerate(zip(hparam_values, training_log, plot_kwargs_list)):
         for j, period in enumerate(test_periods):
-            ax: Axes = axs[i, j]
+            ax: Axes = axs[j]
 
             period_idx = test_periods.index(period)
             losses = (torch.norm(predicted_y[i, period_idx, :, :, :] - y[period_idx, :, :, :], dim=-1) ** 2).mean(dim=-2)
 
-            ax.plot((x + 1).numpy(force=True), losses[x].numpy(force=True), label="mse",)
+            ax.plot((x + 1).numpy(force=True), losses[x].numpy(force=True), label=f"{hparam_name}{hparam_value}-mse", **plot_kwargs,)
 
             ax.set_xlabel("timestep", fontsize=10)
             ax.set_xscale("log")
