@@ -1,3 +1,4 @@
+import collections
 import functools
 import gc
 import hashlib
@@ -470,15 +471,14 @@ def print_dict(d: dict[str, Any] | object, n: int = 0, indent: int = 4,) -> None
 Miscellaneous
 """
 class Timer:
-    _start_t: float = None
-    
-    @classmethod
-    def start(cls):
-        cls._start_t = time.perf_counter()
-    
-    @classmethod
-    def stop(cls) -> float:
-        return time.perf_counter() - cls._start_t
+    def __init__(self):
+        self.t = time.perf_counter()
+
+    def reset(self):
+        t = time.perf_counter()
+        out = t - self.t
+        self.t = t
+        return out
 
 def identity(x: Any) -> Any:
     return x
@@ -498,13 +498,20 @@ def empty_cache():
     gc.collect()
     torch.cuda.empty_cache()
 
-def print_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)):
-    for obj in gc.get_objects():
-        try:
-            if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None))):
-                print(type(obj), obj.size())
-        except:
-            pass
+def get_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)) -> OrderedDict[int, torch.Tensor]:
+    gc.collect()
+    tensors = [obj for obj in gc.get_objects() if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None)))]
+    indices = np.argsort([t.numel() for t in tensors])[::-1]
+    result = collections.OrderedDict()
+    for idx in indices:
+        t = tensors[idx]
+        result[t.data_ptr()] = t
+    return result
+
+def print_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)) -> None:
+    t_dict = get_tensors_in_memory(allowed_classes=allowed_classes)
+    for t in t_dict.values():
+        print(type(t), t.size(), t.numel())
 
 def get_all_hooks(module: nn.Module) -> Dict[str, Dict[int, Callable]]:
     """

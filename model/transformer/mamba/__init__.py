@@ -1,9 +1,11 @@
 from .mamba_icpredictor import (
-    ObservableMamba2InContextPredictor,
+    MambaInContextPredictor,
+    Mamba2InContextPredictor,
+    TestMamba2InContextPredictor,
 )
-from .modeling_mamba import (
-    ObservableMambaConfig,
-    ObservableMambaModel,
+from .modeling_testmamba2 import (
+    TestMamba2Config,
+    TestMamba2Model,
 )
 
 

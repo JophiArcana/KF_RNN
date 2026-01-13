@@ -1,6 +1,8 @@
 from argparse import Namespace
 from typing import *
 
+import einops
+import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -301,6 +303,56 @@ class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
         sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
 
         Q = TensorDict({}, batch_size=(*shape, S_D, S_D))
+        R = TensorDict({}, batch_size=shape)
+
+        return TensorDict.from_dict({
+            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
+            "controller": {"Q": Q, "R": R},
+        }, batch_size=shape).apply(nn.Parameter)
+
+
+class PeriodicDistribution(LTIZeroNoiseSystem.Distribution):
+    def __init__(
+            self,
+            periods: list[int],
+            deterministic: bool,
+    ) -> None:
+        LTIZeroNoiseSystem.Distribution.__init__(self)
+        self.periods = torch.tensor(periods)
+        self.deterministic = deterministic
+
+    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+        S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
+        assert S_D == 2 * O_D, "State dimension is expected to be twice observation dimension."
+        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Periodic system setting is assumed to have no controls."
+
+        if not self.deterministic:
+            period_idx = torch.randint(0, len(self.periods), (*shape, O_D,))
+        else:
+            period_idx = (torch.arange(np.prod(shape).item() * O_D) % len(self.periods)).view((*shape, O_D,))
+        period = self.periods[period_idx]
+
+        frequency = (2 * torch.pi) / period
+        sign = torch.where(torch.rand_like(frequency) > 0.5, 1.0, -1.0)
+        frequency = frequency * sign
+
+        cos, sin = torch.diag_embed(torch.cos(frequency)), torch.diag_embed(torch.sin(frequency))
+        _F = torch.stack((
+            torch.stack((cos, -sin), dim=-1),
+            torch.stack((sin, cos), dim=-1),
+        ), dim=-2)
+        F = einops.rearrange(_F, "... n1 n2 t1 t2 -> ... (n1 t1) (n2 t2)")
+
+        B = TensorDict({}, batch_size=(*shape, S_D,))
+
+        _H = torch.zeros((O_D, S_D,))
+        _H[range(O_D), range(0, S_D, 2)] = 1.0
+        H = _H.expand((*shape, O_D, S_D,))
+
+        sqrt_S_W = torch.zeros((*shape, S_D, S_D,))
+        sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
+
+        Q = TensorDict({}, batch_size=(*shape, S_D, S_D,))
         R = TensorDict({}, batch_size=shape)
 
         return TensorDict.from_dict({

@@ -1,28 +1,15 @@
 from argparse import Namespace
 
 import torch
-from transformers import (
-    MambaConfig,
-    MambaModel,
-    Mamba2Config,
-    Mamba2Model,
-)
 
 from model.transformer.base import TransformerPredictor
+from .modeling_adasync import AdaSyncSSMConfig, AdaSyncSSMModel
 
 
-class MambaInContextPredictor(TransformerPredictor):
+class AdaSyncSSMInContextPredictor(TransformerPredictor):
     def __init__(self, modelArgs: Namespace):
-        self.config: MambaConfig = modelArgs.mamba
-        TransformerPredictor.__init__(self, modelArgs, MambaModel(self.config), self.config.hidden_size)
-
-
-from .modeling_multimamba2 import MultiMamba2Model
-class Mamba2InContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
-        self.config: Mamba2Config = modelArgs.mamba2
-        # TransformerPredictor.__init__(self, modelArgs, MultiMamba2Model(self.config), self.config.hidden_size)
-        TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
+        self.config: AdaSyncSSMConfig = modelArgs.adasync
+        TransformerPredictor.__init__(self, modelArgs, AdaSyncSSMModel(self.config), self.config.hidden_size)
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         B, L = trace["environment"]["observation"].shape[:2]
