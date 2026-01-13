@@ -9,6 +9,7 @@ if os.getcwd() not in sys.path:
 
 import torch
 from model.transformer import ObservableMambaConfig, ObservableMambaModel
+from transformers.models.mamba.modeling_mamba import MambaMixer
 from transformers.models.mamba2.modeling_mamba2 import Mamba2Mixer, Mamba2Config, Mamba2Model
 
 from infrastructure import utils
