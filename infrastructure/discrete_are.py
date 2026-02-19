@@ -1,4 +1,4 @@
-from typing import *
+from typing import Optional
 
 import torch
 
@@ -6,7 +6,7 @@ import torch
 """
 Manually implemented computation of the Riccati solution. Worse precision but parallelizes much faster.
 """
-def _torch_schur(A: torch.Tensor, vectors_only: bool) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def _torch_schur(A: torch.Tensor, vectors_only: bool) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
     A_complex = torch.complex(A, torch.zeros_like(A))
     L, V = torch.linalg.eig(A_complex)                          # [B... x N], [B... x N x N]
     order = torch.argsort(L.abs(), dim=-1)                      # [B... x N]

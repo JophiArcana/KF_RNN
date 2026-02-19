@@ -1,5 +1,5 @@
 from argparse import Namespace
-from typing import *
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -18,14 +18,14 @@ class LeastSquaresPredictor(Predictor):
                             exclusive: Namespace,
                             model_pair: ModelPair,
                             cache: Namespace
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
-        reference_module, ensembled_learned_kfs = model_pair
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        reference_module, stacked_modules = model_pair
         return Predictor._train_with_initialization_and_error(
-            exclusive, ensembled_learned_kfs,
+            exclusive, stacked_modules,
             reference_module.vmap_train_least_squares, cache,
         )
 
-    def vmap_train_least_squares(self, exclusive_: Namespace) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+    def vmap_train_least_squares(self, exclusive_: Namespace) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         return utils.multi_vmap(
             self._least_squares_initialization, 2,
             randomness="different",
@@ -38,7 +38,7 @@ class LeastSquaresPredictor(Predictor):
     def __init__(self, modelArgs: Namespace):
         self.ridge = getattr(modelArgs, "ridge", 0.)
 
-    def _least_squares_initialization(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+    def _least_squares_initialization(self, trace: dict[str, dict[str, torch.Tensor]]) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         raise NotImplementedError()
 
 

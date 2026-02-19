@@ -1,5 +1,5 @@
 from argparse import Namespace
-from typing import *
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -18,7 +18,7 @@ class ZeroPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
         shape = systems.shape if kfs is None else torch.broadcast_shapes(kfs.shape, systems.shape)
@@ -82,7 +82,7 @@ class ZeroPredictor(Predictor):
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return ()
 
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, torch.Tensor]:
         trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
         valid_keys = [("environment", "observation",),] + [("controller", ac_name) for ac_name in trace["controller"].keys()]
         return TensorDict({
@@ -96,7 +96,7 @@ class ZeroController(ZeroPredictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, Namespace]:                       # [B...]
         result, cache = ZeroPredictor._analytical_error_and_cache(kfs, systems)
 
         # Variable definition

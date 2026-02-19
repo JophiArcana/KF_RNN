@@ -7,7 +7,7 @@ from argparse import Namespace
 
 from infrastructure import loader
 from infrastructure.experiment import run_experiments, plot_experiment, get_result_attr
-from model.sequential import RnnAnalyticalPretrainPredictor, RnnLeastSquaresPredictor
+from model.sequential import RnnKalmanInitializedPredictor, RnnLeastSquaresPredictor
 from model.convolutional import CnnLeastSquaresPredictor
 
 

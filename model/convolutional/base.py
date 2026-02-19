@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import *
 
 import torch
 import torch.nn.functional as Fn
@@ -14,7 +13,7 @@ class ConvolutionalPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, Namespace]:                       # [B...]
         # Variable definition
         controller_keys = systems.get(("environment", "B"), {}).keys()
         shape = utils.broadcast_shapes(kfs.shape, systems.shape)
@@ -126,7 +125,7 @@ class ConvolutionalPredictor(Predictor):
             }
         }
     """
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
+    def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         trace = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment"]["observation"]
 

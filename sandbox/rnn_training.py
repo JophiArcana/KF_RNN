@@ -22,7 +22,7 @@ from infrastructure.experiment import *
 from infrastructure.experiment.plotting import COLOR_LIST
 from system.linear_time_invariant import LTISystem, MOPDistribution
 from model.zero_predictor import ZeroPredictor
-from model.sequential import RnnPredictor, RnnAnalyticalPretrainPredictor
+from model.sequential import RnnPredictor, RnnKalmanInitializedPredictor
 
 
 if __name__ == "__main__":

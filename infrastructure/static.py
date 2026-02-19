@@ -1,5 +1,5 @@
 from argparse import Namespace
-from typing import *
+from typing import Callable
 
 import numpy as np
 import torch
@@ -26,12 +26,12 @@ TrainFunc = tuple[
 ]
 
 PARAM_GROUP_FORMATTER: str = "{0}_d({1})"
-TRAINING_DATASET_TYPES: List[str] = [
+TRAINING_DATASET_TYPES: list[str] = [
     "train",
     "valid",
 ]
 TESTING_DATASET_TYPE: str = "test"
-DATASET_SUPPORT_PARAMS: List[str] = [
+DATASET_SUPPORT_PARAMS: list[str] = [
     "n_traces",
     "total_sequence_length",
     "system.n_systems"

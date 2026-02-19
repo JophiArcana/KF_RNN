@@ -1,6 +1,6 @@
 import collections
 from argparse import Namespace
-from typing import *
+from typing import Any, Callable, OrderedDict
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ class Metric(object):
     def compute(cls,
                 mv: MetricVars,
                 dependency: str,
-                cache: Dict[str, np.ndarray[TensorDict]]
+                cache: dict[str, np.ndarray[TensorDict]]
     ) -> np.ndarray[TensorDict]:
         if dependency not in cache:
             exclusive, model_pair = mv
@@ -34,12 +34,12 @@ class Metric(object):
             cache[dependency] = run_arr
         return cache[dependency]
 
-    def __init__(self, evaluate_func: Callable[[MetricVars, Dict[str, np.ndarray[TensorDict]], bool], np.ndarray[torch.Tensor]]) -> None:
+    def __init__(self, evaluate_func: Callable[[MetricVars, dict[str, np.ndarray[TensorDict]], bool], np.ndarray[torch.Tensor]]) -> None:
         self._evaluate_func = evaluate_func
 
     def evaluate(self,
                  mv: MetricVars,
-                 cache: Dict[str, np.ndarray[TensorDict]],
+                 cache: dict[str, np.ndarray[TensorDict]],
                  sweep_position: str,
                  with_batch_dim: bool
     ) -> torch.Tensor:
@@ -67,7 +67,7 @@ def _get_metric_with_loss_fn_and_dataset_type(ds_type: str, loss_fn: LossFn, kwa
     noiseless: bool = kwargs.get("noiseless", False)
     def eval_func(
             mv: MetricVars,
-            cache: Dict[str, np.ndarray[TensorDict]],
+            cache: dict[str, np.ndarray[TensorDict]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
 
@@ -115,10 +115,10 @@ def _get_metric_with_loss_fn_and_dataset_type(ds_type: str, loss_fn: LossFn, kwa
 def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
-            cache: Dict[str, np.ndarray[TensorDict]],
+            cache: dict[str, np.ndarray[TensorDict]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
-        exclusive, ensembled_learned_kfs = mv
+        exclusive, _ = mv
 
         def noiseless_error(args: tuple[PTR, SystemGroup]) -> torch.Tensor:
             dataset, sg = args
@@ -140,10 +140,10 @@ def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: tupl
 def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: tuple[str, ...], target2: tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
-            cache: Dict[str, np.ndarray[TensorDict]],
+            cache: dict[str, np.ndarray[TensorDict]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
-        exclusive, ensembled_learned_kfs = mv
+        exclusive, _ = mv
         return utils.multi_map(
             lambda dataset: Predictor.evaluate_run(dataset.obj[target1], dataset.obj, target2, batch_mean=not with_batch_dim),
             utils.rgetattr(exclusive, f"info.{ds_type}.dataset"), dtype=torch.Tensor
@@ -153,14 +153,14 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
 def _get_analytical_error_with_dataset_type_and_key(ds_type: str, key: tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
-            cache: Dict[str, np.ndarray[TensorDict]],
+            cache: dict[str, np.ndarray[TensorDict]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
-        exclusive, (reference_module, ensembled_learned_kfs) = mv
+        exclusive, (reference_module, stacked_modules) = mv
 
         def analytical_error(sg: SystemGroup) -> torch.Tensor:
             return _unsqueeze_if(reference_module.analytical_error(
-                ensembled_learned_kfs[:, :, None],
+                stacked_modules[:, :, None],
                 sg.td()[:, None, :]
             )[key], with_batch_dim)
 
@@ -171,7 +171,7 @@ def _get_analytical_error_with_dataset_type_and_key(ds_type: str, key: tuple[str
 def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
     def eval_func(
             mv: MetricVars,
-            cache: Dict[str, np.ndarray[TensorDict]],
+            cache: dict[str, np.ndarray[TensorDict]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
         # raise NotImplementedError("This metric is outdated, and we need to derive a new way of determining convergence.")
@@ -207,10 +207,10 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
 def _get_irreducible_loss_with_dataset_type_and_key(ds_type: str, key: tuple[str, ...]) -> Metric:
     def eval_func(
             mv: MetricVars,
-            cache: Dict[str, np.ndarray[TensorDict]],
+            cache: dict[str, np.ndarray[TensorDict]],
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
-        exclusive, ensembled_learned_kfs = mv
+        exclusive, _ = mv
         return utils.multi_map(
             lambda sg: _unsqueeze_if(sg.td()[("irreducible_loss", *key)][:, None], with_batch_dim),
             utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor

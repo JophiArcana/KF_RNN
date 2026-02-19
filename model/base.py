@@ -2,7 +2,7 @@ import gc
 from argparse import Namespace
 from collections import OrderedDict
 from types import MappingProxyType
-from typing import *
+from typing import Any, Callable, Sequence
 
 import numpy as np
 import torch
@@ -10,6 +10,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.static import TrainFunc
 
 
 class Observer(nn.Module):
@@ -31,20 +32,20 @@ class Predictor(Observer):
     def run(cls,
             model_pair: "utils.ModelPair",
             dataset: TensorDict,
-            kwargs: Dict[str, Any] = MappingProxyType(dict()),
+            kwargs: dict[str, Any] = MappingProxyType(dict()),
             split_size: int = 1 << 20,
     ) -> TensorDict:
-        ensembled_kfs = model_pair[1]
-        n = ensembled_kfs.ndim
+        stacked_modules = model_pair[1]
+        n = stacked_modules.ndim
         L = dataset.shape[-1]
         
-        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        _dataset = dataset.reshape((*ensembled_kfs.shape, -1, L))
+        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[stacked_modules.ndim:]}"
+        _dataset = dataset.reshape((*stacked_modules.shape, -1, L))
         numel = sum(v.numel() for _, v in _dataset.items())
 
         _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
-            _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
+            _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*stacked_modules.shape, -1, L)
             _result_list.append(TensorDict(utils.run_module_arr(
                 model_pair,
                 _dataset_slice,
@@ -58,20 +59,20 @@ class Predictor(Observer):
     def gradient(cls,
                  model_pair: "utils.ModelPair",
                  dataset: TensorDict,
-                 kwargs: Dict[str, Any] = MappingProxyType(dict()),
+                 kwargs: dict[str, Any] = MappingProxyType(dict()),
                  split_size: int = 1 << 20
     ) -> TensorDict:
-        ensembled_kfs = model_pair[1]
-        n = ensembled_kfs.ndim
+        stacked_modules = model_pair[1]
+        n = stacked_modules.ndim
         L = dataset.shape[-1]
 
-        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[ensembled_kfs.ndim:]}"
-        _dataset = dataset.reshape(*ensembled_kfs.shape, -1, L)
+        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[stacked_modules.ndim:]}"
+        _dataset = dataset.reshape(*stacked_modules.shape, -1, L)
         numel = sum(v.numel() for _, v in _dataset.items())
 
         _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
-            _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*ensembled_kfs.shape, -1, L)
+            _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*stacked_modules.shape, -1, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
 
             out = Predictor.run(model_pair, _dataset_slice)[..., -1]["environment", "observation"].norm() ** 2
@@ -87,7 +88,7 @@ class Predictor(Observer):
     def evaluate_run(cls,
                      result: torch.Tensor | float,                          # [B... x N x B x L x ...]
                      target_dict: TensorDict,            # [B... x N x B x L x ...]
-                     target_key: Tuple[str, ...],
+                     target_key: tuple[str, ...],
                      batch_mean: bool = True,
     ) -> torch.Tensor:
         losses = torch.norm(result - target_dict[target_key], dim=-1) ** 2  # [B... x N x B x L]
@@ -97,16 +98,16 @@ class Predictor(Observer):
 
     @classmethod
     def clone_parameter_state(cls, model_pair: "utils.ModelPair") -> "utils.ModelPair":
-        reference_module, ensembled_learned_kfs = model_pair
-        reset_ensembled_learned_kfs = TensorDict({}, batch_size=ensembled_learned_kfs.batch_size)
-        for k, v in utils.td_items(ensembled_learned_kfs).items():
+        reference_module, stacked_modules = model_pair
+        reset_stacked_modules = TensorDict({}, batch_size=stacked_modules.batch_size)
+        for k, v in utils.td_items(stacked_modules).items():
             t = utils.rgetattr(reference_module, k)
             k = (*k.split("."),)
             if isinstance(t, nn.Parameter):
-                reset_ensembled_learned_kfs[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
+                reset_stacked_modules[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
             else:
-                reset_ensembled_learned_kfs[k] = torch.Tensor(v.clone())
-        return (reference_module, reset_ensembled_learned_kfs,)
+                reset_stacked_modules[k] = torch.Tensor(v.clone())
+        return (reference_module, reset_stacked_modules,)
 
     @classmethod
     def terminate_with_initialization_and_error(
@@ -121,17 +122,19 @@ class Predictor(Observer):
     @classmethod
     def _train_with_initialization_and_error(cls,
                                              exclusive: Namespace,
-                                             ensembled_learned_kfs: TensorDict,
+                                             stacked_modules: TensorDict,
                                              initialization_func: Callable[[
-                                                 Namespace
-                                             ], Tuple[Dict[str, Any], torch.Tensor]],
+                                                 TensorDict,
+                                                 Namespace,
+                                             ], tuple[dict[str, Any], torch.Tensor]],
                                              cache: Namespace
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if not hasattr(cache, "initialization_error"):
-            initialization, error_ = initialization_func(exclusive)
-            for k, v in ensembled_learned_kfs.items(include_nested=True, leaves_only=True):
-                ensembled_learned_kfs[k] = utils.rgetitem(initialization, k if isinstance(k, str) else ".".join(k)).expand_as(v)
-            cache.initialization_error = error_.expand(ensembled_learned_kfs.shape)
+            initialization, error_ = initialization_func(stacked_modules, exclusive)
+            for k, v in utils.flatten_nested_dict(initialization).items():
+                tdk = (*k.split("."),)
+                stacked_modules[tdk] = v.expand_as(stacked_modules[tdk])
+            cache.initialization_error = error_.expand(stacked_modules.shape)
             error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj, ("environment", "observation")).mean(dim=-1)
         else:
             cache.done = True
@@ -151,15 +154,15 @@ class Predictor(Observer):
             'observation_covariance': [B x L x O_D x O_D]   (Optional)
         }
     """
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, Dict[str, torch.Tensor]]:
+    def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, dict[str, torch.Tensor]]:
         raise NotImplementedError()
 
     @classmethod
-    def trace_to_td(cls, trace: Dict[str, Dict[str, torch.Tensor]]) -> TensorDict:
+    def trace_to_td(cls, trace: dict[str, dict[str, torch.Tensor]]) -> TensorDict:
         return TensorDict.from_dict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
 
     @classmethod
-    def train_func_list(cls, default_train_func: Tuple[Any, Any]) -> Sequence[Tuple[Any, Any]]:
+    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return default_train_func,
 
     @classmethod
@@ -173,7 +176,7 @@ class Predictor(Observer):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,     # [B... x ...]
                                     sg_td: TensorDict    # [B... x ...]
-    ) -> Tuple[TensorDict, Namespace]:                   # [B...]
+    ) -> tuple[TensorDict, Namespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
 

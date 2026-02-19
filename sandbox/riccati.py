@@ -1,5 +1,3 @@
-from typing import *
-
 import torch
 
 from infrastructure import utils
@@ -10,7 +8,7 @@ Manually implemented computation of the Riccati solution. Worse precision but pa
 """
 
 
-def _torch_schur(A: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def _torch_schur(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     A_complex = torch.complex(A, torch.zeros_like(A))
     L, V = torch.linalg.eig(A_complex)                          # [B... x N], [B... x N x N]
     order = torch.argsort(L.abs(), dim=-1)                      # [B... x N]

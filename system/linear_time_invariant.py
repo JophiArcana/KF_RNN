@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import *
 
 import einops
 import numpy as np
@@ -142,7 +141,7 @@ class MOPDistribution(LTISystem.Distribution):
         self.W_std, self.V_std = W_std, V_std
         self.B_scale, self.Q_scale, self.R_scale = B_scale, Q_scale, R_scale
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
         match self.F_mode:
@@ -186,7 +185,7 @@ class MOPDistribution(LTISystem.Distribution):
 
 
 class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert S_D == O_D, "Orthonormal system setting is assumed to be fully observed."
         assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
@@ -227,7 +226,7 @@ class ContinuousDistribution(LTISystem.Distribution):
         self.eps = eps
         self.W_std, self.V_std = W_std, V_std
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
         match self.F_mode:
@@ -274,7 +273,7 @@ class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
         self.H_mode = H_mode
         self.eps = eps
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
 
@@ -321,7 +320,7 @@ class PeriodicDistribution(LTIZeroNoiseSystem.Distribution):
         self.periods = torch.tensor(periods)
         self.deterministic = deterministic
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert S_D == 2 * O_D, "State dimension is expected to be twice observation dimension."
         assert len(vars(SHP.problem_shape.controller).items()) == 0, "Periodic system setting is assumed to have no controls."

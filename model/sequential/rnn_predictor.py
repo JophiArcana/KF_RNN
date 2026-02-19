@@ -1,16 +1,16 @@
 from argparse import Namespace
-from typing import *
+from typing import Sequence
 
 import einops
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
-from causal_conv1d.cpp_functions import causal_conv1d_fwd_function
+# from causal_conv1d.cpp_functions import causal_conv1d_fwd_function
 from tensordict import TensorDict, NonTensorData
 
 from infrastructure import utils
-from infrastructure.static import TrainFunc
+from infrastructure.static import ModelPair, TrainFunc
 from model.base import Predictor
 from model.sequential.base import SequentialPredictor
 from model.least_squares_predictor import LeastSquaresPredictor
@@ -30,18 +30,18 @@ class RnnPredictor(SequentialPredictor):
         self.K = nn.Parameter(initialization.get("K", torch.zeros((self.S_D, self.O_D,))))
 
 
-class RnnAnalyticalPredictor(RnnPredictor):
+class RnnKalmanPredictor(RnnPredictor):
     @classmethod
     def train_analytical(cls,
                          THP: Namespace,
                          exclusive: Namespace,
-                         ensembled_learned_kfs: TensorDict,
+                         model_pair: ModelPair,
                          cache: Namespace
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], bool]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         return Predictor._train_with_initialization_and_error(
-            exclusive, ensembled_learned_kfs,
-            lambda exclusive_: ({
+            exclusive, model_pair[1],
+            lambda stacked_modules_, exclusive_: ({
                 **exclusive_.train_info.systems.td().get("environment", {}),
                 **exclusive_.train_info.systems.td().get("controller", {})
             }, Predictor.evaluate_run(
@@ -55,10 +55,10 @@ class RnnAnalyticalPredictor(RnnPredictor):
         return (cls.train_analytical, Predictor.terminate_with_initialization_and_error,),
 
 
-class RnnAnalyticalPretrainPredictor(RnnAnalyticalPredictor):
+class RnnKalmanInitializedPredictor(RnnKalmanPredictor):
     @classmethod
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return RnnAnalyticalPredictor.train_func_list(default_train_func) + (default_train_func,)
+        return RnnKalmanPredictor.train_func_list(default_train_func) + (default_train_func,)
 
 
 class RnnComplexDiagonalPredictor(SequentialPredictor):
@@ -102,14 +102,14 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, Namespace]:                       # [B...]
         kfs = kfs.clone()
         F = torch.diag_embed(torch.exp(kfs["logD"])) + kfs["P"] @ kfs["H"]
         kfs["F"] = F
         kfs["K"] = torch.inverse(F) @ kfs["P"]
         return SequentialPredictor._analytical_error_and_cache(kfs, systems)
 
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:
+    def forward(self, trace: dict[str, dict[str, torch.Tensor]]) -> dict[str, dict[str, torch.Tensor]]:
         trace: TensorDict = self.trace_to_td(trace)
         actions, observations = trace["controller"], trace["environment", "observation"]    # [B... x L x I_D?], [B... x L x O_D]
 
@@ -147,12 +147,13 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
         }
 
 
+
 # class RnnLeastSquaresPredictor(RnnPredictor, LeastSquaresPredictor):
 #     def __init__(self, modelArgs: Namespace):
 #         RnnPredictor.__init__(self, modelArgs)
 #         LeastSquaresPredictor.__init__(self, modelArgs)
 #
-#     def _least_squares_initialization(self, trace: Dict[str, Dict[str, torch.Tensor]]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+#     def _least_squares_initialization(self, trace: dict[str, dict[str, torch.Tensor]]) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
 #         trace = self.trace_to_td(trace).flatten(0, -2)
 #         actions, observations = trace["controller"], trace["environment"]["observation"]
 #
@@ -162,7 +163,7 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
 #         parameters = utils.parameter_td(self).apply(torch.Tensor.detach)
 #         parameter_eqs = parameters.apply(lambda t: NonTensorData(None), batch_size=())
 #
-#         def update_parameter_eqs(k_: Union[str, Tuple[str, ...]], X_: torch.Tensor, y_: torch.Tensor) -> None:
+#         def update_parameter_eqs(k_: Union[str, tuple[str, ...]], X_: torch.Tensor, y_: torch.Tensor) -> None:
 #             eqs = parameter_eqs[k_]
 #             y_ = y_[..., None]
 #             XTX_, XTy_ = X_.mT @ X_, X_.mT @ y_

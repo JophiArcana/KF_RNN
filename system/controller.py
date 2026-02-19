@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import *
 
 import torch
 import torch.nn as nn
@@ -11,7 +10,7 @@ from model.base import Controller
 
 
 class ControllerGroup(ModuleGroup):
-    def __init__(self, problem_shape: Namespace, group_shape: Tuple[int, ...]):
+    def __init__(self, problem_shape: Namespace, group_shape: tuple[int, ...]):
         ModuleGroup.__init__(self, group_shape)
         self.problem_shape = problem_shape
 
@@ -35,7 +34,7 @@ class ZeroControllerGroup(ControllerGroup):
 
 
 class LinearControllerGroup(ControllerGroup):
-    def __init__(self, problem_shape: Namespace, group_shape: Tuple[int, ...]):
+    def __init__(self, problem_shape: Namespace, group_shape: tuple[int, ...]):
         ControllerGroup.__init__(self, problem_shape, group_shape)
         self.L = nn.Module()
 
@@ -56,19 +55,18 @@ class NNControllerGroup(ControllerGroup):
     def __init__(self,
                  problem_shape: Namespace,
                  reference_module: Controller,
-                 ensembled_learned_controllers: TensorDict
+                 stacked_controllers: TensorDict
     ):
-        ControllerGroup.__init__(self, problem_shape, ensembled_learned_controllers.shape)
+        ControllerGroup.__init__(self, problem_shape, stacked_controllers.shape)
         self.reference_module = reference_module
-        self.ensembled_learned_controllers = ensembled_learned_controllers
+        self.stacked_controllers = stacked_controllers
 
     def act(self,
             history: TensorDict  # [N... x B x L x ...]
     ) -> TensorDict:             # [N... x B x ...]
         return TensorDict(utils.run_module_arr(
-            self.reference_module,
-            self.ensembled_learned_controllers,
-            torch.cat([history, history[..., -1:].apply(torch.zeros_like)], dim=-1)
+            (self.reference_module, self.stacked_controllers,),
+            torch.cat([history, history[..., -1:].apply(torch.zeros_like)], dim=-1),
         ), batch_size=(*history.shape[:-1], history.shape[-1] + 1))[..., -1]["controller"]
 
 

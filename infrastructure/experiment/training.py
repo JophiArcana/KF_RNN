@@ -254,7 +254,7 @@ def TRAIN_DEFAULT(
     result = torch.stack(result, dim=0)
     log = {
         "learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"]),
-        # "imag": sum(torch.norm(v.imag) ** 2 for v in ensembled_learned_kfs.values(include_nested=True, leaves_only=True)),
+        # "imag": sum(torch.norm(v.imag) ** 2 for v in model_pair[1].values(include_nested=True, leaves_only=True)),
     }
     if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
         utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
@@ -266,7 +266,7 @@ def TRAIN_DEFAULT(
 class Checkpoint:
     training_func_idx: int
     cache: Namespace
-    ensembled_learned_kfs: TensorDict
+    stacked_modules: TensorDict
     results: list[TensorDict]
 
 
@@ -294,12 +294,12 @@ def _run_training(
         results = checkpoint.results
 
         if hasattr(cache, "optimizer"):
-            # TODO: If an optimizer is used for training, then ensembled_learned_kfs needs to reference the parameters optimized by the optimizer
+            # TODO: If an optimizer is used for training, then stacked_modules needs to reference the parameters optimized by the optimizer
             optimizer: optim.Optimizer = cache.optimizer
             checkpoint_params = zip(optimizer.param_groups[0]["param_names"], optimizer.param_groups[0]["params"],)
         else:
-            # TODO: Otherwise, copying the values stored by the checkpointed ensembled_learned_kfs is sufficient
-            checkpoint_params = checkpoint.ensembled_learned_kfs.items(include_nested=True, leaves_only=True)
+            # TODO: Otherwise, copying the values stored by the checkpointed stacked_modules is sufficient
+            checkpoint_params = checkpoint.stacked_modules.items(include_nested=True, leaves_only=True)
        
         for k, v in checkpoint_params:
             model_pair[1][k] = v
@@ -385,7 +385,7 @@ def _run_training(
                 checkpoint = Checkpoint(
                     training_func_idx=idx,
                     cache=cache,
-                    ensembled_learned_kfs=model_pair[1],
+                    stacked_modules=model_pair[1],
                     results=results,
                 )
                 for checkpoint_path in checkpoint_paths:
@@ -478,18 +478,6 @@ def _run_unit_training_experiment(
         for k, v in loss_arr_dict.items():
             utils.rsetitem(df_dict, ".".join(map(str.upper, k)), pd.DataFrame(v, evaluation_targets.keys(), loss_types))  
         utils.print_dict(df_dict)
-
-    # avg = lambda t: t.mean().item()
-    # for loss_type in ("zero_predictor_loss", "copy_predictor_loss", "irreducible_loss",):
-    #     print(f"Mean {loss_type.replace('_', ' ')} {'-' * 80}")
-    #     for ds_type, ds_info in vars(info).items():
-    #         try:
-    #             print(f"\t{ds_type}:", utils.multi_map(
-    #                 lambda sg: utils.map_dict(sg.td()[loss_type], avg),
-    #                 ds_info.systems, dtype=dict,
-    #             ))
-    #         except Exception:
-    #             pass
 
     # SECTION: Setup result and run training
     return {

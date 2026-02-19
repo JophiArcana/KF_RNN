@@ -1,12 +1,10 @@
-from typing import *
-
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
 
 class ModuleGroup(nn.Module):
-    def __init__(self, group_shape: Tuple[int, ...]):
+    def __init__(self, group_shape: tuple[int, ...]):
         super().__init__()
         self.group_shape = (*map(int, group_shape),)
 

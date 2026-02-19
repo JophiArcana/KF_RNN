@@ -1,4 +1,4 @@
-from typing import *
+from typing import Any
 
 import numpy as np
 import torch
@@ -21,10 +21,11 @@ COLOR_LIST = np.array([
 
 def plot_experiment(
         plot_name: str,
-        configurations: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
+        configurations: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         result: DimArray,
         loss_type: str = "empirical",
         xscale: str = "log",
+        normalize: bool = True,
         clip: float = 1e-6,
         lstsq: bool = True,
         n_experiment_idx: int = 0
@@ -39,9 +40,9 @@ def plot_experiment(
     M = get_metric_namespace_from_result(result)
 
     if loss_type == "empirical":
-        snvl_arr = M.l - M.eil
+        snvl_arr = M.l - M.eil if normalize else M.l
     elif loss_type == "analytical":
-        snvl_arr = M.al - M.il
+        snvl_arr = M.al - M.il if normalize else M.al
     else:
         snvl_arr = None
         assert loss_type in ("empirical", "analytical"), f"Loss type must be one of ('empirical', 'analytical') but got {repr(loss_type)}."

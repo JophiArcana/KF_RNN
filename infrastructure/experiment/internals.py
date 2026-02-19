@@ -3,6 +3,7 @@ import os
 import re
 from argparse import Namespace
 from collections import OrderedDict
+from typing import Any, Iterable, Sequence
 
 import torch
 from dimarray import DimArray, Dataset
@@ -30,9 +31,9 @@ def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str], 
 
 def _construct_dependency_dict_and_params_dataset(
         HP: Namespace,
-        iterparams: List[Tuple[str, Dict[str, Any]]],
-        assertion_conditions: Iterable[Tuple[Callable[[str], bool], str]] = ()
-) -> Tuple[OrderedDict[str, Tuple[int, List[str]]], Dataset]:
+        iterparams: list[tuple[str, dict[str, Any]]],
+        assertion_conditions: Iterable[tuple[Callable[[str], bool], str]] = ()
+) -> tuple[OrderedDict[str, tuple[int, list[str]]], Dataset]:
 
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
@@ -65,7 +66,7 @@ def _construct_dependency_dict_and_params_dataset(
     return dependency_dict, Dataset(dataset)
 
 def _filter_dimensions_if_any_satisfy_condition(
-        dependency_dict: Dict[str, Tuple[int, List[str]]],
+        dependency_dict: dict[str, tuple[int, list[str]]],
         condition: Callable[[str], Any]
 ) -> OrderedDict[str, int]:
     return OrderedDict([
@@ -77,7 +78,7 @@ def _iterate_HP_with_params(
         HP: Namespace,
         dimensions: OrderedDict[str, int],
         params_dataset: Dataset,
-) -> Iterable[Tuple[OrderedDict[str, int], Namespace]]:
+) -> Iterable[tuple[OrderedDict[str, int], Namespace]]:
     for idx in itertools.product(*map(range, dimensions.values())):
         dict_idx = OrderedDict([*zip(dimensions.keys(), idx)])
         sub_HP = utils.deepcopy_namespace(HP)
@@ -99,7 +100,7 @@ def _map_HP_with_params(
 
 def _get_param_dimarr(
         HP: Namespace,
-        dimensions: OrderedDict[str, Tuple[int, List[str]]],
+        dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: Dataset,
         param: str, dtype: type
 ):
@@ -111,12 +112,12 @@ def _get_param_dimarr(
 
 def _construct_info_dict(
         HP: Namespace,
-        dimensions: OrderedDict[str, Tuple[int, List[str]]],
+        dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: Dataset,
         info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
         ds_type: str,
-        save_dict: Dict[str, Dict[str, Any]],
-        systems: Dict[str, DimArray] = None,
+        save_dict: dict[str, dict[str, Any]],
+        systems: dict[str, DimArray] = None,
 ) -> OrderedDict[str, DimArray]:
 
     result = OrderedDict()
@@ -194,7 +195,7 @@ def _construct_info_dict(
 
         system_params_arr = _map_HP_with_params(
             HP, system_param_dimensions, params_dataset,
-            retrieve_system_params_from_system, dtype=PTR
+            retrieve_system_params_from_system, dtype=PTR,
         )
     result["system_params"] = system_params_arr
 
@@ -221,6 +222,8 @@ def _construct_info_dict(
             print(f"Generating new dataset for dataset type {ds_type}")
             dataset_dimensions = OrderedDict([*zip(systems_arr.dims, systems_arr.shape)])
             # TODO: Figure out what I wrote this line for
+            if len(_filter_dimensions_if_any_satisfy_condition(dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param))) > 0:
+                print(_filter_dimensions_if_any_satisfy_condition(dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)))
             # dataset_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
             #     dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)
             # ))
@@ -265,12 +268,12 @@ def _construct_info_dict(
 
 def _construct_info_dict_from_dataset_types(
         HP: Namespace,
-        dimensions: OrderedDict[str, Tuple[int, List[str]]],
+        dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: Dataset,
         info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
         dataset_types: Sequence[str],
         output_dir: str,
-        default_systems: Dict[str, DimArray] = None
+        default_systems: dict[str, DimArray] = None
 ) -> OrderedDict[str, OrderedDict[str, DimArray]]:
     saved_fname_dict, unsaved_fname_dict = {}, {}
     for attr in INFO_DTYPE.names:

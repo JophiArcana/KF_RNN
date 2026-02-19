@@ -1,9 +1,11 @@
+import collections
 import json
 import os
 import re
 import shutil
 import time
 from argparse import Namespace
+from typing import Any, OrderedDict
 
 import numpy.core.records as np_records
 import torch
@@ -20,7 +22,7 @@ from infrastructure.experiment.internals import (
     _process_info_dict,
     _populate_values,
 )
-from infrastructure.experiment.metrics import METRIC_DICT
+from infrastructure.experiment.metrics import METRIC_DICT, Metric
 from infrastructure.static import *
 from infrastructure.experiment.training import _run_unit_training_experiment
 from infrastructure.settings import DEVICE
@@ -28,12 +30,12 @@ from infrastructure.settings import DEVICE
 
 def run_experiments(
         HP: Namespace,
-        iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
-        output_kwargs: Dict[str, Any],
-        systems: Dict[str, DimArray] = None,
+        iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
+        output_kwargs: dict[str, Any],
+        systems: dict[str, DimArray] = None,
         initialization: DimArray = None,
         save_experiment: bool = True
-) -> Tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
+) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
     HP = utils.deepcopy_namespace(HP)
 
     training_iterparams = []
@@ -80,13 +82,13 @@ def run_experiments(
 
 def run_training_experiments(
         HP: Namespace,
-        iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
-        output_kwargs: Dict[str, Any],
-        systems: Dict[str, DimArray] = None,
+        iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
+        output_kwargs: dict[str, Any],
+        systems: dict[str, DimArray] = None,
         initialization: DimArray = None,
         save_experiment: bool = True,
         print_hyperparameters: bool = False,
-) -> Tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
+) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
     HP = utils.deepcopy_namespace(HP)
 
     # Set up file names
@@ -117,7 +119,7 @@ def run_training_experiments(
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
     INFO_DICT = _construct_info_dict_from_dataset_types(
-        HP, dimensions, params_dataset, OrderedDict(), TRAINING_DATASET_TYPES, train_output_dir,
+        HP, dimensions, params_dataset, collections.OrderedDict(), TRAINING_DATASET_TYPES, train_output_dir,
         default_systems=systems,
     )
 
@@ -151,7 +153,7 @@ def run_training_experiments(
         )
 
     # DONE: Restructure INFO_DICT for easier access during training
-    PROCESSED_INFO_DICT: Dict[str, DimArray] = {k: _process_info_dict(v) for k, v in INFO_DICT.items()}
+    PROCESSED_INFO_DICT: dict[str, DimArray] = {k: _process_info_dict(v) for k, v in INFO_DICT.items()}
 
 
     # SECTION: Run the training experiments
@@ -233,13 +235,13 @@ def run_training_experiments(
 
 def run_testing_experiments(
         HP: Namespace,
-        iterparams: List[Tuple[str, Dict[str, List[Any] | np.ndarray[Any]]]],
-        output_kwargs: Dict[str, Any],
-        systems: Dict[str, DimArray] = None,
+        iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
+        output_kwargs: dict[str, Any],
+        systems: dict[str, DimArray] = None,
         result: DimArray = None,
         info_dict: OrderedDict[str, OrderedDict[str, DimArray]] = None,
         save_experiment: bool = True
-) -> Tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
+) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
     HP = utils.deepcopy_namespace(HP)
 
     # Set up file names
@@ -268,7 +270,7 @@ def run_testing_experiments(
 
     # SECTION: Construct dataset-relevant metadata provided to the experiment
     if info_dict is None:
-        info_dict = OrderedDict()
+        info_dict = collections.OrderedDict()
     INFO_DICT = _construct_info_dict_from_dataset_types(
         HP, dimensions, params_dataset, info_dict, (TESTING_DATASET_TYPE,), test_output_dir,
         default_systems=systems
@@ -277,13 +279,15 @@ def run_testing_experiments(
 
     # TODO: Result setup
     output_fname: str = None
-    result: DimArray = None
+    found_result: DimArray = None
     for output_fname in output_fnames:
         try:
-            result = utils.torch_load(output_fname)
+            found_result = utils.torch_load(output_fname)
             break
         except Exception:
             pass
+    if found_result is not None:
+        result = found_result
     
     if result is None:
         train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
@@ -314,7 +318,7 @@ def run_testing_experiments(
 
     # SECTION: Run the testing metrics
     counter = 1
-    train_dimensions = OrderedDict(zip(result.dims, result.shape,))
+    train_dimensions = collections.OrderedDict(zip(result.dims, result.shape,))
     for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, train_dimensions, params_dataset):
         experiment_record = result.take(experiment_dict_index)
         if experiment_record.metrics is None:
@@ -325,7 +329,7 @@ def run_testing_experiments(
             _populate_values(EXPERIMENT_HP)
 
             # DONE: Set up metric information
-            reference_module, ensembled_learned_kfs = experiment_record.learned_kfs
+            reference_module, stacked_modules = experiment_record.learned_kfs
             reference_module.eval()
 
             INFO = np_records.fromrecords(utils.take_from_dim_array(TEST_INFO, experiment_dict_index), dtype=TEST_INFO.dtype)
@@ -342,17 +346,17 @@ def run_testing_experiments(
                 *EXPERIMENT_HP.experiment.model_shape,
                 utils.rgetattr(EXPERIMENT_HP, f"dataset.n_systems.{TESTING_DATASET_TYPE}")
             )
+            metric_vars = exclusive, (reference_module, stacked_modules,),
             for m in metrics:
                 try:
                     r = METRIC_DICT[m].evaluate(
-                        (exclusive, (reference_module, ensembled_learned_kfs,),),
-                        metric_cache, sweep_position="outside", with_batch_dim=True,
+                        metric_vars, metric_cache,
+                        sweep_position="outside", with_batch_dim=True,
                     ).detach()
                     metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
                 except Exception:
                     pass
-            metric_result["output"] = utils.stack_tensor_arr(metric_cache["test"])
-
+            metric_result["output"] = utils.stack_tensor_arr(Metric.compute(metric_vars, "test", metric_cache))
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
             experiment_record.metrics = PTR(metric_result)
 

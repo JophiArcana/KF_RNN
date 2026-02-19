@@ -1,5 +1,5 @@
 from argparse import Namespace
-from typing import *
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -19,7 +19,7 @@ class CopyPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> Tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, Namespace]:                       # [B...]
         K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
         S_D, O_D = K.shape[-2:]
 
@@ -33,7 +33,7 @@ class CopyPredictor(Predictor):
     def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
         return ()
 
-    def forward(self, trace: Dict[str, Dict[str, torch.Tensor]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, torch.Tensor]:
         trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
         valid_keys = [("environment", "observation",),] + [("controller", ac_name) for ac_name in trace["controller"].keys()]        
         result: TensorDict = TensorDict.cat((

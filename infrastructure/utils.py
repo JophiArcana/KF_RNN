@@ -13,7 +13,7 @@ from collections import OrderedDict
 from matplotlib import transforms
 from matplotlib.patches import Ellipse
 from types import MappingProxyType
-from typing import *
+from typing import Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union
 
 import einops
 import numpy as np
@@ -48,7 +48,7 @@ def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> ModelPair:
     params, buffers = torch.func.stack_module_state(module_arr.ravel().tolist())
     td = TensorDict({}, batch_size=module_arr.shape)
 
-    def _unflatten(t: torch.Tensor, dim: int, shape: Tuple[int, ...]):
+    def _unflatten(t: torch.Tensor, dim: int, shape: tuple[int, ...]):
         if len(shape) == 0:
             return t.squeeze(dim=dim)
         elif len(shape) == 1:
@@ -77,7 +77,7 @@ def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> Mo
 def run_module_arr(
         model_pair: ModelPair,
         args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
-        kwargs: Dict[str, Any] = MappingProxyType(dict())
+        kwargs: dict[str, Any] = MappingProxyType(dict())
 ) -> Any:
     if "TensorDict" in type(args).__name__:
         args = args.to_dict()
@@ -129,7 +129,7 @@ def buffer_dict(td: TensorDict) -> nn.Module:
         return parent_module
     return _buffer_dict(nn.Module(), td)
 
-def td_items(td: TensorDict) -> Dict[str, torch.Tensor]:
+def td_items(td: TensorDict) -> dict[str, torch.Tensor]:
     return {
         k if isinstance(k, str) else ".".join(k): v
         for k, v in td.items(include_nested=True, leaves_only=True)
@@ -286,7 +286,7 @@ def multi_iter(arr: np.ndarray | DimArray) -> Iterable[Any]:
     for x in np.nditer(arr, flags=["refs_ok",],):
         yield x[()]
 
-def multi_enumerate(arr: np.ndarray | DimArray) -> Iterable[Tuple[Sequence[int], Any]]:
+def multi_enumerate(arr: np.ndarray | DimArray) -> Iterable[tuple[Sequence[int], Any]]:
     it = np.nditer(arr, flags=["multi_index", "refs_ok",],)
     for x in it:
         yield it.multi_index, x[()]
@@ -341,7 +341,7 @@ def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[DimArray]:
     )
     return (dim_arr.broadcast(reference_dim_arr) for dim_arr in dim_arrs)
 
-def take_from_dim_array(dim_arr: DimArray | Dataset, idx: Dict[str, Any]):
+def take_from_dim_array(dim_arr: DimArray | Dataset, idx: dict[str, Any]):
     dims = set(dim_arr.dims)
     return dim_arr.take(indices={k: v for k, v in idx.items() if k in dims})
 
@@ -355,7 +355,7 @@ def rgetattr(obj: object, attr: str, *args):
     return functools.reduce(_getattr, [obj] + attr.split("."))
 
 def rsetattr(obj: object, attr: str, value: Any) -> None:
-    def _rsetattr(obj: object, attrs: List[str], value: Any) -> None:
+    def _rsetattr(obj: object, attrs: list[str], value: Any) -> None:
         if len(attrs) == 1:
             setattr(obj, attrs[0], value)
         else:
@@ -376,7 +376,7 @@ def rgetitem(obj: dict[str, Any], item: str, *args):
     return functools.reduce(_getitem, [obj] + item.split("."))
 
 def rsetitem(obj: dict[str, Any], item: str, value: Any) -> None:
-    def _rsetitem(obj: dict[str, Any], items: List[str], value: Any) -> None:
+    def _rsetitem(obj: dict[str, Any], items: list[str], value: Any) -> None:
         if len(items) == 1:
             obj[items[0]] = value
         else:
@@ -491,14 +491,14 @@ def reset_seed():
         torch.manual_seed(SEED)
         np.random.seed(SEED)
 
-def torch_load(f: torch.types.FileLike, **kwargs) -> Any:
+def torch_load(f: torch.serialization.FILE_LIKE, **kwargs) -> Any:
     return torch.load(f, map_location=DEVICE, weights_only=False,)
 
 def empty_cache():
     gc.collect()
     torch.cuda.empty_cache()
 
-def get_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)) -> OrderedDict[int, torch.Tensor]:
+def get_tensors_in_memory(allowed_classes: tuple[type] = (torch.Tensor,)) -> OrderedDict[int, torch.Tensor]:
     gc.collect()
     tensors = [obj for obj in gc.get_objects() if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None)))]
     indices = np.argsort([t.numel() for t in tensors])[::-1]
@@ -508,12 +508,12 @@ def get_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)) -> Ord
         result[t.data_ptr()] = t
     return result
 
-def print_tensors_in_memory(allowed_classes: Tuple[type] = (torch.Tensor,)) -> None:
+def print_tensors_in_memory(allowed_classes: tuple[type] = (torch.Tensor,)) -> None:
     t_dict = get_tensors_in_memory(allowed_classes=allowed_classes)
     for t in t_dict.values():
         print(type(t), t.size(), t.numel())
 
-def get_all_hooks(module: nn.Module) -> Dict[str, Dict[int, Callable]]:
+def get_all_hooks(module: nn.Module) -> dict[str, dict[int, Callable]]:
     """
     Retrieves all forward and backward hooks, including pre-hooks, from a module and its submodules.
 
@@ -560,9 +560,9 @@ class print_disabled:
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
-def flatten_nested_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+def flatten_nested_dict(d: dict[str, Any]) -> dict[str, Any]:
     result = {}
-    def _flatten_nested_dict(s: Tuple[str, ...], d: Dict[str, Any]) -> None:
+    def _flatten_nested_dict(s: tuple[str, ...], d: dict[str, Any]) -> None:
         for k, v in d.items():
             if isinstance(v, dict):
                 _flatten_nested_dict((*s, k), v)
@@ -571,9 +571,9 @@ def flatten_nested_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     _flatten_nested_dict((), d)
     return result
 
-def nested_vars(n: Namespace) -> Dict[str, Any]:
+def nested_vars(n: Namespace) -> dict[str, Any]:
     result = {}
-    def _nested_vars(s: Tuple[str, ...], n: Namespace) -> None:
+    def _nested_vars(s: tuple[str, ...], n: Namespace) -> None:
         for k, v in vars(n).items():
             if isinstance(v, Namespace):
                 _nested_vars((*s, k), v)
@@ -590,7 +590,7 @@ def nested_type(o: object) -> object:
     else:
         return type(o)
 
-def map_dict(d: Dict[str, Any], func: Callable[[Any], Any]) -> Dict[str, Any]:
+def map_dict(d: dict[str, Any], func: Callable[[Any], Any]) -> dict[str, Any]:
     return {
         k: map_dict(v, func) if hasattr(v, "items") else func(v)
         for k, v in d.items()
@@ -604,7 +604,7 @@ def array_of(o: _T) -> np.ndarray[_T]:
 def model_size(m: nn.Module):
     return sum(p.numel() for p in m.parameters())
 
-def call_func_with_kwargs(func: Callable, args: Tuple[Any, ...], kwargs: Dict[str, Any]):
+def call_func_with_kwargs(func: Callable, args: tuple[Any, ...], kwargs: dict[str, Any]):
     params = inspect.signature(func).parameters
     required_args = [
         kwargs[k] if k in kwargs else args[i] for i, (k, v) in enumerate(params.items())
@@ -619,8 +619,8 @@ def call_func_with_kwargs(func: Callable, args: Tuple[Any, ...], kwargs: Dict[st
     }
     return func(*required_args, *additional_args, **valid_kwargs)
 
-def broadcast_shapes(*shapes: Tuple[int, ...]):
-    def to_tuple(shape: Tuple[int, ...]) -> Tuple[int, ...]:
+def broadcast_shapes(*shapes: tuple[int, ...]):
+    def to_tuple(shape: tuple[int, ...]) -> tuple[int, ...]:
         return (*map(int, shape),)
     return to_tuple(torch.broadcast_shapes(*map(to_tuple, shapes)))
 

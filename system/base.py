@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import *
 
 import numpy as np
 import numpy.typing
@@ -89,13 +88,13 @@ class SystemDistribution(object):
     def __init__(self, system_type: type):
         self.system_type = system_type
 
-    def sample_parameters(self, SHP: Namespace, shape: Tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         raise NotImplementedError()
 
     def sample(
         self,
         SHP: Namespace,
-        shape: Tuple[int, ...],
+        shape: tuple[int, ...],
     ) -> SystemGroup:
         return self.system_type(SHP, self.sample_parameters(SHP, shape))
 

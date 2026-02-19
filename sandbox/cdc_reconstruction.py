@@ -26,11 +26,11 @@ from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnLeastSquaresPredictor
-from model.sequential import RnnAnalyticalPretrainPredictor
+from model.sequential import RnnKalmanInitializedPredictor
 from model.transformer import (
     GPT2InContextPredictor,
     # GPT2AssociativeInContextPredictor,
-    TransformerXLInContextPredictor,
+    # TransformerXLInContextPredictor,
     Dinov2AssociativeInContextPredictor,
     Mamba2InContextPredictor,
 )
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     
         configurations_rnn = [
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [RnnAnalyticalPretrainPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
+                "model.model": [ZeroPredictor] + [RnnKalmanInitializedPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
                 "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
             })
         ]

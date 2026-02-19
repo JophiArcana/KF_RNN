@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import *
 
 import torch
 import torch.nn as nn
@@ -12,7 +11,7 @@ from system.module_group import ModuleGroup
 
 
 class EnvironmentGroup(ModuleGroup):
-    def __init__(self, problem_shape: Namespace, group_shape: Tuple[int, ...]):
+    def __init__(self, problem_shape: Namespace, group_shape: tuple[int, ...]):
         ModuleGroup.__init__(self, group_shape)
         self.problem_shape = problem_shape
 

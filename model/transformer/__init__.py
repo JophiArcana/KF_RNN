@@ -3,10 +3,10 @@ from .gpt2_icpredictor import (
     # GPT2AssociativeInContextPredictor,
 )
 from .gptneox_icpredictor import GPTNeoXInContextPredictor
-from .transformerxl_icpredictor import (
-    TransformerXLInContextPredictor,
-    TransformerXLInContextController,
-)
+# from .transformerxl_icpredictor import (
+#     TransformerXLInContextPredictor,
+#     TransformerXLInContextController,
+# )
 from .xlnet_icpredictor import XLNetInContextPredictor
 from .llama_icpredictor import LlamaInContextPredictor
 

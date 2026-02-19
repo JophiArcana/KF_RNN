@@ -25,7 +25,7 @@ from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
 from infrastructure.utils import PTR
 from model.convolutional import CnnLeastSquaresPredictor
-from model.sequential import RnnAnalyticalPretrainPredictor, RnnComplexDiagonalPredictor
+from model.sequential import RnnKalmanInitializedPredictor, RnnComplexDiagonalPredictor
 from model.transformer import (
     GPT2InContextPredictor,
     MambaInContextPredictor,

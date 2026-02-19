@@ -1,3 +1,4 @@
+import copy
 from argparse import Namespace
 
 import numpy as np
@@ -100,7 +101,7 @@ def load_system_and_args(folder: str):
     system_group = LTISystem(args.system, TensorDict.from_dict({"environment": {
         "F": A, "B": TensorDict({"input": B}, batch_size=()), "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
     }}, batch_size=()).expand(args.dataset.n_systems.train, args.experiment.n_experiments))
-    return {"train": DimArray(utils.array_of(system_group), dims=[])}, args_from(args)
+    return {"train": DimArray(utils.array_of(system_group), dims=[])}, args_from(copy.deepcopy(args))
 
 
 def generate_args(shp: Namespace) -> Namespace:
