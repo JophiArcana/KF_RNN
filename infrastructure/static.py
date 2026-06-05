@@ -1,3 +1,4 @@
+import dataclasses
 from argparse import Namespace
 from typing import Callable
 
@@ -5,6 +6,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
+
+from infrastructure.config.schema import DataConfig
 
 # from system.base import SystemGroup
 
@@ -43,10 +46,13 @@ TRAINING_DATASET_TYPES: list[str] = [
     "valid",
 ]
 TESTING_DATASET_TYPE: str = "test"
+# Dataset support hyperparameters whose values determine generated-dataset shape.
+# Derived from the typed DataConfig schema (the per-split dataset fields other
+# than n_systems) plus the cross-branch system.n_systems reference, so this stays
+# in sync with infrastructure.config.schema.DataConfig.
 DATASET_SUPPORT_PARAMS: list[str] = [
-    "n_traces",
-    "total_sequence_length",
-    "system.n_systems"
+    *(f.name for f in dataclasses.fields(DataConfig) if f.name != "n_systems"),
+    "system.n_systems",
 ]
 INFO_DTYPE: np.dtype = np.dtype([
     ("systems", object), # ("systems", SystemGroup),

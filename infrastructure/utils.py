@@ -8,6 +8,7 @@ import math
 import os
 import sys
 import time
+import warnings
 from argparse import Namespace
 from collections import OrderedDict
 from matplotlib import transforms
@@ -77,7 +78,8 @@ def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> Mo
 def run_module_arr(
         model_pair: ModelPair,
         args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
-        kwargs: dict[str, Any] = MappingProxyType(dict())
+        kwargs: dict[str, Any] = MappingProxyType(dict()),
+        vmap: bool = True,
 ) -> Any:
     if "TensorDict" in type(args).__name__:
         args = args.to_dict()
@@ -85,33 +87,44 @@ def run_module_arr(
     reference_module, module_td = model_pair
     module_td = TensorDict(td_items(module_td), batch_size=module_td.shape)
     n = int(np.prod(module_td.shape))
-    try:
-        assert n > 1
-        def vmap_run(module_d, ags):
-            return torch.func.functional_call(reference_module, module_d, ags, kwargs)
-        for _ in range(module_td.ndim):
-            vmap_run = torch.func.vmap(vmap_run, randomness="different")
-        return vmap_run(module_td.to_dict(), args)
-    except (AssertionError, RuntimeError):
-        flat_args, args_spec = tree_flatten(args)
-        single_flat_args_list = [
-            [t.view(n, *t.shape[module_td.ndim:])[idx] for t in flat_args]
-            for idx in range(n)
-        ]
-        single_args_list = [tree_unflatten(single_flat_args, args_spec) for single_flat_args in single_flat_args_list]
 
-        # TODO: If this line breaks, replace `torch.func.functional_call` with `nn.utils.stateless.functional_call`
-        single_out_list = [
-            torch.func.functional_call(reference_module, module_td.view(n)[idx].to_dict(), single_args)
-            for idx, single_args in enumerate(single_args_list)
-        ]
-        _, out_spec = tree_flatten(single_out_list[0])
-        single_flat_out_list = [tree_flatten(single_out)[0] for single_out in single_out_list]
-        flat_out = [
-            torch.stack([*out_component_list], dim=0).view(*module_td.shape, *out_component_list[0].shape)
-            for out_component_list in zip(*single_flat_out_list)
-        ]
-        return tree_unflatten(flat_out, out_spec)
+    # vmap requires more than one stacked module; a single module always uses the
+    # explicit per-module loop below. When vmap is requested but fails at runtime
+    # we fall back to the loop, but warn loudly so genuine model bugs are not hidden.
+    if vmap and n > 1:
+        try:
+            def vmap_run(module_d, ags):
+                return torch.func.functional_call(reference_module, module_d, ags, kwargs)
+            for _ in range(module_td.ndim):
+                vmap_run = torch.func.vmap(vmap_run, randomness="different")
+            return vmap_run(module_td.to_dict(), args)
+        except RuntimeError as e:
+            warnings.warn(
+                f"vmap execution of {type(reference_module).__name__} failed and is "
+                f"falling back to a serial per-module loop (this is slower and may hide "
+                f"a model bug): {e}",
+                RuntimeWarning,
+            )
+
+    # Serial per-module fallback (single module, or vmap disabled / failed above).
+    flat_args, args_spec = tree_flatten(args)
+    single_flat_args_list = [
+        [t.view(n, *t.shape[module_td.ndim:])[idx] for t in flat_args]
+        for idx in range(n)
+    ]
+    single_args_list = [tree_unflatten(single_flat_args, args_spec) for single_flat_args in single_flat_args_list]
+
+    single_out_list = [
+        torch.func.functional_call(reference_module, module_td.view(n)[idx].to_dict(), single_args)
+        for idx, single_args in enumerate(single_args_list)
+    ]
+    _, out_spec = tree_flatten(single_out_list[0])
+    single_flat_out_list = [tree_flatten(single_out)[0] for single_out in single_out_list]
+    flat_out = [
+        torch.stack([*out_component_list], dim=0).view(*module_td.shape, *out_component_list[0].shape)
+        for out_component_list in zip(*single_flat_out_list)
+    ]
+    return tree_unflatten(flat_out, out_spec)
 
 def multi_vmap(func: Callable, n: int, **kwargs: Any) -> Callable:
     f = func

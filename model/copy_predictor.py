@@ -6,7 +6,6 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.static import TrainFunc
 from model.base import Predictor
 from model.convolutional import ConvolutionalPredictor
 
@@ -29,9 +28,8 @@ class CopyPredictor(Predictor):
         }, batch_size=()).expand(shape)
         return ConvolutionalPredictor._analytical_error_and_cache(cnn_kfs, systems)
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return ()
+    def training_recipe(self) -> Sequence[str]:
+        return []
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, torch.Tensor]:
         trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])

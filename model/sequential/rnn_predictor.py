@@ -10,7 +10,6 @@ import torch.nn.functional as Fn
 from tensordict import TensorDict, NonTensorData
 
 from infrastructure import utils
-from infrastructure.static import ModelPair, TrainFunc
 from model.base import Predictor
 from model.sequential.base import SequentialPredictor
 from model.least_squares_predictor import LeastSquaresPredictor
@@ -31,34 +30,26 @@ class RnnPredictor(SequentialPredictor):
 
 
 class RnnKalmanPredictor(RnnPredictor):
-    @classmethod
-    def train_analytical(cls,
-                         THP: Namespace,
-                         exclusive: Namespace,
-                         model_pair: ModelPair,
-                         cache: Namespace
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    def analytical_initialization(self, exclusive: Namespace) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
-        return Predictor._train_with_initialization_and_error(
-            exclusive, model_pair[1],
-            lambda stacked_modules_, exclusive_: ({
-                **exclusive_.train_info.systems.td().get("environment", {}),
-                **exclusive_.train_info.systems.td().get("controller", {})
-            }, Predictor.evaluate_run(
-                exclusive_.train_info.dataset.obj["environment", "target_observation_estimation"],
-                exclusive_.train_info.dataset.obj, ("environment", "observation")
-            ).squeeze(-1)), cache
-        )
+        systems_td = exclusive.train_info.systems.td()
+        initialization = {
+            **systems_td.get("environment", {}),
+            **systems_td.get("controller", {}),
+        }
+        error = Predictor.evaluate_run(
+            exclusive.train_info.dataset.obj["environment", "target_observation_estimation"],
+            exclusive.train_info.dataset.obj, ("environment", "observation")
+        ).squeeze(-1)
+        return initialization, error
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return (cls.train_analytical, Predictor.terminate_with_initialization_and_error,),
+    def training_recipe(self) -> Sequence[str]:
+        return ["analytical_init"]
 
 
 class RnnKalmanInitializedPredictor(RnnKalmanPredictor):
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return RnnKalmanPredictor.train_func_list(default_train_func) + (default_train_func,)
+    def training_recipe(self) -> Sequence[str]:
+        return ["analytical_init", "sgd"]
 
 
 class RnnComplexDiagonalPredictor(SequentialPredictor):

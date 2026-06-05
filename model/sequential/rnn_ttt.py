@@ -10,8 +10,6 @@ import torch.nn.functional as Fn
 from tensordict import TensorDict, NonTensorData
 
 from infrastructure import utils
-from infrastructure.static import ModelPair, TrainFunc
-from model.base import Predictor
 from model.sequential.rnn_predictor import RnnPredictor
 
 
@@ -23,6 +21,5 @@ class RnnInContextPredictor(RnnPredictor):
         state_estimation = self.sample_initial_as_observations(observations, (*trace.shape[:-1], self.S_D,))
         return self.forward_with_initial(state_estimation, actions, observations, mode)
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return ()
+    def training_recipe(self) -> Sequence[str]:
+        return []

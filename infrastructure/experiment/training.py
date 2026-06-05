@@ -2,10 +2,8 @@ import collections
 import itertools
 import json
 import os
-import traceback
 from argparse import Namespace
 from dataclasses import dataclass
-from inspect import signature
 from tqdm import tqdm
 from typing import Any, Callable, Iterable
 
@@ -22,7 +20,10 @@ from infrastructure.experiment.engine import error
 from infrastructure.experiment.losses import LOSS_DICT, LossFn
 from infrastructure.experiment.metrics import METRIC_DICT
 import infrastructure.settings  # noqa: F401  (imported for global device/dtype/precision side effects)
-from infrastructure.static import ModelPair, TrainFunc
+from infrastructure.static import ModelPair
+from infrastructure.experiment.stages import (
+    TrainingContext, TrainingStage, build_stages, register_stage,
+)
 from model.base import Predictor
 
 
@@ -33,10 +34,16 @@ def _get_optimizer_and_scheduler(
 ) -> tuple[optim.Optimizer, optim.lr_scheduler.LRScheduler]:
 
     optimizer_params = THP.optimizer
+    # torch optimizers (<2.5) do not accept ``(name, tensor)`` pairs, so split the
+    # named parameters into plain tensors and attach the names to the param group.
+    named_params = list(params)
+    param_names = [k for k, _ in named_params]
+    param_tensors = [v for _, v in named_params]
     optimizer = utils.call_func_with_kwargs(
         getattr(optim, optimizer_params.type),
-        (params, optimizer_params.max_lr), vars(optimizer_params)
+        (param_tensors, optimizer_params.max_lr), vars(optimizer_params)
     )
+    optimizer.param_groups[0]["param_names"] = param_names
 
     scheduler_params = THP.scheduler
     scheduler_type = scheduler_params.type
@@ -169,108 +176,115 @@ def get_loss_fn(THP: Namespace) -> LossFn:
         loss_fn = LOSS_DICT[loss_fn]
     return loss_fn
 
-def TERMINATE_DEFAULT(
-        THP: Namespace,
-        exclusive: Namespace,
-        model_pair: ModelPair,
-        cache: Namespace,
-) -> bool:
-    if THP.scheduler.epochs is None:
-        # The gradient-cutoff criterion depends on the optimizer and padded dataset that
-        # TRAIN_DEFAULT sets up on its first call, so never terminate before that happens.
+class SGDStage(TrainingStage):
+    """Default subsequence-SGD training stage (universal).
+
+    Sets up an optimizer/scheduler and padded train dataset on the first ``step``;
+    typed mutable state (``optimizer``, ``scheduler``, ``padded_train_dataset``,
+    ``t``) lives on ``self._state`` so the checkpoint-resume path can re-point the
+    stacked parameters at the optimizer's tensors.
+    """
+
+    name = "sgd"
+
+    def is_done(self, ctx: TrainingContext) -> bool:
+        THP, model_pair = ctx.thp, ctx.model_pair
+        cache = self._state
+        if THP.scheduler.epochs is None:
+            # The gradient-cutoff criterion depends on the optimizer and padded dataset
+            # that the first step sets up, so never terminate before that happens.
+            if not hasattr(cache, "optimizer"):
+                return False
+            model_pair[0].eval()
+            loss_fn = get_loss_fn(THP)
+
+            with torch.set_grad_enabled(True):
+                result = Predictor.run(model_pair, cache.padded_train_dataset)
+                losses = loss_fn(result, cache.padded_train_dataset, vars(THP))
+                mask = cache.padded_train_dataset.get("mask", torch.full(cache.padded_train_dataset.shape[-2:], True))
+                loss = torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
+
+            grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
+            grad_norm = torch.stack([
+                grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
+                for grad in grads
+            ]).sum(dim=0).mean()
+            print(grad_norm)
+            return grad_norm < THP.scheduler.gradient_cutoff
+        else:
+            return cache.t >= THP.scheduler.epochs
+
+    def step(self, ctx: TrainingContext) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        THP, exclusive, model_pair = ctx.thp, ctx.exclusive, ctx.model_pair
+        cache = self._state
+
+        # SECTION: Setup the index dataloader, optimizer, and scheduler before iterating
         if not hasattr(cache, "optimizer"):
-            return False
-        model_pair[0].eval()
-        loss_fn = get_loss_fn(THP)
+            dataset: TensorDict = exclusive.train_info.dataset.obj
+            cache.padded_train_dataset = TensorDict.cat([
+                dataset, dataset[..., -1:].apply(torch.zeros_like)
+            ], dim=-1)
 
-        with torch.set_grad_enabled(True):
-            result = Predictor.run(model_pair, cache.padded_train_dataset)
-            losses = loss_fn(result, cache.padded_train_dataset, vars(THP))
-            mask = cache.padded_train_dataset.get("mask", torch.full(cache.padded_train_dataset.shape[-2:], True))
-            loss = torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
+            # Some stages replace parameters with untrainable tensors; re-clone so the
+            # optimizer below owns trainable leaves.
+            for k, v in Predictor.clone_parameter_state(model_pair)[1].items():
+                model_pair[1][k] = v
+            cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((
+                (k, v) for (k, v) in model_pair[1].items(include_nested=True, leaves_only=True)
+                if isinstance(v, nn.Parameter)
+            ), THP)
 
-        grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
-        grad_norm = torch.stack([
-            grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
-            for grad in grads
-        ]).sum(dim=0).mean()
-        print(grad_norm)
-        return grad_norm < THP.scheduler.gradient_cutoff
-    else:
-        return cache.t >= THP.scheduler.epochs
+        # SECTION: Iterate through train indices and run gradient descent
+        result = []
+        loss_fn: LossFn = get_loss_fn(THP)
 
-def TRAIN_DEFAULT(
-        THP: Namespace,
-        exclusive: Namespace,
-        model_pair: ModelPair,
-        cache: Namespace,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
-    if not hasattr(cache, "optimizer"):
-        # TODO: Set up the dataset index sampler
-        dataset: TensorDict = exclusive.train_info.dataset.obj
-        cache.padded_train_dataset = TensorDict.cat([
-            dataset, dataset[..., -1:].apply(torch.zeros_like)
-        ], dim=-1)
+        for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
+            dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
 
-        # DONE: Need this line because some training functions replace the parameters with untrainable tensors (to preserve gradients)
-        for k, v in Predictor.clone_parameter_state(model_pair)[1].items():
-            model_pair[1][k] = v
-        cache.optimizer, cache.scheduler = _get_optimizer_and_scheduler((
-            (k, v) for (k, v) in model_pair[1].items(include_nested=True, leaves_only=True)
-            if isinstance(v, nn.Parameter)
-        ), THP)
+            model_pair[0].train()
+            pre_runs: list[torch.Tensor] = []
+            def compute_losses() -> torch.Tensor:
+                if len(pre_runs) == 0:
+                    with torch.set_grad_enabled(True):
+                        result_ss = Predictor.run(model_pair, dataset_ss)
+                        losses = loss_fn(result_ss, dataset_ss, vars(THP))
+                        mask = dataset_ss.get("mask", torch.full(dataset_ss.shape[-2:], True))
+                        return torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
+                else:
+                    return pre_runs.pop()
 
-    # SECTION: Iterate through train indices and run gradient descent
-    result = []
-    loss_fn: LossFn = get_loss_fn(THP)
+            def closure() -> float:
+                cache.optimizer.zero_grad()
+                loss = torch.sum(compute_losses())
+                loss.backward()
+                for p in cache.optimizer.param_groups[0]["params"]:
+                    if p.grad is not None:
+                        p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+                return loss.item()
 
-    for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
-        # DONE: Use indices to compute the mask for truncation and padding
-        dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
+            pre_runs.append(_losses := compute_losses())
+            result.append(_losses)
 
-        # DONE: Run test on the resulting subsequence block, calculate training loss, and return gradient step
-        model_pair[0].train()
-        pre_runs: list[torch.Tensor] = []
-        def compute_losses() -> torch.Tensor:
-            if len(pre_runs) == 0:
-                with torch.set_grad_enabled(True):
-                    result_ss = Predictor.run(model_pair, dataset_ss)
-                    losses = loss_fn(result_ss, dataset_ss, vars(THP))
-                    mask = dataset_ss.get("mask", torch.full(dataset_ss.shape[-2:], True))
-                    return torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
-            else:
-                return pre_runs.pop()
+            cache.optimizer.step(closure)
 
-        def closure() -> float:
-            cache.optimizer.zero_grad()
-            loss = torch.sum(compute_losses())
-            loss.backward()
-            for p in cache.optimizer.param_groups[0]["params"]:
-                if p.grad is not None:
-                    p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
-            return loss.item()
+        result = torch.stack(result, dim=0)
+        log = {
+            "learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"]),
+        }
+        if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
+            utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
 
-        pre_runs.append(_losses := compute_losses())
-        result.append(_losses)
+        return result, log,
 
-        cache.optimizer.step(closure)
 
-    result = torch.stack(result, dim=0)
-    log = {
-        "learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"]),
-        # "imag": sum(torch.norm(v.imag) ** 2 for v in model_pair[1].values(include_nested=True, leaves_only=True)),
-    }
-    if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
-        utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
-
-    return result, log,
+# The universal SGD stage, referenceable by name in any model's training recipe.
+register_stage("sgd", SGDStage, requires=lambda model: True, description="universal")
 
 
 @dataclass
 class Checkpoint:
-    training_func_idx: int
-    cache: Namespace
+    stage_idx: int
+    stage_state: Namespace
     stacked_modules: TensorDict
     results: list[TensorDict]
 
@@ -284,7 +298,13 @@ def _run_training(
 ) -> TensorDict:
     THP, EHP = HP.training, HP.experiment,
 
-    # TODO: Check if checkpoint exists and if so, load the stored information
+    # Build the model's training recipe into a sequence of stages and a single
+    # typed context (replacing the (train, terminate) callable pairs + cache).
+    reference_module: Predictor = model_pair[0]
+    stages = build_stages(reference_module.training_recipe(), reference_module)
+    ctx = TrainingContext(THP, exclusive, model_pair)
+
+    # Check if a checkpoint exists and if so, restore stage index, stage state, and params.
     checkpoint: Checkpoint = None
     for checkpoint_path in checkpoint_paths:
         try:
@@ -292,36 +312,31 @@ def _run_training(
             break
         except FileNotFoundError:
             pass
-        except Exception:
-            print(f"WARNING: failed to load checkpoint from {checkpoint_path}:\n{traceback.format_exc()}")
+        except (RuntimeError, EOFError, OSError, AttributeError, ModuleNotFoundError) as e:
+            print(f"WARNING: failed to load checkpoint from {checkpoint_path}: {e}")
 
     if checkpoint is not None:
-        training_func_idx = checkpoint.training_func_idx
-        cache = checkpoint.cache
+        start_stage_idx = checkpoint.stage_idx
+        cache = checkpoint.stage_state
         results = checkpoint.results
+        stages[start_stage_idx].load_state(cache)
 
         if hasattr(cache, "optimizer"):
-            # TODO: If an optimizer is used for training, then stacked_modules needs to reference the parameters optimized by the optimizer
+            # The optimizer owns the parameter tensors, so re-point stacked_modules at them.
             optimizer: optim.Optimizer = cache.optimizer
             checkpoint_params = zip(optimizer.param_groups[0]["param_names"], optimizer.param_groups[0]["params"],)
         else:
-            # TODO: Otherwise, copying the values stored by the checkpointed stacked_modules is sufficient
             checkpoint_params = checkpoint.stacked_modules.items(include_nested=True, leaves_only=True)
-       
+
         for k, v in checkpoint_params:
             model_pair[1][k] = v
-        
+
         print(f"Checkpoint loaded starting from epoch {cache.t}")
     else:
-        training_func_idx = 0
-        cache = Namespace(t=0)
+        start_stage_idx = 0
         results = []
 
-    # DONE: Use list of training functions specified by the model
-    reference_module: Predictor = model_pair[0]
-    training_funcs: list[TrainFunc] = reference_module.train_func_list((TRAIN_DEFAULT, TERMINATE_DEFAULT,))[training_func_idx:]
-
-    # DONE: List the metrics that need to be computed
+    # Metrics computed each epoch (overfit, validation, gradient norm, impulse response).
     metrics: set = utils.rgetattr(EHP, "metrics.training", {
         "overfit",
         "validation",
@@ -349,43 +364,42 @@ def _run_training(
         ]
         print(f"\t{prefix} --- {', '.join([f'{k}: {v:>9.6f}' for k, v in mean_losses])}")
 
-    # TODO: Run training functions starting from checkpoint if it exists
-    for idx, (training_func, _terminate_func,) in enumerate(training_funcs, start=training_func_idx):
+    # Run the training stages, resuming from the checkpointed stage if present.
+    for idx in range(start_stage_idx, len(stages)):
+        stage = stages[idx]
         print("-" * 160)
-        print(f'Training function {training_func.__name__}{signature(training_func)}')
+        print(f"Training stage {stage.name}")
         print("-" * 160)
 
-        # Create optimizer
-        if idx != training_func_idx:
-            cache = Namespace(t=0)
+        # Reset per-stage state for stages that start fresh (the resumed stage keeps its state).
+        if idx != start_stage_idx:
+            stage.reset()
+        is_sgd_stage = isinstance(stage, SGDStage)
 
-        while not _terminate_func(THP, exclusive, model_pair, cache):
-            # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
+        while not stage.is_done(ctx):
             r = evaluate_metrics()
-            
-            # DONE: Train on train dataset, passing in only train dataset and dataloader, and save the learning rate
+
             reference_module.train()
-            train_result, log = training_func(THP, exclusive, model_pair, cache)
+            train_result, log = stage.step(ctx)
 
             r["training"] = train_result.detach()[0]
 
-            # DONE: Check if training uses an LR scheduler, otherwise log the LR as NaN
+            # Log scheduler-reported values (e.g. learning rate) alongside the metrics.
             for k, v in log.items():
                 r[k] = v.expand(r.shape)
 
-            # DONE: Reshape the result and append to results
             results.append(r)
 
-            # DONE: Print losses
-            if (cache.t % EHP.print_frequency == 0) or (training_func is not TRAIN_DEFAULT):
-                print_losses(r, f"Epoch {cache.t}", ("training", *metrics, *log.keys(),))
-            cache.t += 1
+            # Print every epoch for non-SGD stages, else at the configured frequency.
+            if (stage.t % EHP.print_frequency == 0) or (not is_sgd_stage):
+                print_losses(r, f"Epoch {stage.t}", ("training", *metrics, *log.keys(),))
+            stage.t += 1
 
-            # TODO: Save checkpoint before running so that reloading and saving occur at the same stage
-            if cache.t % EHP.checkpoint_frequency == 0:
+            # Save checkpoint before stepping so reloading and saving align on the same stage.
+            if stage.t % EHP.checkpoint_frequency == 0:
                 checkpoint = Checkpoint(
-                    training_func_idx=idx,
-                    cache=cache,
+                    stage_idx=idx,
+                    stage_state=stage.state,
                     stacked_modules=model_pair[1],
                     results=results,
                 )
@@ -401,7 +415,7 @@ def _run_training(
     results.append(r)
     print_losses(r, "Final", metrics)
 
-    # TODO: Delete the checkpoint so that it does not interfere with the next experiment
+    # Delete the checkpoint so it does not interfere with the next experiment.
     for checkpoint_path in filter(os.path.exists, checkpoint_paths):
         os.remove(checkpoint_path)
 
@@ -411,48 +425,26 @@ def _run_training(
         return TensorDict({}, batch_size=(*EHP.model_shape, 0))
 
 
-def _run_unit_training_experiment(
-        HP: Namespace,
-        info: Namespace,
-        checkpoint_paths: list[str],
+def _build_model_ensemble(
+        MHP: Namespace,
+        model_shape: tuple[int, ...],
         initialization: TensorDict,
-        print_hyperparameters: bool = False
-) -> dict[str, Any]:
-
-    MHP, DHP, THP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "training", "experiment",))
-    if print_hyperparameters:
-        print("-" * 160)
-        print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
-    print("=" * 160)
-
-    # Ensemble learned Kalman Filters to be trained
+) -> ModelPair:
+    """Construct the ensemble of models and load any provided initialization."""
     learned_kfs = utils.multi_map(
         lambda _: MHP.model(MHP),
-        np.empty(EHP.model_shape), dtype=nn.Module,
+        np.empty(model_shape), dtype=nn.Module,
     )
     model_pair = utils.stack_module_arr(learned_kfs)
 
-    # TODO: Load the initialization
     for k, v in initialization.items(include_nested=True, leaves_only=True):
         if k in model_pair[1].keys(include_nested=True, leaves_only=True):
             model_pair[1][k].data = v.expand_as(model_pair[1][k])
+    return model_pair
 
-    # TODO: Slice the train dataset
-    info.train.dataset = utils.multi_map(
-        lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
-            dataset.obj[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
-            DHP.total_sequence_length.train
-        )), info.train.dataset, dtype=PTR,
-    )
 
-    # DONE: Create train dataloader
-    exclusive = Namespace(
-        info=info,
-        train_info=info.train[()],
-        n_train_systems=DHP.n_systems.train,
-    )
-
-    # SECTION: Print baseline errors for comparison
+def _print_baseline_errors(info: Namespace) -> None:
+    """Print zero/copy/irreducible baseline errors per dataset type for comparison."""
     loss_types = ("zero_predictor", "copy_predictor", "irreducible",)
     for ds_type, ds_info in vars(info).items():
         print(f"Mean loss for dataset type {ds_type} {'-' * 80}")
@@ -472,15 +464,49 @@ def _run_unit_training_experiment(
                     loss_arr_dict.setdefault(k, np.full((len(evaluation_targets), len(loss_types), *shape,), None, dtype=object))[idx] = utils.multi_map(
                         lambda td: td[k].mean().item(), err_dict_arr, dtype=float,
                     )
-            except Exception:
+            except (RuntimeError, ValueError, KeyError, TypeError):
+                # Baseline-error printing is best-effort diagnostics; skip targets
+                # that a given loss type does not support.
                 pass
-        
+
         df_dict = {}
         for k, v in loss_arr_dict.items():
-            utils.rsetitem(df_dict, ".".join(map(str.upper, k)), pd.DataFrame(v, evaluation_targets.keys(), loss_types))  
+            utils.rsetitem(df_dict, ".".join(map(str.upper, k)), pd.DataFrame(v, evaluation_targets.keys(), loss_types))
         utils.print_dict(df_dict)
 
-    # SECTION: Setup result and run training
+
+def _run_unit_training_experiment(
+        HP: Namespace,
+        info: Namespace,
+        checkpoint_paths: list[str],
+        initialization: TensorDict,
+        print_hyperparameters: bool = False
+) -> dict[str, Any]:
+
+    MHP, DHP, THP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "training", "experiment",))
+    if print_hyperparameters:
+        print("-" * 160)
+        print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
+    print("=" * 160)
+
+    model_pair = _build_model_ensemble(MHP, EHP.model_shape, initialization)
+
+    # Slice the train dataset down to the configured train shape.
+    info.train.dataset = utils.multi_map(
+        lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
+            dataset.obj[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
+            DHP.total_sequence_length.train
+        )), info.train.dataset, dtype=PTR,
+    )
+
+    exclusive = Namespace(
+        info=info,
+        train_info=info.train[()],
+        n_train_systems=DHP.n_systems.train,
+    )
+
+    _print_baseline_errors(info)
+
     return {
         "output": PTR(_run_training(HP, exclusive, model_pair, checkpoint_paths).detach()),
         "learned_kfs": model_pair,

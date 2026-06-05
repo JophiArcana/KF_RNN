@@ -2,7 +2,7 @@ import gc
 from argparse import Namespace
 from collections import OrderedDict
 from types import MappingProxyType
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import torch
@@ -10,7 +10,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.static import TrainFunc
+from infrastructure.ensemble import EnsembleModule
 
 
 class Observer(nn.Module):
@@ -33,58 +33,19 @@ class Predictor(Observer):
             model_pair: "utils.ModelPair",
             dataset: TensorDict,
             kwargs: dict[str, Any] = MappingProxyType(dict()),
-            split_size: int = 1 << 20,
+            split_size: int = EnsembleModule.DEFAULT_SPLIT_SIZE,
     ) -> TensorDict:
-        stacked_modules = model_pair[1]
-        n = stacked_modules.ndim
-        L = dataset.shape[-1]
-        
-        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[stacked_modules.ndim:]}"
-        _dataset = dataset.reshape((*stacked_modules.shape, -1, L))
-        numel = sum(v.numel() for _, v in _dataset.items())
-
-        # numel (or the trace dimension) can be 0 for an empty dataset; torch.chunk requires chunks >= 1.
-        _result_list, n_chunks = [], max(1, utils.ceildiv(numel, split_size))
-        for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
-            _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*stacked_modules.shape, -1, L)
-            _result_list.append(TensorDict(utils.run_module_arr(
-                model_pair,
-                _dataset_slice,
-                kwargs,
-            ), batch_size=_dataset_slice.shape))
-            utils.empty_cache()
-
-        return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
+        # Thin shim: the ensemble reshape/chunk/vmap plumbing lives in EnsembleModule.
+        return EnsembleModule.from_pair(model_pair).run(dataset, kwargs, split_size)
 
     @classmethod
     def gradient(cls,
                  model_pair: "utils.ModelPair",
                  dataset: TensorDict,
                  kwargs: dict[str, Any] = MappingProxyType(dict()),
-                 split_size: int = 1 << 20
+                 split_size: int = EnsembleModule.DEFAULT_SPLIT_SIZE,
     ) -> TensorDict:
-        stacked_modules = model_pair[1]
-        n = stacked_modules.ndim
-        L = dataset.shape[-1]
-
-        # assert d == 3, f"Expected three batch dimensions (n_systems, n_traces, sequence_length) in the dataset but got shape {dataset.shape[stacked_modules.ndim:]}"
-        _dataset = dataset.reshape(*stacked_modules.shape, -1, L)
-        numel = sum(v.numel() for _, v in _dataset.items())
-
-        # numel (or the trace dimension) can be 0 for an empty dataset; torch.chunk requires chunks >= 1.
-        _result_list, n_chunks = [], max(1, utils.ceildiv(numel, split_size))
-        for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
-            _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*stacked_modules.shape, -1, L)
-            _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
-
-            out = Predictor.run(model_pair, _dataset_slice)[..., -1]["environment", "observation"].norm() ** 2
-            params = OrderedDict({k: v for k, v in _dataset_slice.items() if v.requires_grad}) 
-            _result_list.append(TensorDict(dict(zip(
-                params.keys(),
-                torch.autograd.grad(out, (*params.values(),), allow_unused=True)
-            )), batch_size=_dataset_slice.shape))
-
-        return TensorDict.cat(_result_list, dim=n).view(dataset.shape)
+        return EnsembleModule.from_pair(model_pair).gradient(dataset, kwargs, split_size)
 
     @classmethod
     def evaluate_run(cls,
@@ -100,48 +61,7 @@ class Predictor(Observer):
 
     @classmethod
     def clone_parameter_state(cls, model_pair: "utils.ModelPair") -> "utils.ModelPair":
-        reference_module, stacked_modules = model_pair
-        reset_stacked_modules = TensorDict({}, batch_size=stacked_modules.batch_size)
-        for k, v in utils.td_items(stacked_modules).items():
-            t = utils.rgetattr(reference_module, k)
-            k = (*k.split("."),)
-            if isinstance(t, nn.Parameter):
-                reset_stacked_modules[k] = nn.Parameter(v.clone(), requires_grad=t.requires_grad)
-            else:
-                reset_stacked_modules[k] = torch.Tensor(v.clone())
-        return (reference_module, reset_stacked_modules,)
-
-    @classmethod
-    def terminate_with_initialization_and_error(
-        cls,
-        THP: Namespace,
-        exclusive: Namespace,
-        model_pair: "utils.ModelPair",
-        cache: Namespace,
-    ) -> bool:
-        return getattr(cache, "done", False)
-
-    @classmethod
-    def _train_with_initialization_and_error(cls,
-                                             exclusive: Namespace,
-                                             stacked_modules: TensorDict,
-                                             initialization_func: Callable[[
-                                                 TensorDict,
-                                                 Namespace,
-                                             ], tuple[dict[str, Any], torch.Tensor]],
-                                             cache: Namespace
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        if not hasattr(cache, "initialization_error"):
-            initialization, error_ = initialization_func(stacked_modules, exclusive)
-            for k, v in utils.flatten_nested_dict(initialization).items():
-                tdk = (*k.split("."),)
-                stacked_modules[tdk] = v.expand_as(stacked_modules[tdk])
-            cache.initialization_error = error_.expand(stacked_modules.shape)
-            error = Predictor.evaluate_run(0, exclusive.train_info.dataset.obj, ("environment", "observation")).mean(dim=-1)
-        else:
-            cache.done = True
-            error = cache.initialization_error
-        return error[None], {}
+        return EnsembleModule.from_pair(model_pair).clone().pair
 
     """ forward
         :parameter {
@@ -163,9 +83,14 @@ class Predictor(Observer):
     def trace_to_td(cls, trace: dict[str, dict[str, torch.Tensor]]) -> TensorDict:
         return TensorDict.from_dict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return default_train_func,
+    def training_recipe(self) -> Sequence[Any]:
+        """Data-driven training recipe: an ordered sequence of stage specs.
+
+        A spec is a stage-registry name (e.g. ``"sgd"``) or a ``TrainingStage``
+        instance. The engine resolves names via ``STAGE_REGISTRY`` and validates
+        them against this model. Default: a single SGD stage.
+        """
+        return ["sgd"]
 
     @classmethod
     def analytical_error(cls,

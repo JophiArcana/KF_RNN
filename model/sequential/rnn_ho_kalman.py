@@ -1,5 +1,5 @@
 from argparse import Namespace
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Sequence
 
 import einops
 import numpy as np
@@ -9,8 +9,6 @@ import torch.nn.functional as Fn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.static import ModelPair, TrainFunc
-from model.base import Predictor
 from model.sequential.rnn_predictor import RnnPredictor
 from model.convolutional.base import ConvolutionalPredictor
 from model.convolutional.cnn_predictor import (
@@ -26,28 +24,6 @@ class RnnHoKalmanBasePredictor(RnnPredictor):
     def __init__(self, modelArgs: Namespace, **kwargs: Any):
         RnnPredictor.__init__(self, modelArgs, **kwargs)
         self.register_module(RnnHoKalmanBasePredictor.FIR_ATTR, self.FIR_CLS(modelArgs, **kwargs))
-
-    @classmethod
-    def terminate_ho_kalman(
-            cls,
-            THP: Namespace,
-            exclusive: Namespace,
-            model_pair: ModelPair,
-            cache: Namespace,
-    ) -> bool:
-        return getattr(cache, "done", False)
-
-    @classmethod
-    def train_ho_kalman(cls,
-                        THP: Namespace,
-                        exclusive: Namespace,
-                        model_pair: ModelPair,
-                        cache: Namespace,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        reference_module, stacked_modules = model_pair
-        return Predictor._train_with_initialization_and_error(
-            exclusive, stacked_modules, reference_module.convert_fir, cache
-        )
 
     def convert_fir(self, stacked_modules: TensorDict, exclusive: Namespace) -> tuple[dict[str, Any], torch.Tensor]:
         O_D = self.problem_shape.environment.observation
@@ -92,23 +68,16 @@ class RnnHoKalmanBasePredictor(RnnPredictor):
 
         return {"F": F, "H": H, "K": K, "B": B,}, torch.full((), torch.nan)
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        ReturnType = TypeVar("ReturnType")
-
-        def augment_fn(fn: Callable[[Namespace, Namespace, ModelPair, Namespace], ReturnType]) -> Callable[[Namespace, Namespace, ModelPair, Namespace], ReturnType]:
-            def augmented_fn(THP: Namespace, exclusive: Namespace, model_pair: ModelPair, cache: Namespace) -> ReturnType:
-                return fn(THP, exclusive, (
-                    model_pair[0].get_submodule(RnnHoKalmanBasePredictor.FIR_ATTR),
-                    model_pair[1][RnnHoKalmanBasePredictor.FIR_ATTR],
-                ), cache)
-            return augmented_fn
-
-        train_func_list = []
-        for training_func, terminate_func in cls.FIR_CLS.train_func_list(default_train_func):
-            train_func_list.append((augment_fn(training_func), augment_fn(terminate_func),))
-        train_func_list.append((RnnHoKalmanBasePredictor.train_ho_kalman, RnnHoKalmanBasePredictor.terminate_ho_kalman,))
-        return (*train_func_list,)
+    def training_recipe(self) -> Sequence[Any]:
+        # Run the FIR submodule's own stages (retargeted onto the ``fir`` submodule),
+        # then recover the state-space realization via the Ho-Kalman stage.
+        from infrastructure.experiment.stages import SubmoduleStage, build_stages
+        fir = self.get_submodule(RnnHoKalmanBasePredictor.FIR_ATTR)
+        fir_stages = build_stages(fir.training_recipe(), fir)
+        return [
+            SubmoduleStage(stage, RnnHoKalmanBasePredictor.FIR_ATTR)
+            for stage in fir_stages
+        ] + ["ho_kalman"]
 
 
 class RnnHoKalmanAnalyticalPredictor(RnnHoKalmanBasePredictor):

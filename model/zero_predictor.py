@@ -6,7 +6,6 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.static import TrainFunc
 from model.base import Predictor
 
 
@@ -78,9 +77,8 @@ class ZeroPredictor(Predictor):
         )
         return TensorDict.from_dict({"environment": {"observation": err.expand(shape)}}, batch_size=shape), cache
 
-    @classmethod
-    def train_func_list(cls, default_train_func: TrainFunc) -> Sequence[TrainFunc]:
-        return ()
+    def training_recipe(self) -> Sequence[str]:
+        return []
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, torch.Tensor]:
         trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])

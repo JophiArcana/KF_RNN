@@ -14,6 +14,7 @@ from dimarray import DimArray
 from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.config import ExperimentConfig, validate_sweep_targets
 from infrastructure.utils import PTR
 from infrastructure.experiment.internals import (
     _filter_dimensions_if_any_satisfy_condition,
@@ -40,6 +41,13 @@ from infrastructure.settings import DEVICE
 
 
 # SECTION: Shared output / result-persistence helpers used by training and testing
+
+def _coerce_hp(HP: "Namespace | ExperimentConfig") -> Namespace:
+    """Accept either a typed ``ExperimentConfig`` or a runtime Namespace HP."""
+    if isinstance(HP, ExperimentConfig):
+        from infrastructure import loader
+        return loader.args_from_config(HP)
+    return HP
 
 def _setup_output_paths(
         HP: Namespace,
@@ -76,7 +84,7 @@ def _recover_result(output_fnames: list[str], kind: str) -> tuple[DimArray, str]
             return utils.torch_load(last_fname), last_fname
         except FileNotFoundError:
             pass
-        except Exception:
+        except (RuntimeError, EOFError, OSError, AttributeError, ModuleNotFoundError, ValueError):
             print(f"WARNING: failed to load existing {kind} result from {last_fname}:\n{traceback.format_exc()}")
     return None, last_fname
 
@@ -128,7 +136,8 @@ def run_experiments(
         initialization: DimArray = None,
         save_experiment: bool = True
 ) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
-    HP = utils.deepcopy_namespace(HP)
+    HP = utils.deepcopy_namespace(_coerce_hp(HP))
+    validate_sweep_targets(HP, iterparams)
 
     training_iterparams = []
     for param_group, params in iterparams:
@@ -181,7 +190,8 @@ def run_training_experiments(
         save_experiment: bool = True,
         print_hyperparameters: bool = False,
 ) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
-    HP = utils.deepcopy_namespace(HP)
+    HP = utils.deepcopy_namespace(_coerce_hp(HP))
+    validate_sweep_targets(HP, iterparams)
 
     # Set up file names
     output_kwargs.setdefault("fname", "result")
@@ -307,7 +317,8 @@ def run_testing_experiments(
         info_dict: OrderedDict[str, OrderedDict[str, DimArray]] = None,
         save_experiment: bool = True
 ) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
-    HP = utils.deepcopy_namespace(HP)
+    HP = utils.deepcopy_namespace(_coerce_hp(HP))
+    validate_sweep_targets(HP, iterparams)
 
     # Set up file names
     output_kwargs.setdefault("fname", "result")
@@ -405,7 +416,9 @@ def run_testing_experiments(
                         sweep_position="outside", with_batch_dim=True,
                     ).detach()
                     metric_result[m] = r.expand(*metric_shape, *r.shape[len(metric_shape):])
-                except Exception:
+                except (RuntimeError, ValueError, KeyError, IndexError, TypeError):
+                    # Per-metric resilience boundary: a single failing metric should
+                    # not abort an otherwise-successful sweep.
                     print(f"WARNING: testing metric {m!r} failed and was skipped:\n{traceback.format_exc()}")
             metric_result["output"] = utils.stack_tensor_arr(Metric.compute(metric_vars, "test", metric_cache))
             metric_result = TensorDict(metric_result, batch_size=metric_shape)

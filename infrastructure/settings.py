@@ -10,7 +10,14 @@ __all__ = [
     "DTYPE",
     "PROJECT_NAME",
     "PROJECT_PATH",
+    "DEBUG",
 ]
+
+
+# Debug mode. Set ``KF_RNN_DEBUG=1`` (or have RuntimeConfig.debug set it before
+# this module is imported) to enable expensive diagnostics such as autograd
+# anomaly detection. Off by default so normal training is not slowed down.
+DEBUG: bool = os.environ.get("KF_RNN_DEBUG", "").lower() in ("1", "true", "yes")
 
 
 PRECISION: int = 8
@@ -29,7 +36,19 @@ torch.set_default_device(DEVICE)
 torch.set_default_dtype(DTYPE)
 os.chdir(PROJECT_PATH)
 
-torch.autograd.set_detect_anomaly(True)
+# Anomaly detection is expensive; only enable it in debug mode.
+torch.autograd.set_detect_anomaly(DEBUG)
+
+
+def set_debug(flag: bool) -> None:
+    """Toggle debug-only global side effects (e.g. autograd anomaly detection).
+
+    Lets a parsed RuntimeConfig.debug drive behavior even though this module is
+    imported before any config is available.
+    """
+    global DEBUG
+    DEBUG = bool(flag)
+    torch.autograd.set_detect_anomaly(DEBUG)
 
 
 # SECTION: Add safe globals for torch.load
