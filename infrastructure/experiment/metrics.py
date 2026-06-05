@@ -79,9 +79,13 @@ def _get_metric_with_loss_fn_and_dataset_type(ds_type: str, loss_fn: LossFn, kwa
                 dataset = dataset.clone()
                 prefix = "noiseless_"
                 for _k in [*dataset.keys(include_nested=True, leaves_only=True)]:
-                    k = _k if isinstance(_k, str) else ".".join(_k)
-                    new_k = k.replace(prefix, "")
-                    dataset.rename_key_((*k.split("."),), (*new_k.split("."),))
+                    k = (_k,) if isinstance(_k, str) else tuple(_k)
+                    new_k = tuple(
+                        seg[len(prefix):] if seg.startswith(prefix) else seg
+                        for seg in k
+                    )
+                    if new_k != k:
+                        dataset.rename_key_(k, new_k)
 
             losses = loss_fn(result, dataset, {})
             mask = dataset.get("mask", torch.full(dataset.shape[-2:], True))
@@ -193,10 +197,10 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
 
         def gradient_norm(loss: torch.Tensor) -> torch.Tensor:
             grads = torch.autograd.grad(loss.sum(), params, allow_unused=True)
-            return _unsqueeze_if(torch.Tensor(sum(
+            return _unsqueeze_if(torch.stack([
                 torch.norm(torch.flatten(grad, start_dim=2, end_dim=-1), dim=2) ** 2
                 for grad in grads if grad is not None
-            )), with_batch_dim)
+            ]).sum(dim=0), with_batch_dim)
 
         return utils.multi_map(
             gradient_norm,

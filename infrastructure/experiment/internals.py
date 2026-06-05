@@ -1,16 +1,28 @@
 import itertools
 import os
-import re
 from argparse import Namespace
 from collections import OrderedDict
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
+import numpy as np
 import torch
 from dimarray import DimArray, Dataset
 
 from infrastructure import utils
+from infrastructure.experiment.sweep import (
+    is_dataset_param_of_type,
+    is_system_param_of_type,
+    is_system_nonauxiliary_param_of_type,
+    support_param_targets_type,
+    support_param_is_nonauxiliary_of_type,
+)
 from infrastructure.settings import DEVICE
-from infrastructure.static import *
+from infrastructure.static import (
+    DATASET_SUPPORT_PARAMS,
+    INFO_DTYPE,
+    PARAM_GROUP_FORMATTER,
+    TRAINING_DATASET_TYPES,
+)
 from infrastructure.utils import PTR
 from system.base import SystemGroup
 
@@ -110,6 +122,133 @@ def _get_param_dimarr(
         lambda _, sub_HP: utils.rgetattr(sub_HP, param), dtype=dtype
     )
 
+def _resolve_system_params(
+        HP: Namespace,
+        dimensions: OrderedDict[str, tuple[int, list[str]]],
+        params_dataset: Dataset,
+        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        ds_type: str,
+        save_dict: dict[str, dict[str, Any]],
+        system_param_dimensions: OrderedDict[str, int],
+) -> DimArray:
+    """Resolve the array of system *parameters* (matrices) for a dataset type.
+
+    Precondition: at least one system support hyperparameter targets ``ds_type``.
+
+    - if previously-saved params exist, reuse them;
+    - else if a non-auxiliary system parameter is swept for this type, sample fresh ones;
+    - else default to the training split's system parameters.
+    """
+    if "system_params" in save_dict and ds_type in save_dict["system_params"]:
+        print(f"System matrices found for dataset type {ds_type}")
+        return save_dict["system_params"][ds_type]
+
+    system_support_hyperparameters = utils.nested_vars(HP.system).keys()
+    if any(support_param_is_nonauxiliary_of_type(param, ds_type) for param in system_support_hyperparameters):
+        n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
+        max_n_systems = n_systems_arr.max()
+
+        def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
+            return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
+                utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
+            ))
+
+        print(f"Sampling new system matrices for dataset type {ds_type}")
+        return _map_HP_with_params(
+            HP, system_param_dimensions, params_dataset,
+            sample_system_parameters_with_sub_hyperparameters, dtype=PTR
+        )
+    else:
+        print(f"Defaulting to train system matrices for dataset type {ds_type}")
+        return info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
+
+def _construct_systems(
+        HP: Namespace,
+        dimensions: OrderedDict[str, tuple[int, list[str]]],
+        params_dataset: Dataset,
+        ds_type: str,
+        system_param_dimensions: OrderedDict[str, int],
+        system_params_arr: DimArray,
+) -> DimArray:
+    """Build the array of SystemGroups for a dataset type from resolved system params."""
+    system_dimensions = OrderedDict(system_param_dimensions)
+    system_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
+        dimensions, lambda param: is_system_param_of_type(param, ds_type)
+    ))
+
+    def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> SystemGroup:
+        dist = utils.rgetattr(sub_HP, f"system.distribution.{ds_type}")
+        system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
+
+        sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
+        return dist.system_type(sub_HP.system, system_params)
+
+    return _map_HP_with_params(
+        HP, system_dimensions, params_dataset,
+        construct_system_with_sub_hyperparameters, dtype=SystemGroup,
+    )
+
+def _resolve_dataset(
+        HP: Namespace,
+        dimensions: OrderedDict[str, tuple[int, list[str]]],
+        params_dataset: Dataset,
+        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        ds_type: str,
+        save_dict: dict[str, dict[str, Any]],
+        systems_arr: DimArray,
+        system_support_hyperparameters: Iterable[str],
+) -> DimArray:
+    """Resolve the rollout dataset for a dataset type.
+
+    - if a previously-saved dataset exists, reuse it;
+    - else if any system or dataset support parameter is swept for this type, sample fresh;
+    - else default to the training dataset.
+    """
+    if "dataset" in save_dict and ds_type in save_dict["dataset"]:
+        print(f"Dataset found for dataset type {ds_type}")
+        return save_dict["dataset"][ds_type]
+
+    dataset_support_hyperparameters = utils.nested_vars(HP.dataset).keys()
+    if not any(support_param_targets_type(param, ds_type) for param in (
+        *system_support_hyperparameters,
+        *dataset_support_hyperparameters,
+    )):
+        print(f"Defaulting to train dataset for dataset type {ds_type}")
+        return info_dict[TRAINING_DATASET_TYPES[0]]["dataset"]
+
+    print(f"Generating new dataset for dataset type {ds_type}")
+    dataset_dimensions = OrderedDict([*zip(systems_arr.dims, systems_arr.shape)])
+
+    n_traces_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
+        _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_traces.{ds_type}", dtype=int),
+        _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
+    )
+    sequence_length_arr = utils.ceildiv(total_sequence_length_arr, n_traces_arr)
+
+    max_n_traces = n_traces_arr.max()
+    max_sequence_length = sequence_length_arr.max()
+    max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_n_traces
+
+    def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> PTR:
+        sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
+        dataset = sg.generate_dataset(max_batch_size, max_sequence_length).detach()
+
+        if ds_type == TRAINING_DATASET_TYPES[0]:
+            return PTR(dataset.unflatten(2, (HP.experiment.ensemble_size, max_n_traces)).permute(0, 2, 1, 3, 4))
+        else:
+            return PTR(dataset.unsqueeze(1).expand(
+                HP.experiment.n_experiments,
+                HP.experiment.ensemble_size,
+                sg.group_shape[1],
+                max_n_traces,
+                max_sequence_length
+            ))
+
+    return _map_HP_with_params(
+        HP, dataset_dimensions, params_dataset,
+        sample_dataset_with_sub_hyperparameters, dtype=PTR
+    )
+
 def _construct_info_dict(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
@@ -119,68 +258,31 @@ def _construct_info_dict(
         save_dict: dict[str, dict[str, Any]],
         systems: dict[str, DimArray] = None,
 ) -> OrderedDict[str, DimArray]:
+    """Resolve the systems, system parameters, and rollout dataset for one dataset type.
 
+    Resolution order for systems/parameters:
+    - if explicit (non-auxiliary) system matrix parameters are swept -> sample new matrices;
+    - else if only auxiliary parameters change -> reuse train matrices but rebuild systems;
+    - else -> default to the training systems entirely.
+    Saved systems (from disk) short-circuit this and are used directly.
+    """
     result = OrderedDict()
-    # Dataset setup
     # DONE: Check for saved systems, if not then construct distribution and save systems
     if "systems" in save_dict:
         systems = save_dict["systems"]
 
     system_support_hyperparameters = utils.nested_vars(HP.system).keys()
     system_param_dimensions = _filter_dimensions_if_any_satisfy_condition(
-        dimensions, lambda param: re.match(f"system\\.((?!auxiliary\\.).)*\\.{ds_type}$", param)
+        dimensions, lambda param: is_system_nonauxiliary_param_of_type(param, ds_type)
     )
+
     if systems is None or ds_type not in systems:
-        """
-        • if explicit change in system matrix parameters
-            • sample new system matrices and save them to the dict
-        • else if there is no explicit change to system matrix parameters but there is an explicit change to auxiliary parameters
-            • default to training system matrices
-            • create new systems with auxiliary hyperparameters, regardless of whether they were explicitly stated or not
-        • else there is no explicit change to any system parameters
-            • default to training systems  
-        """
-        if any(re.match(f"(?!\\.).*\\.{ds_type}", param) for param in system_support_hyperparameters):
-            if "system_params" not in save_dict or ds_type not in save_dict["system_params"]:
-                if any(re.match(f"((?!auxiliary\\.).)*\\.{ds_type}$", param) for param in system_support_hyperparameters):
-                    # TODO: Sample minimal system parameters from array of distributions in the shape of (n_experiments, n_systems)
-                    n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
-                    max_n_systems = n_systems_arr.max()
-    
-                    def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
-                        return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
-                            utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
-                        ))
-    
-                    print(f"Sampling new system matrices for dataset type {ds_type}")
-                    system_params_arr = _map_HP_with_params(
-                        HP, system_param_dimensions, params_dataset,
-                        sample_system_parameters_with_sub_hyperparameters, dtype=PTR
-                    )
-                    result["system_params"] = system_params_arr
-                else:
-                    print(f"Defaulting to train system matrices for dataset type {ds_type}")
-                    system_params_arr = info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
-            else:
-                print(f"System matrices found for dataset type {ds_type}")
-                system_params_arr = save_dict["system_params"][ds_type]
-
-            # TODO: Sample systems from array of distributions in the shape of (n_experiments, n_systems)
-            system_dimensions = system_param_dimensions
-            system_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
-                dimensions, lambda param: re.match(f"system(\\..*\\.|\\.){ds_type}$", param)
-            ))
-
-            def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> SystemGroup:
-                dist = utils.rgetattr(sub_HP, f"system.distribution.{ds_type}")
-                system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
-
-                sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
-                return dist.system_type(sub_HP.system, system_params)
-
-            systems_arr = _map_HP_with_params(
-                HP, system_dimensions, params_dataset,
-                construct_system_with_sub_hyperparameters, dtype=SystemGroup,
+        if any(support_param_targets_type(param, ds_type) for param in system_support_hyperparameters):
+            system_params_arr = _resolve_system_params(
+                HP, dimensions, params_dataset, info_dict, ds_type, save_dict, system_param_dimensions,
+            )
+            systems_arr = _construct_systems(
+                HP, dimensions, params_dataset, ds_type, system_param_dimensions, system_params_arr,
             )
         else:
             print(f"Defaulting to train systems for dataset type {ds_type}")
@@ -197,73 +299,13 @@ def _construct_info_dict(
             HP, system_param_dimensions, params_dataset,
             retrieve_system_params_from_system, dtype=PTR,
         )
+
     result["system_params"] = system_params_arr
-
-    # DONE: Refresh the systems with the same parameters so that gradients will pass through properly in post-experiment analysis
-    # systems_arr = utils.multi_map(
-    #     lambda sg: type(sg)(sg.problem_shape, sg.auxiliary, sg.td()),
-    #     systems_arr, dtype=SystemGroup,
-    # )
     result["systems"] = systems_arr
-
-    # DONE: Check for saved dataset, otherwise sample and save datasets
-    dataset_support_hyperparameters = utils.nested_vars(HP.dataset).keys()
-    if "dataset" not in save_dict or ds_type not in save_dict["dataset"]:
-        """
-        • if explicit change in either system parameters or dataset shape parameters
-            • sample new dataset and save it to the dict
-        • else there is no explicit change to any parameters influencing the dataset
-            • default to training dataset
-        """
-        if any(re.match(f"(?!\\.).*\\.{ds_type}", param) for param in (
-            *system_support_hyperparameters,
-            *dataset_support_hyperparameters
-        )):
-            print(f"Generating new dataset for dataset type {ds_type}")
-            dataset_dimensions = OrderedDict([*zip(systems_arr.dims, systems_arr.shape)])
-            # TODO: Figure out what I wrote this line for
-            if len(_filter_dimensions_if_any_satisfy_condition(dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param))) > 0:
-                print(_filter_dimensions_if_any_satisfy_condition(dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)))
-            # dataset_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
-            #     dimensions, lambda param: re.match(f"dataset(\\..*\\.|\\.){ds_type}$", param)
-            # ))
-            
-            n_traces_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
-                _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_traces.{ds_type}", dtype=int),
-                _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
-            )
-            sequence_length_arr = utils.ceildiv(total_sequence_length_arr, n_traces_arr)
-
-            max_n_traces = n_traces_arr.max()
-            max_sequence_length = sequence_length_arr.max()
-            max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_n_traces
-
-            def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> PTR:
-                sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
-                dataset = sg.generate_dataset(max_batch_size, max_sequence_length).detach()
-
-                if ds_type == TRAINING_DATASET_TYPES[0]:
-                    return PTR(dataset.unflatten(2, (HP.experiment.ensemble_size, max_n_traces)).permute(0, 2, 1, 3, 4))
-                else:
-                    return PTR(dataset.unsqueeze(1).expand(
-                        HP.experiment.n_experiments,
-                        HP.experiment.ensemble_size,
-                        sg.group_shape[1],
-                        max_n_traces,
-                        max_sequence_length
-                    ))
-
-            dataset_arr = _map_HP_with_params(
-                HP, dataset_dimensions, params_dataset,
-                sample_dataset_with_sub_hyperparameters, dtype=PTR
-            )
-        else:
-            print(f"Defaulting to train dataset for dataset type {ds_type}")
-            dataset_arr = info_dict[TRAINING_DATASET_TYPES[0]]["dataset"]
-    else:
-        print(f"Dataset found for dataset type {ds_type}")
-        dataset_arr = save_dict["dataset"][ds_type]
-    result["dataset"] = dataset_arr
+    result["dataset"] = _resolve_dataset(
+        HP, dimensions, params_dataset, info_dict, ds_type, save_dict,
+        systems_arr, system_support_hyperparameters,
+    )
     return result
 
 def _construct_info_dict_from_dataset_types(

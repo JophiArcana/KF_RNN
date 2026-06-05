@@ -123,6 +123,49 @@ class LTIZeroNoiseSystem(LTISystem):
         )
 
 
+def _sample_by_mode(
+        mode: str,
+        size: tuple[int, ...],
+        gaussian_scale: float = 1.0,
+) -> torch.Tensor:
+    """Sample a matrix of the given ``size`` according to a "gaussian" or "uniform" mode."""
+    match mode:
+        case "gaussian":
+            return torch.randn(size) * gaussian_scale
+        case "uniform":
+            return torch.zeros(size).uniform_(-1., 1.)
+        case _:
+            raise ValueError(mode)
+
+
+def _empty_controller_params(
+        shape: tuple[int, ...],
+        S_D: int,
+) -> tuple[TensorDict, TensorDict, TensorDict]:
+    """Empty (B, Q, R) parameter containers for control-free system settings."""
+    B = TensorDict({}, batch_size=(*shape, S_D))
+    Q = TensorDict({}, batch_size=(*shape, S_D, S_D))
+    R = TensorDict({}, batch_size=shape)
+    return B, Q, R
+
+
+def _pack_lti_params(
+        shape: tuple[int, ...],
+        F: torch.Tensor,
+        B: TensorDict,
+        H: torch.Tensor,
+        sqrt_S_W: torch.Tensor,
+        sqrt_S_V: torch.Tensor,
+        Q: TensorDict,
+        R: TensorDict,
+) -> TensorDict:
+    """Pack sampled LTI matrices into the canonical parameter TensorDict of nn.Parameters."""
+    return TensorDict.from_dict({
+        "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
+        "controller": {"Q": Q, "R": R},
+    }, batch_size=shape).apply(nn.Parameter)
+
+
 class MOPDistribution(LTISystem.Distribution):
     def __init__(
             self,
@@ -144,26 +187,14 @@ class MOPDistribution(LTISystem.Distribution):
     def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
-        match self.F_mode:
-            case "gaussian":
-                F = torch.randn((*shape, S_D, S_D,))
-            case "uniform":
-                F = torch.zeros((*shape, S_D, S_D,)).uniform_(-1., 1.)
-            case _:
-                raise ValueError(self.F_mode)
+        F = _sample_by_mode(self.F_mode, (*shape, S_D, S_D,))
         F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None])
         B = TensorDict({
             k: self.B_scale * torch.randn((*shape, S_D, I_D)) / (3 ** 0.5)
             for k, I_D in vars(SHP.problem_shape.controller).items()
         }, batch_size=(*shape, S_D))
 
-        match self.H_mode:
-            case "gaussian":
-                H = torch.randn((*shape, O_D, S_D,)) / (3 ** 0.5)
-            case "uniform":
-                H = torch.zeros((*shape, O_D, S_D,)).uniform_(-1., 1.)
-            case _:
-                raise ValueError(self.H_mode)
+        H = _sample_by_mode(self.H_mode, (*shape, O_D, S_D,), gaussian_scale=1 / (3 ** 0.5))
 
         sqrt_S_W = (torch.eye(S_D) * self.W_std).expand((*shape, S_D, S_D,))
         sqrt_S_V = (torch.eye(O_D) * self.V_std).expand((*shape, O_D, O_D,))
@@ -178,10 +209,7 @@ class MOPDistribution(LTISystem.Distribution):
             for k, d in vars(SHP.problem_shape.controller).items()
         }, batch_size=shape).apply(to_psd)
 
-        return TensorDict.from_dict({
-            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R},
-        }, batch_size=shape).apply(nn.Parameter)
+        return _pack_lti_params(shape, F, B, H, sqrt_S_W, sqrt_S_V, Q, R)
 
 
 class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
@@ -194,20 +222,14 @@ class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
         _Q, _R = torch.linalg.qr(_Z)
         F = _Q * torch.sgn(torch.diagonal(_R, dim1=-2, dim2=-1))[..., None]
 
-        B = TensorDict({}, batch_size=(*shape, S_D,))
-
         H = torch.eye(S_D).expand((*shape, S_D, O_D,))
 
         sqrt_S_W = torch.zeros((*shape, S_D, S_D,))
         sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
 
-        Q = TensorDict({}, batch_size=(*shape, S_D, S_D,))
-        R = TensorDict({}, batch_size=shape)
+        B, Q, R = _empty_controller_params(shape, S_D)
 
-        return TensorDict.from_dict({
-            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R},
-        }, batch_size=shape).apply(nn.Parameter)
+        return _pack_lti_params(shape, F, B, H, sqrt_S_W, sqrt_S_V, Q, R)
 
 
 class ContinuousDistribution(LTISystem.Distribution):
@@ -229,36 +251,18 @@ class ContinuousDistribution(LTISystem.Distribution):
     def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
-        match self.F_mode:
-            case "gaussian":
-                F = torch.randn((*shape, S_D, S_D))
-            case "uniform":
-                F = torch.zeros((*shape, S_D, S_D)).uniform_(-1., 1.)
-            case _:
-                raise ValueError(self.F_mode)
+        F = _sample_by_mode(self.F_mode, (*shape, S_D, S_D))
         F /= torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None]
         F = (1 - 2 * self.eps) * torch.eye(S_D) - self.eps * F
 
-        B = TensorDict({}, batch_size=(*shape, S_D))
-
-        match self.H_mode:
-            case "gaussian":
-                H = torch.randn((*shape, O_D, S_D)) / (3 ** 0.5)
-            case "uniform":
-                H = torch.zeros((*shape, O_D, S_D)).uniform_(-1., 1.)
-            case _:
-                raise ValueError(self.H_mode)
+        H = _sample_by_mode(self.H_mode, (*shape, O_D, S_D), gaussian_scale=1 / (3 ** 0.5))
 
         sqrt_S_W = (torch.eye(S_D) * self.W_std * self.eps).expand((*shape, S_D, S_D,))
         sqrt_S_V = (torch.eye(O_D) * self.V_std * self.eps).expand((*shape, O_D, O_D,))
 
-        Q = TensorDict({}, batch_size=(*shape, S_D, S_D))
-        R = TensorDict({}, batch_size=shape)
+        B, Q, R = _empty_controller_params(shape, S_D)
 
-        return TensorDict.from_dict({
-            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R},
-        }, batch_size=shape).apply(nn.Parameter)
+        return _pack_lti_params(shape, F, B, H, sqrt_S_W, sqrt_S_V, Q, R)
 
 
 class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
@@ -275,39 +279,21 @@ class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
 
     def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
-        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
+        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Continuous noiseless system setting is assumed to have no controls."
 
-        match self.F_mode:
-            case "gaussian":
-                F = torch.randn((*shape, S_D, S_D))
-            case "uniform":
-                F = torch.zeros((*shape, S_D, S_D)).uniform_(-1., 1.)
-            case _:
-                raise ValueError(self.F_mode)
+        F = _sample_by_mode(self.F_mode, (*shape, S_D, S_D))
         F /= torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None]
         # F = (1 - 2 * self.eps) * torch.eye(S_D) - self.eps * F
         F = torch.eye(S_D) - self.eps * F
 
-        B = TensorDict({}, batch_size=(*shape, S_D))
-
-        match self.H_mode:
-            case "gaussian":
-                H = torch.randn((*shape, O_D, S_D)) / (3 ** 0.5)
-            case "uniform":
-                H = torch.zeros((*shape, O_D, S_D)).uniform_(-1., 1.)
-            case _:
-                raise ValueError(self.H_mode)
+        H = _sample_by_mode(self.H_mode, (*shape, O_D, S_D), gaussian_scale=1 / (3 ** 0.5))
 
         sqrt_S_W = torch.zeros((*shape, S_D, S_D,))
         sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
 
-        Q = TensorDict({}, batch_size=(*shape, S_D, S_D))
-        R = TensorDict({}, batch_size=shape)
+        B, Q, R = _empty_controller_params(shape, S_D)
 
-        return TensorDict.from_dict({
-            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R},
-        }, batch_size=shape).apply(nn.Parameter)
+        return _pack_lti_params(shape, F, B, H, sqrt_S_W, sqrt_S_V, Q, R)
 
 
 class PeriodicDistribution(LTIZeroNoiseSystem.Distribution):
@@ -351,13 +337,9 @@ class PeriodicDistribution(LTIZeroNoiseSystem.Distribution):
         sqrt_S_W = torch.zeros((*shape, S_D, S_D,))
         sqrt_S_V = torch.zeros((*shape, O_D, O_D,))
 
-        Q = TensorDict({}, batch_size=(*shape, S_D, S_D,))
-        R = TensorDict({}, batch_size=shape)
+        _, Q, R = _empty_controller_params(shape, S_D)
 
-        return TensorDict.from_dict({
-            "environment": {"F": F, "B": B, "H": H, "sqrt_S_W": sqrt_S_W, "sqrt_S_V": sqrt_S_V},
-            "controller": {"Q": Q, "R": R},
-        }, batch_size=shape).apply(nn.Parameter)
+        return _pack_lti_params(shape, F, B, H, sqrt_S_W, sqrt_S_V, Q, R)
 
 
 

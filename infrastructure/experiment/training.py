@@ -1,6 +1,8 @@
 import collections
 import itertools
 import json
+import os
+import traceback
 from argparse import Namespace
 from dataclasses import dataclass
 from inspect import signature
@@ -9,6 +11,7 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 import pandas as pd
+import torch
 import torch.nn as nn
 import torch.optim as optim
 from tensordict import TensorDict
@@ -18,7 +21,7 @@ from infrastructure.utils import PTR
 from infrastructure.experiment.engine import error
 from infrastructure.experiment.losses import LOSS_DICT, LossFn
 from infrastructure.experiment.metrics import METRIC_DICT
-from infrastructure.settings import *
+import infrastructure.settings  # noqa: F401  (imported for global device/dtype/precision side effects)
 from infrastructure.static import ModelPair, TrainFunc
 from model.base import Predictor
 
@@ -173,6 +176,10 @@ def TERMINATE_DEFAULT(
         cache: Namespace,
 ) -> bool:
     if THP.scheduler.epochs is None:
+        # The gradient-cutoff criterion depends on the optimizer and padded dataset that
+        # TRAIN_DEFAULT sets up on its first call, so never terminate before that happens.
+        if not hasattr(cache, "optimizer"):
+            return False
         model_pair[0].eval()
         loss_fn = get_loss_fn(THP)
 
@@ -183,10 +190,10 @@ def TERMINATE_DEFAULT(
             loss = torch.sum(losses * mask, dim=[-2, -1,]) / torch.sum(mask, dim=[-2, -1,])
 
         grads = torch.autograd.grad(loss.sum(), cache.optimizer.param_groups[0]["params"])
-        grad_norm = torch.Tensor(sum(
+        grad_norm = torch.stack([
             grad.flatten(start_dim=2, end_dim=-1).norm(dim=2) ** 2
             for grad in grads
-        )).mean()
+        ]).sum(dim=0).mean()
         print(grad_norm)
         return grad_norm < THP.scheduler.gradient_cutoff
     else:
@@ -216,9 +223,7 @@ def TRAIN_DEFAULT(
 
     # SECTION: Iterate through train indices and run gradient descent
     result = []
-    loss_fn: LossFn = getattr(THP, "loss", "mse")
-    if not callable(loss_fn):
-        loss_fn = LOSS_DICT[loss_fn]
+    loss_fn: LossFn = get_loss_fn(THP)
 
     for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
         # DONE: Use indices to compute the mask for truncation and padding
@@ -285,8 +290,10 @@ def _run_training(
         try:
             checkpoint = utils.torch_load(checkpoint_path)
             break
-        except Exception:
+        except FileNotFoundError:
             pass
+        except Exception:
+            print(f"WARNING: failed to load checkpoint from {checkpoint_path}:\n{traceback.format_exc()}")
 
     if checkpoint is not None:
         training_func_idx = checkpoint.training_func_idx
@@ -352,13 +359,7 @@ def _run_training(
         if idx != training_func_idx:
             cache = Namespace(t=0)
 
-        def terminate_func(THP: Namespace, exclusive: Namespace, model_pair: ModelPair, cache: Namespace):
-            try:
-                return _terminate_func(THP, exclusive, model_pair, cache)
-            except AttributeError:
-                return False
-
-        while not terminate_func(THP, exclusive, model_pair, cache):
+        while not _terminate_func(THP, exclusive, model_pair, cache):
             # DONE: Compute necessary metrics (overfit, validation, gradient norm, impulse response difference)
             r = evaluate_metrics()
             

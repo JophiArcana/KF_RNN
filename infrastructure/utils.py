@@ -194,48 +194,6 @@ def ceil(a: int) -> int:
 def T(t: torch.Tensor) -> torch.Tensor:
     return t.permute((*range(t.ndim - 1, -1, -1),))
 
-# def hadamard_conjugation(
-#         A: torch.Tensor,        # [B... x m x n]
-#         B: torch.Tensor,        # [B... x p x q]
-#         alpha: torch.Tensor,    # [B... x m x n]
-#         beta: torch.Tensor,     # [B... x p x q]
-#         C: torch.Tensor         # [B... x m x p]
-# ) -> torch.Tensor:              # [B... x n x q]
-#     coeff = 1 / (1 - alpha.conj()[..., :, None, :, None] * beta[..., None, :, None, :])             # [B... x m x p x n x q]
-#     return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", A.conj(), B, complex(C), coeff,)   # [B... x n x q]
-
-# def hadamard_conjugation_diff_order1(
-#         A: torch.Tensor,        # [B... x m x n]
-#         B: torch.Tensor,        # [B... x p x q]
-#         alpha: torch.Tensor,    # [B... x m x n]
-#         beta1: torch.Tensor,    # [B... x p x q]
-#         beta2: torch.Tensor,    # [B... x p x q]
-#         C: torch.Tensor         # [B... x m x p]
-# ) -> torch.Tensor:              # [B... x n x q]
-#     alpha_ = alpha.conj()[..., :, None, :, None]                                                    # [B... x m x 1 x n x 1]
-#     _beta1, _beta2 = beta1[..., None, :, None, :], beta2[..., None, :, None, :]                     # [B... x 1 x p x 1 x q]
-#     coeff = alpha_ / ((1 - alpha_ * _beta1) * (1 - alpha_ * _beta2))                                # [B... x m x p x n x q]
-#     return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", A.conj(), B, complex(C), coeff,)   # [B... x n x q]
-
-# def hadamard_conjugation_diff_order2(
-#         B: torch.Tensor,        # [B... x p x q]
-#         beta1: torch.Tensor,    # [B... x p x q]
-#         beta2: torch.Tensor,    # [B... x p x q]
-#         C: torch.Tensor         # [B... x p x p]
-# ) -> torch.Tensor:              # [B... x q x q]
-#     beta1_, _beta1 = beta1[..., :, None, :, None].conj(), beta1[..., None, :, None, :]  # b1_ik, b1_jl
-#     beta2_, _beta2 = beta2[..., :, None, :, None].conj(), beta2[..., None, :, None, :]  # b2_ik, b2_jl
-
-#     beta12 = beta1_ * _beta2                                                            # b1_ik * b2_jl
-#     beta21 = einops.rearrange(beta12, "... i j k l -> ... j i l k").conj()              # b2_ik * b1_jl
-#     beta11, beta22 = (beta1_ * _beta1), (beta2_ * _beta2),                              # b1_ik * b1_jl, b2_ik * b2_jl,
-
-#     coeff = 1 - beta12 * beta21
-#     for t in (beta11, beta12, beta21, beta22,):
-#         coeff.div_(1 - t)
-#     return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", B.conj(), B, C, coeff,)
-
-
 def hadamard_conjugation(
         A: torch.Tensor,        # [B... x m x n]
         B: torch.Tensor,        # [B... x p x q]
@@ -482,7 +440,10 @@ class Timer:
 
 def identity(x: Any) -> Any:
     return x
-    
+
+# Global seed for reset_seed(); None means reseed nondeterministically.
+SEED: Union[int, None] = None
+
 def reset_seed():
     if SEED is None:
         torch.seed()

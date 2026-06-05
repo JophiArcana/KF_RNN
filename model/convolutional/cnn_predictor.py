@@ -46,6 +46,10 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
             model_pair: ModelPair,
             cache: Namespace,
     ) -> bool:
+        # cache.index / cache.L are created by the first train_least_squares_online call,
+        # so do not terminate before that bootstrap has run.
+        if not hasattr(cache, "index"):
+            return False
         return cache.index >= cache.L
 
     def train_least_squares_online(

@@ -43,7 +43,8 @@ class Predictor(Observer):
         _dataset = dataset.reshape((*stacked_modules.shape, -1, L))
         numel = sum(v.numel() for _, v in _dataset.items())
 
-        _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
+        # numel (or the trace dimension) can be 0 for an empty dataset; torch.chunk requires chunks >= 1.
+        _result_list, n_chunks = [], max(1, utils.ceildiv(numel, split_size))
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*stacked_modules.shape, -1, L)
             _result_list.append(TensorDict(utils.run_module_arr(
@@ -70,7 +71,8 @@ class Predictor(Observer):
         _dataset = dataset.reshape(*stacked_modules.shape, -1, L)
         numel = sum(v.numel() for _, v in _dataset.items())
 
-        _result_list, n_chunks = [], utils.ceildiv(numel, split_size)
+        # numel (or the trace dimension) can be 0 for an empty dataset; torch.chunk requires chunks >= 1.
+        _result_list, n_chunks = [], max(1, utils.ceildiv(numel, split_size))
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             _dataset_slice = _dataset.view(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*stacked_modules.shape, -1, L)
             _dataset_slice = TensorDict.from_dict(_dataset_slice, batch_size=_dataset_slice.shape)
@@ -180,9 +182,10 @@ class Predictor(Observer):
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
 
-# TODO: This is more semantically correct
-# class Controller(Observer):
-class Controller(Predictor):
+# A Controller is an Observer (it emits observations/actions); concrete controllers gain
+# Predictor machinery by also inheriting a Predictor subclass (e.g. SequentialController,
+# TransformerController), so this base is intentionally the lighter-weight Observer.
+class Controller(Observer):
     @classmethod
     def compute_losses(
         cls,

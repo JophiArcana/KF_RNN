@@ -22,103 +22,6 @@ class SequentialPredictor(Predictor):
         weights, biases = form
         return torch.einsum("tds, bs -> btd", weights, state) + biases
 
-    # @classmethod
-    # def _analytical_error_and_cache(cls,
-    #                                 kfs: TensorDict,         # [B... x ...]
-    #                                 systems: TensorDict,     # [B... x ...]
-    # ) -> tuple[TensorDict, Namespace]:                       # [B...]
-    #     # Variable definition
-    #     controller_keys = systems.get(("environment", "B"), {}).keys()
-    #     shape = utils.broadcast_shapes(kfs.shape, systems.shape)
-    #     default_td = TensorDict({}, batch_size=shape)
-
-    #     Fh = utils.complex(kfs["F"])                                                                    # [B... x S_Dh x S_Dh]
-    #     Hh = utils.complex(kfs["H"])                                                                    # [B... x O_D x S_Dh]
-    #     Kh = utils.complex(kfs["K"])                                                                    # [B... x S_Dh x O_D]
-    #     Bh = utils.complex(kfs["B"]) if len(controller_keys) > 0 else default_td                        # [B... x S_Dh x I_D?]
-
-    #     F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
-    #     K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
-    #     L = utils.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
-    #     sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
-    #     sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                                    # [B... x O_D x O_D]
-
-    #     Fa = utils.complex(systems["F_augmented"])                                                      # [B... x 2S_D x 2S_D]
-    #     Ha = utils.complex(systems["H_augmented"])                                                      # [B... x O_D x 2S_D]
-    #     La = utils.complex(systems["L_augmented"]) if len(controller_keys) > 0 else default_td          # [B... x I_D? x 2S_D]
-
-    #     S_D, O_D = K.shape[-2:]
-    #     S_Dh = Fh.shape[-1]
-
-    #     M, Mh = Fa, Fh @ (torch.eye(S_Dh) - Kh @ Hh)                                                    # [B... x 2S_D x 2S_D], [B... x S_Dh x S_Dh]
-    #     D, V = torch.linalg.eig(M)                                                                      # [B... x 2S_D], [B... x 2S_D x 2S_D]
-    #     Dh, Vh = torch.linalg.eig(Mh)                                                                   # [B... x S_Dh], [B... x S_Dh x S_Dh]
-    #     Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                               # [B... x 2S_D x 2S_D], [B... x S_Dh x S_Dh]
-
-    #     # if torch.any(Dh.abs() > 1.0):
-    #     #     print(f"Eigenvalues of Fh {Dh[Dh.abs() > 1.0]} exceed magnitude 1.")
-
-    #     Has, Hhs = Ha @ V, Hh @ Vh                                                                      # [B... x O_D x 2S_D], [B... x O_D x S_Dh]
-    #     Las = La.apply(lambda t: t @ V)                                                                 # [B... x I_D? x 2S_D]
-    #     sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
-
-    #     # Precomputation
-    #     Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
-    #     Dhi, Dhj = Dh[..., :, None], Dh[..., None, :]                                                   # [B... x S_Dh x 1], [B... x 1 x S_Dh]
-
-    #     HhstHhs = Hhs.mH @ Hhs                                                                          # [B... x S_Dh x S_Dh]
-    #     HhstHas = Hhs.mH @ Has
-
-    #     BL = utils.complex(torch.zeros((*shape, S_D, S_D)) + sum(
-    #         systems["environment", "B", k] @ systems["controller", "L", k]
-    #         for k in controller_keys
-    #     ))                                                                                              # [B... x S_D x S_D]
-    #     Vinv_BL_F_BLK = Vinv @ torch.cat([-BL, F - BL], dim=-2) @ K                                     # [B... x 2S_D x O_D]
-
-    #     VhinvFhKh_BhLK = Vhinv @ (Fh @ Kh - sum(Bh[k] @ L[k] @ K for k in controller_keys))             # [B... x S_Dh x O_D]
-    #     VhinvFhKhHas_BhLas = Vhinv @ (Fh @ Kh @ Has - sum(Bh[k] @ Las[k] for k in controller_keys))     # [B... x S_Dh x 2S_D]
-
-    #     inf_geometric = (
-    #         utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
-    #         - 2 * utils.hadamard_conjugation_diff_order1(HhstHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh)).real
-    #         + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, HhstHhs)
-    #     )
-
-    #     # State evolution noise error
-    #     # Highlight
-    #     ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mH @ inf_geometric @ sqrt_S_Ws)                  # [B...]
-
-    #     # Observation noise error
-    #     # Highlight
-    #     v_current_err = torch.norm(sqrt_S_V, dim=[-2, -1]) ** 2                                         # [B...]
-
-    #     # Highlight
-    #     v_geometric_err = utils.batch_trace(sqrt_S_V.mH @ (
-    #         Vinv_BL_F_BLK.mH @ inf_geometric @ Vinv_BL_F_BLK
-    #         - 2 * VhinvFhKh_BhLK.mH @ utils.complex((
-    #             utils.hadamard_conjugation(Hhs, Has, Dhj, Dj, torch.eye(O_D))
-    #             - utils.hadamard_conjugation_diff_order1(HhstHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
-    #         ).real) @ Vinv_BL_F_BLK
-    #         + VhinvFhKh_BhLK.mH @ (
-    #             utils.hadamard_conjugation(Hhs, Hhs, Dhj, Dhj, torch.eye(O_D))
-    #         ) @ VhinvFhKh_BhLK
-    #     ) @ sqrt_S_V)
-
-    #     err = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                            # [B...]
-    #     cache = Namespace(
-    #         controller_keys=controller_keys,
-    #         shape=shape, default_td=default_td,
-    #         S_Dh=S_Dh,
-    #         Kh=Kh, Vh=Vh,
-    #         K=K, L=L, sqrt_S_V=sqrt_S_V,
-    #         Has=Has, Hhs=Hhs, Las=Las, sqrt_S_Ws=sqrt_S_Ws,
-    #         Dj=Dj, Dhi=Dhi, Dhj=Dhj,
-    #         Vinv_BL_F_BLK=Vinv_BL_F_BLK,
-    #         VhinvFhKh_BhLK=VhinvFhKh_BhLK,
-    #         VhinvFhKhHas_BhLas=VhinvFhKhHas_BhLas,
-    #     )
-    #     return TensorDict.from_dict({"environment": {"observation": err}}, batch_size=shape), cache
-
     @classmethod
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
@@ -160,6 +63,14 @@ class SequentialPredictor(Predictor):
         sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
 
         # Precomputation
+        # Convention note: the underlying system matrices are real and are only cast to complex
+        # for the eigendecomposition above. The geometric series being summed is
+        #   sum_t D_i^t D_j^t = 1 / (1 - D_i D_j),
+        # i.e. a *bilinear* (transpose) form, which is exactly the no-conjugate convention baked
+        # into utils.hadamard_conjugation* (coeff 1/(1 - alpha*beta), operands not conjugated).
+        # Hence every quadratic form below uses .mT (transpose), NOT .mH (conjugate transpose),
+        # and the imaginary parts cancel so a single torch.real(...) is taken at the end.
+        # (An older Hermitian formulation used .mH with a .real on each intermediate term.)
         Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
         Dhi, Dhj = Dh[..., :, None], Dh[..., None, :]                                                   # [B... x S_Dh x 1], [B... x 1 x S_Dh]
 
@@ -374,75 +285,6 @@ class SequentialPredictor(Predictor):
 
 
 class SequentialController(Controller, SequentialPredictor):
-    # @classmethod
-    # def _analytical_error_and_cache(cls,
-    #                                 kfs: TensorDict,         # [B... x ...]
-    #                                 systems: TensorDict,     # [B... x ...]
-    # ) -> tuple[TensorDict, Namespace]:                       # [B...]
-    #     result, cache = SequentialPredictor._analytical_error_and_cache(kfs, systems)
-
-    #     # Variable definition
-    #     controller_keys = cache.controller_keys
-    #     shape = cache.shape
-
-    #     S_Dh = cache.S_Dh
-
-    #     Kh, Lh_dict = cache.Kh, utils.complex(kfs.get("L", cache.default_td))                           # [B... x S_Dh x O_D], [B... x I_D? x S_Dh]
-    #     K, L_dict = cache.K, cache.L                                                                    # [B... x S_D x O_D], [B... x I_D? x S_D]
-    #     sqrt_S_V = cache.sqrt_S_V                                                                       # [B... x O_D x O_D]
-
-    #     Vh = cache.Vh                                                                                   # [B... x S_Dh x S_Dh]
-
-    #     Has, Hhs = cache.Has, cache.Hhs                                                                 # [B... x O_D x 2S_D], [B... x O_D x S_Dh]
-    #     Las_dict = cache.Las                                                                            # [B... x I_D? x 2S_D]
-    #     sqrt_S_Ws = cache.sqrt_S_Ws                                                                     # [B... x 2S_D x 2S_D]
-
-    #     Dj, Dhi, Dhj = cache.Dj, cache.Dhi, cache.Dhj                                                   # [B... x 1 x 2S_D], [B... x S_Dh x 1], [B... x 1 x S_Dh]
-    #     Vinv_BL_F_BLK = cache.Vinv_BL_F_BLK                                                             # [B... x 2S_D x O_D]
-    #     VhinvFhKh_BhLK = cache.VhinvFhKh_BhLK                                                           # [B... x S_Dh x O_D]
-    #     VhinvFhKhHas_BhLas = cache.VhinvFhKhHas_BhLas                                                   # [B... x S_Dh x 2S_D]
-
-    #     r = dict()
-    #     for k in controller_keys:
-    #         # Precomputation
-    #         Lh, L, Las = Lh_dict[k], L_dict[k], Las_dict[k]                                             # [B... x I_D x S_Dh], [B... x I_D x S_D], [B... x I_D x 2S_D]
-    #         I_D = L.shape[-2]
-
-    #         LhVh_KhHhs = Lh @ (Vh - Kh @ Hhs)                                                           # [B... x I_D x S_Dh]
-    #         LhVh_KhHhstLhVh_KhHhs = LhVh_KhHhs.mH @ LhVh_KhHhs                                          # [B... x S_Dh x S_Dh]
-    #         Las_LhKhHas = Las - Lh @ Kh @ Has                                                           # [B... x I_D x 2S_D]
-
-    #         inf_geometric = (
-    #             utils.hadamard_conjugation(Las_LhKhHas, Las_LhKhHas, Dj, Dj, torch.eye(I_D))
-    #             - 2 * utils.hadamard_conjugation_diff_order1(LhVh_KhHhs.mH @ Las_LhKhHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh)).real
-    #             + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, LhVh_KhHhstLhVh_KhHhs)
-    #         )
-
-    #         # State evolution noise error
-    #         # Highlight
-    #         ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mH @ inf_geometric @ sqrt_S_Ws)              # [B...]
-
-    #         # Observation noise error
-    #         # Highlight
-    #         v_current_err = torch.norm((L @ K - Lh @ Kh) @ sqrt_S_V, dim=[-1, -2]) ** 2                 # [B...]
-
-    #         # Highlight
-    #         v_geometric_err = utils.batch_trace(sqrt_S_V.mH @ (
-    #             Vinv_BL_F_BLK.mH @ inf_geometric @ Vinv_BL_F_BLK
-    #             - 2 * VhinvFhKh_BhLK.mH @ utils.complex((
-    #                 utils.hadamard_conjugation(LhVh_KhHhs, Las_LhKhHas, Dhj, Dj, torch.eye(I_D))
-    #                 - utils.hadamard_conjugation_diff_order1(LhVh_KhHhstLhVh_KhHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
-    #             ).real) @ Vinv_BL_F_BLK
-    #             + VhinvFhKh_BhLK.mH @ (
-    #                 utils.hadamard_conjugation(LhVh_KhHhs, LhVh_KhHhs, Dhj, Dhj, torch.eye(I_D))
-    #             ) @ VhinvFhKh_BhLK
-    #         ) @ sqrt_S_V)
-
-    #         r[k] = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                       # [B...]
-
-    #     result["controller"] = TensorDict.from_dict(r, batch_size=shape)
-    #     return result, cache
-
     @classmethod
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]

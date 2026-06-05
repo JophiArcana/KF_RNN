@@ -130,6 +130,11 @@ class ConvolutionalPredictor(Predictor):
         actions, observations = trace["controller"], trace["environment"]["observation"]
 
         B, L = trace.shape
+        # The two branches use different left padding because of causality of one-step-ahead
+        # prediction: the observation at time t is predicted from observations strictly before t,
+        # so the observation IR is shifted by one extra step (padding L) to exclude the current
+        # sample. The control/input at time t is known and contributes to the prediction at the
+        # same step, so the input IR uses padding L - 1. Both are truncated back to length L.
         result = Fn.conv2d(
             self.observation_IR,
             observations[:, :L].transpose(-2, -1).unsqueeze(-1).flip(-2),

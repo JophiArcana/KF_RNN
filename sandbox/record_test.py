@@ -8,7 +8,7 @@ if os.getcwd() not in sys.path:
 
 import torch
 
-from infrastructure.records import recarray
+from numpy.core.records import recarray
 
 
 if __name__ == "__main__":

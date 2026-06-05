@@ -47,6 +47,10 @@ class TransformerPredictor(Predictor):
             embd_dict["environment"]["observation"][:, :-1],    # [B x (L - 1) x S_D]
         ], dim=-2)                                              # [B x L x S_D]
         action_embds = sum(embd_dict["controller"].values())    # [B x L x S_D]
+        # input_bias/observation_bias are token-type markers (observation_bias == -input_bias).
+        # They are only meaningful when observations and actions occupy distinct token positions
+        # (see TransformerXLInContextController); in this summed-embedding scheme they would cancel,
+        # so they are intentionally not added here.
         embds = observation_embds + action_embds                # [B x L x S_D]
 
         out = self.core.forward(
@@ -55,7 +59,9 @@ class TransformerPredictor(Predictor):
             attention_mask=None, # trace["mask"].to(torch.float) if "mask" in trace else None,
         ).hidden_states[-1]                                     # [B x L x S_D]
 
-        return self.embedding_to_output({"environment": out})
+        # The single per-timestep hidden state decodes into both the next observation and the
+        # controller actions, so it is supplied under both keys; subclasses pick what they need.
+        return self.embedding_to_output({"environment": out, "controller": out})
 
     def trace_to_embedding(self, trace: dict[str, dict[str, torch.Tensor]]) -> dict[str, dict[str, torch.Tensor]]:
         return {

@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "cwd": "/home/wentinn/workspace/KF_RNN", // "${fileDirname}",
+            "cwd": "${workspaceFolder}",
             "purpose": ["debug-in-terminal"],
         },
     ]
