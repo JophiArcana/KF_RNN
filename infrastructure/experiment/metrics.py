@@ -8,7 +8,6 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import PTR
 from infrastructure.static import ModelPair
 from infrastructure.experiment.losses import LossFn
 from model.base import Predictor
@@ -28,7 +27,7 @@ class Metric(object):
             exclusive, model_pair = mv
             with torch.set_grad_enabled(False):
                 run_arr = utils.multi_map(
-                    lambda dataset: Predictor.run(model_pair, *dataset),
+                    lambda dataset: Predictor.run(model_pair, dataset),
                     utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=TensorDict,
                 )
             cache[dependency] = run_arr
@@ -71,9 +70,8 @@ def _get_metric_with_loss_fn_and_dataset_type(ds_type: str, loss_fn: LossFn, kwa
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
 
-        def compute_loss_with_result_dataset_pair(args: tuple[TensorDict, PTR, SystemGroup,]) -> torch.Tensor:
-            result, dataset_ptr, sg = args
-            dataset: TensorDict = dataset_ptr.obj
+        def compute_loss_with_result_dataset_pair(args: tuple[TensorDict, TensorDict, SystemGroup,]) -> torch.Tensor:
+            result, dataset, sg = args
 
             if noiseless:
                 dataset = dataset.clone()
@@ -124,10 +122,10 @@ def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: tupl
     ) -> np.ndarray[torch.Tensor]:
         exclusive, _ = mv
 
-        def noiseless_error(args: tuple[PTR, SystemGroup]) -> torch.Tensor:
+        def noiseless_error(args: tuple[TensorDict, SystemGroup]) -> torch.Tensor:
             dataset, sg = args
             reducible_error = Predictor.evaluate_run(
-                dataset.obj[target], dataset.obj, ("environment", "noiseless_observation"),
+                dataset[target], dataset, ("environment", "noiseless_observation"),
                 batch_mean=not with_batch_dim
             )
             env = sg.environment
@@ -149,7 +147,7 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
     ) -> np.ndarray[torch.Tensor]:
         exclusive, _ = mv
         return utils.multi_map(
-            lambda dataset: Predictor.evaluate_run(dataset.obj[target1], dataset.obj, target2, batch_mean=not with_batch_dim),
+            lambda dataset: Predictor.evaluate_run(dataset[target1], dataset, target2, batch_mean=not with_batch_dim),
             utils.rgetattr(exclusive, f"info.{ds_type}.dataset"), dtype=torch.Tensor
         )
     return Metric(eval_func)
@@ -187,11 +185,11 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
         dataset_arr = utils.rgetattr(exclusive, f"info.{ds_type}.dataset")
         with torch.set_grad_enabled(True):
             run_arr = utils.multi_map(
-                lambda dataset: Predictor.run(reset_model_pair, *dataset)["environment", "observation"],
+                lambda dataset: Predictor.run(reset_model_pair, dataset)["environment", "observation"],
                 dataset_arr, dtype=torch.Tensor,
             )
             loss_arr = utils.multi_map(
-                lambda pair: Predictor.evaluate_run(pair[0], pair[1].obj, ("environment", "observation")).mean(dim=-1),
+                lambda pair: Predictor.evaluate_run(pair[0], pair[1], ("environment", "observation")).mean(dim=-1),
                 utils.multi_zip(run_arr, dataset_arr), dtype=torch.Tensor,
             )
 

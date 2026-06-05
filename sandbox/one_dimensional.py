@@ -7,7 +7,6 @@ from infrastructure import loader
 from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
-from infrastructure.utils import PTR
 from model.convolutional import CnnLeastSquaresPredictor
 from model.sequential import RnnKalmanInitializedPredictor
 from model.transformer import (

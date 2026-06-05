@@ -116,7 +116,7 @@ if __name__ == "__main__":
     valid_systems = LTISystem(valid_systems.problem_shape, valid_systems.auxiliary, valid_systems.td().squeeze(0))
     valid_env = valid_systems.environment
 
-    valid_dataset = utils.torch_load(f"output/{output_dir}/{exp_name_transformer}/training/dataset.pt")["valid"].values[()].obj
+    valid_dataset = utils.torch_load(f"output/{output_dir}/{exp_name_transformer}/training/dataset.pt")["valid"].values[()]
     valid_dataset = valid_dataset.reshape(*valid_dataset.shape[2:])
 
     noiseless_empirical_irreducible_loss = Predictor.evaluate_run(

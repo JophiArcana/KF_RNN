@@ -7,7 +7,6 @@ from argparse import Namespace
 
 import tensordict.utils
 import torch
-from dimarray import DimArray
 from matplotlib import pyplot as plt
 
 # This line needs to be added since some terminals will not recognize the current directory
@@ -15,10 +14,11 @@ if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
 
 from infrastructure import loader, utils
+from infrastructure.labeled_array import LabeledArray
 from infrastructure.settings import DEVICE
 from infrastructure.static import *
-from infrastructure.utils import PTR
 from infrastructure.experiment import *
+from infrastructure.experiment.results import ResultGrid
 from infrastructure.experiment.plotting import COLOR_LIST
 from system.linear_time_invariant import LTISystem, MOPDistribution
 from model.zero_predictor import ZeroPredictor
@@ -48,7 +48,7 @@ if __name__ == "__main__":
     exp_name_chain_initialization = "Chaining_rnn"
     for dir_type in ("training", "testing"):
         os.makedirs(f"output/{output_dir}/{exp_name_chain_initialization}/{dir_type}", exist_ok=True)
-        for info_type in INFO_DTYPE.names:
+        for info_type in INFO_FIELDS:
             shutil.copy(
                 f"output/{output_dir}/{exp_name_exemplar}/{dir_type}/{info_type}.pt",
                 f"output/{output_dir}/{exp_name_chain_initialization}/{dir_type}/{info_type}.pt"
@@ -99,7 +99,17 @@ if __name__ == "__main__":
 
     s = 1.0
     min_eqs = int(s * utils.ceildiv(S_D * (S_D + 2 * O_D), O_D))
-    results_chain_initialization = [*map(DimArray, result_exemplar[:utils.ceildiv(min_eqs, rnn_increment)])]  # DimArray uses 1-indexing, include both the zero-predictor and the minimum number of observations to fully constrain RNN parameters
+    # Slice the exemplar result grid along its leading sweep dim into per-context-length
+    # sub-grids (positional 0-indexing): include both the zero-predictor and the minimum
+    # number of observations to fully constrain the RNN parameters.
+    _lead_dim = result_exemplar.dims[0]
+    results_chain_initialization = [
+        ResultGrid(**{
+            f: utils.take_from_dim_array(getattr(result_exemplar, f), {_lead_dim: i})
+            for f in RESULT_FIELDS
+        })
+        for i in range(utils.ceildiv(min_eqs, rnn_increment))
+    ]
 
     scaling_lr, scaling_lr_decay = 1e-5, 0.97
     running_context_length = rnn_increment * (utils.ceildiv(min_eqs, rnn_increment) + 1)
@@ -110,10 +120,10 @@ if __name__ == "__main__":
         args.training.optimizer.max_lr = args.training.optimizer.min_lr = scaling_lr
 
         initialization = utils.multi_map(
-            lambda pair: PTR(pair[1]), DimArray(
+            lambda pair: pair[1], LabeledArray(
                 get_result_attr(results_chain_initialization[-1], "learned_kfs"),
-                dims=results_chain_initialization[-1].dims
-            ), dtype=PTR
+                results_chain_initialization[-1].dims
+            ), dtype=object
         )
 
         results_chain_initialization.append(run_experiments(
@@ -132,7 +142,7 @@ if __name__ == "__main__":
     """ Result processing """
     print("Result processing" + "\n" + "-" * 120)
     systems = LTISystem(SHP.problem_shape, systems.values[()].td().squeeze(0))
-    dataset = dataset.values[()].obj.squeeze(1).squeeze(0)
+    dataset = dataset.values[()].squeeze(1).squeeze(0)
 
     output_name = "output.environment.observation"
     analytical_initialization_output = utils.rgetattr(get_metric_namespace_from_result(result_analytical_initialization), output_name)

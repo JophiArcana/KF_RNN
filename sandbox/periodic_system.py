@@ -23,7 +23,6 @@ from infrastructure import loader
 from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
-from infrastructure.utils import PTR
 from model.convolutional import CnnLeastSquaresPredictor
 from model.sequential import RnnKalmanInitializedPredictor, RnnComplexDiagonalPredictor
 from model.transformer import (
@@ -339,7 +338,7 @@ if __name__ == "__main__":
     """
     # print(M_transformer.output.environment.observation.shape)
     training_log = utils.stack_tensor_arr(utils.multi_map(
-        lambda p: p.obj, get_result_attr(result_transformer, "output"),
+        utils.identity, get_result_attr(result_transformer, "output"),
         dtype=TensorDict,
     ))[:, 0, 0]
     # training_log: TensorDict = result_transformer.values[()].output.obj[0, 0]
@@ -386,10 +385,10 @@ if __name__ == "__main__":
     plt.rcdefaults()
 
     metrics = utils.stack_tensor_arr(utils.multi_map(
-        lambda p: p.obj, get_result_attr(result_transformer, "metrics"),
+        utils.identity, get_result_attr(result_transformer, "metrics"),
         dtype=TensorDict,
     ))
-    dataset = info_dict["test"]["dataset"].values[()].obj
+    dataset = info_dict["test"]["dataset"].values[()]
 
     predicted_y = metrics["output", "environment", "observation"][..., 0, 0, :, :, :, :]    # [... x n_systems x n_traces x sequence_length x O_D]
     y = dataset["environment", "observation"][..., 0, 0, :, :, :, :]                        # [n_systems x n_traces x sequence_length x O_D]

@@ -2,10 +2,10 @@ from typing import Any
 
 import numpy as np
 import torch
-from dimarray import DimArray
 from matplotlib import pyplot as plt
 
 from infrastructure.experiment import *
+from infrastructure.experiment.results import ResultGrid
 
 COLOR_LIST = np.array([
     [127, 113, 240],
@@ -22,7 +22,7 @@ COLOR_LIST = np.array([
 def plot_experiment(
         plot_name: str,
         configurations: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
-        result: DimArray,
+        result: ResultGrid,
         loss_type: str = "empirical",
         xscale: str = "log",
         normalize: bool = True,

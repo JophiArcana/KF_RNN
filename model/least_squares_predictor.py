@@ -14,7 +14,7 @@ class LeastSquaresPredictor(Predictor):
         return utils.multi_vmap(
             self._least_squares_initialization, 2,
             randomness="different",
-        )(exclusive_.train_info.dataset.obj.to_dict())
+        )(exclusive_.train_info.dataset.to_dict())
 
     def training_recipe(self) -> Sequence[str]:
         return ["least_squares_init"]

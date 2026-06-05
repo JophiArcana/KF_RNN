@@ -20,10 +20,10 @@ import einops
 import numpy as np
 import torch
 import torch.nn as nn
-from dimarray import DimArray, Dataset
 from tensordict import TensorDict
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
+from infrastructure.labeled_array import LabeledArray, LabeledDataset, put_object
 from infrastructure.settings import DEVICE
 from infrastructure.static import (
     ModelPair,
@@ -37,13 +37,17 @@ _T = TypeVar("_T")
 System and model functions
 """
 
+def _as_ndarray(arr: "np.ndarray | LabeledArray") -> np.ndarray:
+    return arr.values if isinstance(arr, LabeledArray) else arr
+
 def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict]:
-    tensor_list = [*tensor_arr.ravel()]
+    base = _as_ndarray(tensor_arr)
+    tensor_list = [*base.ravel()]
     if isinstance(t := tensor_list[0], torch.Tensor):
         result = torch.stack(tensor_list, dim=dim)
     else:
         result = TensorDict.maybe_dense_stack(tensor_list, dim=dim)
-    return result.reshape((*tensor_arr.shape, *t.shape,))
+    return result.reshape((*base.shape, *t.shape,))
 
 def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> ModelPair:
     params, buffers = torch.func.stack_module_state(module_arr.ravel().tolist())
@@ -253,68 +257,69 @@ def hadamard_conjugation_diff_order2(
 NumPy Array Comprehension Operations
 """
 
-def multi_iter(arr: np.ndarray | DimArray) -> Iterable[Any]:
-    for x in np.nditer(arr, flags=["refs_ok",],):
+def multi_iter(arr: np.ndarray | LabeledArray) -> Iterable[Any]:
+    for x in np.nditer(_as_ndarray(arr), flags=["refs_ok",],):
         yield x[()]
 
-def multi_enumerate(arr: np.ndarray | DimArray) -> Iterable[tuple[Sequence[int], Any]]:
-    it = np.nditer(arr, flags=["multi_index", "refs_ok",],)
+def multi_enumerate(arr: np.ndarray | LabeledArray) -> Iterable[tuple[Sequence[int], Any]]:
+    it = np.nditer(_as_ndarray(arr), flags=["multi_index", "refs_ok",],)
     for x in it:
         yield it.multi_index, x[()]
 
-def multi_map(func: Callable[[Any], Any], arr: np.ndarray | DimArray, dtype: type = None):
+def multi_map(func: Callable[[Any], Any], arr: np.ndarray | LabeledArray, dtype: type = None):
+    base = _as_ndarray(arr)
     if dtype is None:
-        dtype = type(func(arr.ravel()[0]))
-    result = np.empty_like(arr, dtype=dtype)
-    for idx, x in multi_enumerate(arr):
+        dtype = type(func(base.ravel()[0]))
+    result = np.empty_like(base, dtype=dtype)
+    for idx, x in multi_enumerate(base):
         result[idx] = func(x)
-    return DimArray(result, dims=arr.dims) if isinstance(arr, DimArray) else result
+    return LabeledArray(result, arr.dims) if isinstance(arr, LabeledArray) else result
 
-def multi_zip(*arrs: np.ndarray) -> np.ndarray:
-    result = np.recarray(arrs[0].shape, dtype=[(f"f{i}", arr.dtype) for i, arr in enumerate(arrs)])
-    for i, arr in enumerate(arrs):
-        setattr(result, f"f{i}", arr)
+def multi_zip(*arrs: "np.ndarray | LabeledArray") -> np.ndarray:
+    """Zip element-wise into an object array of tuples.
+
+    Unlike a structured recarray, an object array of plain tuples never lets
+    numpy introspect ``.dtype``/``.names`` on the elements, so it is safe to
+    hold ``Tensor``/``TensorDict`` cells.
+    """
+    bases = [_as_ndarray(arr) for arr in arrs]
+    result = np.empty(bases[0].shape, dtype=object)
+    for idx in np.ndindex(bases[0].shape):
+        result[idx] = tuple(base[idx] for base in bases)
     return result
 
 
 """
-DimArray Operations
+LabeledArray Operations
 """
 
-def dim_array_like(arr: DimArray, dtype: type) -> DimArray:
-    empty_arr = np.full_like(arr, None, dtype=dtype)
-    return DimArray(empty_arr, dims=arr.dims)
+def dim_array_like(arr: LabeledArray, dtype: type) -> LabeledArray:
+    empty_arr = np.full_like(_as_ndarray(arr), None, dtype=dtype)
+    return LabeledArray(empty_arr, arr.dims)
 
-def broadcast_dim_array_shapes(*dim_arrs: Iterable[DimArray]) -> OrderedDict[str, int]:
+def broadcast_dim_array_shapes(*dim_arrs: Iterable[LabeledArray]) -> OrderedDict[str, int]:
     dim_dict = OrderedDict()
     for dim_arr in dim_arrs:
         for dim_name, dim_len in zip(dim_arr.dims, dim_arr.shape):
             dim_dict.setdefault(dim_name, []).append(dim_len)
     return OrderedDict((k, np.broadcast_shapes(*v)[0]) for k, v in dim_dict.items())
 
-def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[DimArray]:
+def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[LabeledArray]:
     _dim_arrs = []
     for dim_arr in dim_arrs:
-        if isinstance(dim_arr, DimArray):
+        if isinstance(dim_arr, LabeledArray):
             _dim_arrs.append(dim_arr)
         elif isinstance(dim_arr, np.ndarray):
             assert dim_arr.ndim == 0
-            _dim_arrs.append(DimArray(dim_arr, dims=[]))
+            _dim_arrs.append(LabeledArray(dim_arr, ()))
         else:
-            _dim_arrs.append(DimArray(array_of(dim_arr), dims=[]))
-    dim_arrs = _dim_arrs
+            _dim_arrs.append(LabeledArray(array_of(dim_arr), ()))
 
-    dim_dict = broadcast_dim_array_shapes(*dim_arrs)
-    reference_dim_arr = DimArray(
-        np.zeros((*dim_dict.values(),)),
-        dims=(*dim_dict.keys(),),
-        axes=(*map(np.arange, dim_dict.values()),)
-    )
-    return (dim_arr.broadcast(reference_dim_arr) for dim_arr in dim_arrs)
+    dim_dict = broadcast_dim_array_shapes(*_dim_arrs)
+    return (dim_arr.broadcast(dim_dict) for dim_arr in _dim_arrs)
 
-def take_from_dim_array(dim_arr: DimArray | Dataset, idx: dict[str, Any]):
-    dims = set(dim_arr.dims)
-    return dim_arr.take(indices={k: v for k, v in idx.items() if k in dims})
+def take_from_dim_array(dim_arr: LabeledArray | LabeledDataset, idx: dict[str, Any]):
+    return dim_arr.take(indices=idx)
 
 
 """
@@ -517,13 +522,6 @@ def get_all_hooks(module: nn.Module) -> dict[str, dict[int, Callable]]:
 
     _get_hooks(module)
     return all_hooks
-
-class PTR(object):
-    def __init__(self, obj: object) -> None:
-        self.obj = obj
-
-    def __iter__(self):
-        yield self.obj
 
 class print_disabled:
     def __enter__(self):

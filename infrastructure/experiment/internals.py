@@ -6,9 +6,10 @@ from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
 import torch
-from dimarray import DimArray, Dataset
+from tensordict import TensorDict
 
 from infrastructure import utils
+from infrastructure.experiment.results import InfoGrid
 from infrastructure.experiment.sweep import (
     is_dataset_param_of_type,
     is_system_param_of_type,
@@ -16,14 +17,14 @@ from infrastructure.experiment.sweep import (
     support_param_targets_type,
     support_param_is_nonauxiliary_of_type,
 )
+from infrastructure.labeled_array import LabeledArray, LabeledDataset
 from infrastructure.settings import DEVICE
 from infrastructure.static import (
     DATASET_SUPPORT_PARAMS,
-    INFO_DTYPE,
+    INFO_FIELDS,
     PARAM_GROUP_FORMATTER,
     TRAINING_DATASET_TYPES,
 )
-from infrastructure.utils import PTR
 from system.base import SystemGroup
 
 
@@ -45,7 +46,7 @@ def _construct_dependency_dict_and_params_dataset(
         HP: Namespace,
         iterparams: list[tuple[str, dict[str, Any]]],
         assertion_conditions: Iterable[tuple[Callable[[str], bool], str]] = ()
-) -> tuple[OrderedDict[str, tuple[int, list[str]]], Dataset]:
+) -> tuple[OrderedDict[str, tuple[int, list[str]]], LabeledDataset]:
 
     HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
@@ -71,11 +72,11 @@ def _construct_dependency_dict_and_params_dataset(
             for d in range(-len(param_group_shape), 0)
         ]
         for k, _v in zip(params.keys(), _vs):
-            dataset[k] = DimArray(_v, dims=dim_names[-_v.ndim:])
+            dataset[k] = LabeledArray(_v, dim_names[-_v.ndim:])
             for dn, dim in zip(dataset[k].dims, param_group_shape[-_v.ndim:]):
                 dependency_dict.setdefault(dn, (dim, []))[1].append(k)
 
-    return dependency_dict, Dataset(dataset)
+    return dependency_dict, LabeledDataset(dataset)
 
 def _filter_dimensions_if_any_satisfy_condition(
         dependency_dict: dict[str, tuple[int, list[str]]],
@@ -89,7 +90,7 @@ def _filter_dimensions_if_any_satisfy_condition(
 def _iterate_HP_with_params(
         HP: Namespace,
         dimensions: OrderedDict[str, int],
-        params_dataset: Dataset,
+        params_dataset: LabeledDataset,
 ) -> Iterable[tuple[OrderedDict[str, int], Namespace]]:
     for idx in itertools.product(*map(range, dimensions.values())):
         dict_idx = OrderedDict([*zip(dimensions.keys(), idx)])
@@ -101,19 +102,19 @@ def _iterate_HP_with_params(
 def _map_HP_with_params(
         HP: Namespace,
         dimensions: OrderedDict[str, int],
-        params_dataset: Dataset,
+        params_dataset: LabeledDataset,
         func: Callable[[OrderedDict[str, int], Namespace], Any],
         dtype: type
-) -> DimArray:
-    result_arr = DimArray(np.empty([*dimensions.values()], dtype=dtype), dims=[*dimensions.keys()])
+) -> LabeledArray:
+    result_arr = LabeledArray(np.empty([*dimensions.values()], dtype=dtype), [*dimensions.keys()])
     for dict_idx, sub_HP in _iterate_HP_with_params(HP, dimensions, params_dataset):
-        result_arr.put(indices=dict_idx, values=func(dict_idx, sub_HP))
+        result_arr.put(dict_idx, func(dict_idx, sub_HP))
     return result_arr
 
 def _get_param_dimarr(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
-        params_dataset: Dataset,
+        params_dataset: LabeledDataset,
         param: str, dtype: type
 ):
     filter_dimensions = _filter_dimensions_if_any_satisfy_condition(dimensions, param.__eq__)
@@ -125,12 +126,12 @@ def _get_param_dimarr(
 def _resolve_system_params(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
-        params_dataset: Dataset,
-        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        params_dataset: LabeledDataset,
+        info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
         ds_type: str,
         save_dict: dict[str, dict[str, Any]],
         system_param_dimensions: OrderedDict[str, int],
-) -> DimArray:
+) -> LabeledArray:
     """Resolve the array of system *parameters* (matrices) for a dataset type.
 
     Precondition: at least one system support hyperparameter targets ``ds_type``.
@@ -148,15 +149,15 @@ def _resolve_system_params(
         n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
         max_n_systems = n_systems_arr.max()
 
-        def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> PTR:
-            return PTR(utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
+        def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> TensorDict:
+            return utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
                 utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
-            ))
+            )
 
         print(f"Sampling new system matrices for dataset type {ds_type}")
         return _map_HP_with_params(
             HP, system_param_dimensions, params_dataset,
-            sample_system_parameters_with_sub_hyperparameters, dtype=PTR
+            sample_system_parameters_with_sub_hyperparameters, dtype=object
         )
     else:
         print(f"Defaulting to train system matrices for dataset type {ds_type}")
@@ -165,11 +166,11 @@ def _resolve_system_params(
 def _construct_systems(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
-        params_dataset: Dataset,
+        params_dataset: LabeledDataset,
         ds_type: str,
         system_param_dimensions: OrderedDict[str, int],
-        system_params_arr: DimArray,
-) -> DimArray:
+        system_params_arr: LabeledArray,
+) -> LabeledArray:
     """Build the array of SystemGroups for a dataset type from resolved system params."""
     system_dimensions = OrderedDict(system_param_dimensions)
     system_dimensions.update(_filter_dimensions_if_any_satisfy_condition(
@@ -178,7 +179,7 @@ def _construct_systems(
 
     def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> SystemGroup:
         dist = utils.rgetattr(sub_HP, f"system.distribution.{ds_type}")
-        system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()].obj
+        system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()]
 
         sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
         return dist.system_type(sub_HP.system, system_params)
@@ -191,13 +192,13 @@ def _construct_systems(
 def _resolve_dataset(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
-        params_dataset: Dataset,
-        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        params_dataset: LabeledDataset,
+        info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
         ds_type: str,
         save_dict: dict[str, dict[str, Any]],
-        systems_arr: DimArray,
+        systems_arr: LabeledArray,
         system_support_hyperparameters: Iterable[str],
-) -> DimArray:
+) -> LabeledArray:
     """Resolve the rollout dataset for a dataset type.
 
     - if a previously-saved dataset exists, reuse it;
@@ -229,35 +230,35 @@ def _resolve_dataset(
     max_sequence_length = sequence_length_arr.max()
     max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_n_traces
 
-    def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> PTR:
+    def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> TensorDict:
         sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
         dataset = sg.generate_dataset(max_batch_size, max_sequence_length).detach()
 
         if ds_type == TRAINING_DATASET_TYPES[0]:
-            return PTR(dataset.unflatten(2, (HP.experiment.ensemble_size, max_n_traces)).permute(0, 2, 1, 3, 4))
+            return dataset.unflatten(2, (HP.experiment.ensemble_size, max_n_traces)).permute(0, 2, 1, 3, 4)
         else:
-            return PTR(dataset.unsqueeze(1).expand(
+            return dataset.unsqueeze(1).expand(
                 HP.experiment.n_experiments,
                 HP.experiment.ensemble_size,
                 sg.group_shape[1],
                 max_n_traces,
                 max_sequence_length
-            ))
+            )
 
     return _map_HP_with_params(
         HP, dataset_dimensions, params_dataset,
-        sample_dataset_with_sub_hyperparameters, dtype=PTR
+        sample_dataset_with_sub_hyperparameters, dtype=object
     )
 
 def _construct_info_dict(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
-        params_dataset: Dataset,
-        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        params_dataset: LabeledDataset,
+        info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
         ds_type: str,
         save_dict: dict[str, dict[str, Any]],
-        systems: dict[str, DimArray] = None,
-) -> OrderedDict[str, DimArray]:
+        systems: dict[str, LabeledArray] = None,
+) -> OrderedDict[str, LabeledArray]:
     """Resolve the systems, system parameters, and rollout dataset for one dataset type.
 
     Resolution order for systems/parameters:
@@ -292,12 +293,12 @@ def _construct_info_dict(
         print(f"Systems found for dataset type {ds_type}")
         systems_arr = systems[ds_type]
 
-        def retrieve_system_params_from_system(dict_idx: OrderedDict[str, int], _) -> PTR:
-            return PTR(systems_arr.take(indices=dict_idx).values.ravel()[0].td())
+        def retrieve_system_params_from_system(dict_idx: OrderedDict[str, int], _) -> TensorDict:
+            return systems_arr.take(indices=dict_idx).values.ravel()[0].td()
 
         system_params_arr = _map_HP_with_params(
             HP, system_param_dimensions, params_dataset,
-            retrieve_system_params_from_system, dtype=PTR,
+            retrieve_system_params_from_system, dtype=object,
         )
 
     result["system_params"] = system_params_arr
@@ -311,14 +312,14 @@ def _construct_info_dict(
 def _construct_info_dict_from_dataset_types(
         HP: Namespace,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
-        params_dataset: Dataset,
-        info_dict: OrderedDict[str, OrderedDict[str, DimArray]],
+        params_dataset: LabeledDataset,
+        info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
         dataset_types: Sequence[str],
         output_dir: str,
-        default_systems: dict[str, DimArray] = None
-) -> OrderedDict[str, OrderedDict[str, DimArray]]:
+        default_systems: dict[str, LabeledArray] = None
+) -> OrderedDict[str, OrderedDict[str, LabeledArray]]:
     saved_fname_dict, unsaved_fname_dict = {}, {}
-    for attr in INFO_DTYPE.names:
+    for attr in INFO_FIELDS:
         fname = f"{output_dir}/{attr}.pt"
         (saved_fname_dict if os.path.exists(fname) else unsaved_fname_dict)[attr] = fname
 
@@ -337,17 +338,12 @@ def _construct_info_dict_from_dataset_types(
 
     return info_dict
 
-def _process_info_dict(ds_info: OrderedDict[str, DimArray]) -> DimArray:
-    ds_info = OrderedDict(filter(
-        lambda p: p[0] in INFO_DTYPE.names,
+def _process_info_dict(ds_info: OrderedDict[str, LabeledArray]) -> InfoGrid:
+    fields = OrderedDict(filter(
+        lambda p: p[0] in INFO_FIELDS,
         zip(ds_info.keys(), utils.broadcast_dim_arrays(*ds_info.values()))
     ))
-    ref = (*ds_info.values(),)[0]
-
-    info_recarr = np.recarray(ref.shape, dtype=INFO_DTYPE)
-    for k, v in ds_info.items():
-        setattr(info_recarr, k, v.values)
-    return DimArray(info_recarr, dims=ref.dims)
+    return InfoGrid.from_fields(fields)
 
 def _populate_values(HP: Namespace) -> None:
     total_sequence_length = HP.dataset.total_sequence_length.train

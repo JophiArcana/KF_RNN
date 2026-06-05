@@ -60,7 +60,7 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
         if not hasattr(cache, "index"):
             # TODO: Set up the dataset index sampler
-            dataset: TensorDict = exclusive.train_info.dataset.obj
+            dataset: TensorDict = exclusive.train_info.dataset
             dataset = dataset.flatten(2, -2)
             cache.bsz = dataset.shape[:2]
 

@@ -15,7 +15,6 @@ import torch.optim as optim
 from tensordict import TensorDict
 
 from infrastructure import utils
-from infrastructure.utils import PTR
 from infrastructure.experiment.engine import error
 from infrastructure.experiment.losses import LOSS_DICT, LossFn
 from infrastructure.experiment.metrics import METRIC_DICT
@@ -220,7 +219,7 @@ class SGDStage(TrainingStage):
 
         # SECTION: Setup the index dataloader, optimizer, and scheduler before iterating
         if not hasattr(cache, "optimizer"):
-            dataset: TensorDict = exclusive.train_info.dataset.obj
+            dataset: TensorDict = exclusive.train_info.dataset
             cache.padded_train_dataset = TensorDict.cat([
                 dataset, dataset[..., -1:].apply(torch.zeros_like)
             ], dim=-1)
@@ -238,7 +237,7 @@ class SGDStage(TrainingStage):
         result = []
         loss_fn: LossFn = get_loss_fn(THP)
 
-        for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset.obj, vars(THP.sampling),)):
+        for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset, vars(THP.sampling),)):
             dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
 
             model_pair[0].train()
@@ -449,8 +448,8 @@ def _print_baseline_errors(info: Namespace) -> None:
     for ds_type, ds_info in vars(info).items():
         print(f"Mean loss for dataset type {ds_type} {'-' * 80}")
         evaluation_targets = collections.OrderedDict([
-            ("analytical", ds_info.systems,),
-            ("empirical", utils.multi_map(lambda p: p.obj, ds_info.dataset, dtype=TensorDict,),),
+            ("analytical", ds_info.systems.values,),
+            ("empirical", utils.multi_map(utils.identity, ds_info.dataset, dtype=TensorDict,).values,),
         ])
         shape = [*evaluation_targets.values()][0].shape
         assert all(arr.shape == shape for arr in evaluation_targets.values()), "Not sure when this is not true but we'll deal with it later."
@@ -493,10 +492,10 @@ def _run_unit_training_experiment(
 
     # Slice the train dataset down to the configured train shape.
     info.train.dataset = utils.multi_map(
-        lambda dataset: PTR(utils.mask_dataset_with_total_sequence_length(
-            dataset.obj[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
+        lambda dataset: utils.mask_dataset_with_total_sequence_length(
+            dataset[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
             DHP.total_sequence_length.train
-        )), info.train.dataset, dtype=PTR,
+        ), info.train.dataset, dtype=TensorDict,
     )
 
     exclusive = Namespace(
@@ -508,7 +507,7 @@ def _run_unit_training_experiment(
     _print_baseline_errors(info)
 
     return {
-        "output": PTR(_run_training(HP, exclusive, model_pair, checkpoint_paths).detach()),
+        "output": _run_training(HP, exclusive, model_pair, checkpoint_paths).detach(),
         "learned_kfs": model_pair,
     }
 

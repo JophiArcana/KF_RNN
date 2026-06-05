@@ -8,14 +8,12 @@ from argparse import Namespace
 from typing import Any, OrderedDict
 
 import numpy as np
-import numpy.core.records as np_records
 import torch
-from dimarray import DimArray
 from tensordict import TensorDict
 
 from infrastructure import utils
 from infrastructure.config import ExperimentConfig, validate_sweep_targets
-from infrastructure.utils import PTR
+from infrastructure.labeled_array import LabeledArray
 from infrastructure.experiment.internals import (
     _filter_dimensions_if_any_satisfy_condition,
     _supports_dataset_condition,
@@ -26,13 +24,13 @@ from infrastructure.experiment.internals import (
     _populate_values,
 )
 from infrastructure.experiment.metrics import METRIC_DICT, Metric
+from infrastructure.experiment.results import ResultGrid, InfoGrid
 from infrastructure.experiment.sweep import (
     is_experiment_param,
     is_dataset_param,
     is_dataset_param_of_type,
 )
 from infrastructure.static import (
-    RESULT_DTYPE,
     TRAINING_DATASET_TYPES,
     TESTING_DATASET_TYPE,
 )
@@ -76,7 +74,7 @@ def _setup_output_paths(
     ] if with_checkpoints else []
     return output_dir, subdir, output_fnames, checkpoint_paths
 
-def _recover_result(output_fnames: list[str], kind: str) -> tuple[DimArray, str]:
+def _recover_result(output_fnames: list[str], kind: str) -> tuple[ResultGrid, str]:
     """Load the most recent existing result file, returning ``(result_or_None, last_fname)``."""
     last_fname: str = None
     for last_fname in output_fnames:
@@ -93,7 +91,7 @@ def _backup_frequency(HP: Namespace) -> int:
     return 10000 if backup_frequency is None else backup_frequency
 
 def _save_result_tiers(
-        result: DimArray,
+        result: ResultGrid,
         output_fnames: list[str],
         counter: int,
         backup_frequency: int,
@@ -117,25 +115,14 @@ def _write_hparams(subdir: str, HP: Namespace) -> None:
             json.dump(utils.toJSON(HP), fp, indent=4)
 
 
-# SECTION: Typed access to result / info records (avoid reconstructing recarrays inline)
-
-def _result_records(r: DimArray) -> np.recarray:
-    """View a results DimArray as a typed numpy recarray with RESULT_DTYPE fields."""
-    return np_records.fromrecords(r.values, dtype=RESULT_DTYPE)
-
-def _info_records(info_dimarr: DimArray, index: "OrderedDict[str, int]") -> np.recarray:
-    """View a slice of an info DimArray (INFO_DTYPE fields) as a typed numpy recarray."""
-    return np_records.fromrecords(utils.take_from_dim_array(info_dimarr, index), dtype=info_dimarr.dtype)
-
-
 def run_experiments(
         HP: Namespace,
         iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         output_kwargs: dict[str, Any],
-        systems: dict[str, DimArray] = None,
-        initialization: DimArray = None,
+        systems: dict[str, LabeledArray] = None,
+        initialization: LabeledArray = None,
         save_experiment: bool = True
-) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
+) -> tuple[ResultGrid, OrderedDict[str, OrderedDict[str, LabeledArray]]]:
     HP = utils.deepcopy_namespace(_coerce_hp(HP))
     validate_sweep_targets(HP, iterparams)
 
@@ -185,11 +172,11 @@ def run_training_experiments(
         HP: Namespace,
         iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         output_kwargs: dict[str, Any],
-        systems: dict[str, DimArray] = None,
-        initialization: DimArray = None,
+        systems: dict[str, LabeledArray] = None,
+        initialization: LabeledArray = None,
         save_experiment: bool = True,
         print_hyperparameters: bool = False,
-) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
+) -> tuple[ResultGrid, OrderedDict[str, OrderedDict[str, LabeledArray]]]:
     HP = utils.deepcopy_namespace(_coerce_hp(HP))
     validate_sweep_targets(HP, iterparams)
 
@@ -221,7 +208,7 @@ def run_training_experiments(
     result, output_fname = _recover_result(output_fnames, "training")
 
     def check_done() -> np.ndarray:
-        return _result_records(result).time > 0
+        return get_result_attr(result, "time") > 0
 
     train_dimensions = _filter_dimensions_if_any_satisfy_condition(
         dimensions, lambda param: not is_dataset_param(param) or is_dataset_param_of_type(param, TRAINING_DATASET_TYPES[0])
@@ -233,13 +220,10 @@ def run_training_experiments(
             return result, INFO_DICT,
     else:
         # DONE: Filter out the hyperparameter sweeps that do not influence training
-        result = DimArray(
-            np.recarray([*train_dimensions.values()], dtype=RESULT_DTYPE),
-            dims=[*train_dimensions.keys()], dtype=RESULT_DTYPE,
-        )
+        result = ResultGrid.empty(train_dimensions)
 
     # DONE: Restructure INFO_DICT for easier access during training
-    PROCESSED_INFO_DICT: dict[str, DimArray] = {k: _process_info_dict(v) for k, v in INFO_DICT.items()}
+    PROCESSED_INFO_DICT: dict[str, InfoGrid] = {k: _process_info_dict(v) for k, v in INFO_DICT.items()}
 
 
     # SECTION: Run the training experiments
@@ -251,8 +235,7 @@ def run_training_experiments(
 
     counter = 1
     for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, train_dimensions, params_dataset):
-        experiment_record = result.take(experiment_dict_index)
-        if experiment_record.time == 0:
+        if result.get(experiment_dict_index, "time") == 0:
             done = check_done()
             print("=" * 160)
             print(f'Experiment {done.sum().item()}/{done.size}')
@@ -261,13 +244,13 @@ def run_training_experiments(
             _populate_values(EXPERIMENT_HP)
 
             INFO = Namespace(**{
-                ds_type: _info_records(ds_info, experiment_dict_index)
+                ds_type: ds_info.take(experiment_dict_index)
                 for ds_type, ds_info in PROCESSED_INFO_DICT.items()
             })
 
             # TODO: Set up experiment initialization if it exists
             if initialization is not None:
-                _initialization = utils.take_from_dim_array(initialization, experiment_dict_index).values[()].obj
+                _initialization = utils.take_from_dim_array(initialization, experiment_dict_index).values[()]
             else:
                 _initialization = TensorDict({}, batch_size=())
 
@@ -275,11 +258,12 @@ def run_training_experiments(
             experiment_result = _run_unit_training_experiment(EXPERIMENT_HP, INFO, checkpoint_paths, _initialization)
             end_t = time.perf_counter()
 
-            for k, v in experiment_result.items():
-                setattr(experiment_record, k, v)
-
-            experiment_record.time = end_t - start_t
-            experiment_record.systems = INFO.train.systems[()]
+            result.set(
+                experiment_dict_index,
+                time=end_t - start_t,
+                systems=INFO.train.systems[()],
+                **experiment_result,
+            )
 
             print("\n" + "#" * 160)
             if save_experiment:
@@ -312,11 +296,11 @@ def run_testing_experiments(
         HP: Namespace,
         iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         output_kwargs: dict[str, Any],
-        systems: dict[str, DimArray] = None,
-        result: DimArray = None,
-        info_dict: OrderedDict[str, OrderedDict[str, DimArray]] = None,
+        systems: dict[str, LabeledArray] = None,
+        result: ResultGrid = None,
+        info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]] = None,
         save_experiment: bool = True
-) -> tuple[DimArray, OrderedDict[str, OrderedDict[str, DimArray]]]:
+) -> tuple[ResultGrid, OrderedDict[str, OrderedDict[str, LabeledArray]]]:
     HP = utils.deepcopy_namespace(_coerce_hp(HP))
     validate_sweep_targets(HP, iterparams)
 
@@ -365,10 +349,10 @@ def run_testing_experiments(
         return result, INFO_DICT,
 
 
-    # SECTION: Construct DimRecarray from accumulated information
+    # SECTION: Validate that the testing dataset shape is constant across the sweep
     for ds_info in INFO_DICT.values():
         shapes = utils.stack_tensor_arr(utils.multi_map(
-            lambda dataset: torch.IntTensor([*dataset.obj.shape, ]),
+            lambda dataset: torch.IntTensor([*dataset.shape, ]),
             ds_info["dataset"].values, dtype=tuple
         ))
         flattened_shapes = shapes.reshape(-1, shapes.shape[-1])
@@ -382,8 +366,7 @@ def run_testing_experiments(
     counter = 1
     train_dimensions = collections.OrderedDict(zip(result.dims, result.shape,))
     for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, train_dimensions, params_dataset):
-        experiment_record = result.take(experiment_dict_index)
-        if experiment_record.metrics is None:
+        if result.get(experiment_dict_index, "metrics") is None:
             done = ~np.array(get_result_attr(result, "metrics") == None)
             print(f"Computing metrics for experiment {done.sum().item()}/{done.size}")
 
@@ -391,10 +374,10 @@ def run_testing_experiments(
             _populate_values(EXPERIMENT_HP)
 
             # DONE: Set up metric information
-            reference_module, stacked_modules = experiment_record.learned_kfs
+            reference_module, stacked_modules = result.get(experiment_dict_index, "learned_kfs")
             reference_module.eval()
 
-            INFO = _info_records(TEST_INFO, experiment_dict_index)
+            INFO = TEST_INFO.take(experiment_dict_index)
             exclusive = Namespace(info=Namespace(test=INFO), reference_module=reference_module)
 
             # DONE: Compute testing metrics
@@ -422,7 +405,7 @@ def run_testing_experiments(
                     print(f"WARNING: testing metric {m!r} failed and was skipped:\n{traceback.format_exc()}")
             metric_result["output"] = utils.stack_tensor_arr(Metric.compute(metric_vars, "test", metric_cache))
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
-            experiment_record.metrics = PTR(metric_result)
+            result.set(experiment_dict_index, metrics=metric_result)
 
             if save_experiment:
                 # Save if backup frequency or if it was the last experiment
@@ -445,16 +428,15 @@ def run_testing_experiments(
     return result, INFO_DICT,
 
 
-def get_result_attr(r: DimArray, attr: str) -> np.ndarray[Any]:
-    return getattr(_result_records(r), attr)
+def get_result_attr(r: ResultGrid, attr: str) -> np.ndarray[Any]:
+    return r.field(attr)
 
 
-def get_metric_namespace_from_result(r: DimArray) -> Namespace:
+def get_metric_namespace_from_result(r: ResultGrid) -> Namespace:
     result = Namespace()
-    for k, v in utils.stack_tensor_arr(utils.multi_map(
-            lambda metrics: metrics.obj,
-            get_result_attr(r, "metrics"), dtype=TensorDict
-    )).items(include_nested=True, leaves_only=True):
+    for k, v in utils.stack_tensor_arr(
+            get_result_attr(r, "metrics")
+    ).items(include_nested=True, leaves_only=True):
         if isinstance(k, str):
             setattr(result, k, v)
         else:

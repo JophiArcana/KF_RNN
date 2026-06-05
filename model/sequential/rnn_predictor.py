@@ -38,8 +38,8 @@ class RnnKalmanPredictor(RnnPredictor):
             **systems_td.get("controller", {}),
         }
         error = Predictor.evaluate_run(
-            exclusive.train_info.dataset.obj["environment", "target_observation_estimation"],
-            exclusive.train_info.dataset.obj, ("environment", "observation")
+            exclusive.train_info.dataset["environment", "target_observation_estimation"],
+            exclusive.train_info.dataset, ("environment", "observation")
         ).squeeze(-1)
         return initialization, error
 

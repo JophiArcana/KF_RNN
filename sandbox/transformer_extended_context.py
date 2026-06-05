@@ -20,7 +20,6 @@ from infrastructure import loader
 from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
-from infrastructure.utils import PTR
 from model.convolutional import CnnLeastSquaresPredictor
 from model.zero_predictor import ZeroPredictor
 from system.linear_time_invariant import LTISystem, MOPDistribution
@@ -221,7 +220,7 @@ if __name__ == "__main__":
                 f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
                 f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt"
             ))):
-                baseline_dataset = utils.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
+                baseline_dataset = utils.multi_map(lambda dataset_: dataset_.permute(2, 3, 0, 1, 4), dataset, dtype=object)
                 torch.save({
                     "train": baseline_dataset,
                     "valid": baseline_dataset
@@ -327,7 +326,7 @@ if __name__ == "__main__":
     print("Result processing" + "\n" + "-" * 120)
     lsg = systems.values[()]
     systems = LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().squeeze(0))
-    dataset = dataset.values[()].obj[0, 0]
+    dataset = dataset.values[()][0, 0]
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
         env = systems.environment

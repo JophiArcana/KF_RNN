@@ -52,10 +52,8 @@ def set_debug(flag: bool) -> None:
 
 
 # SECTION: Add safe globals for torch.load
-import dimarray
 import numpy
 torch.serialization.add_safe_globals([
-    dimarray.core.dimarraycls.DimArray,
     numpy.core.multiarray._reconstruct,
     numpy.dtype,
     numpy.ndarray,

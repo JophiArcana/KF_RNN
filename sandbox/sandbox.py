@@ -18,14 +18,13 @@ import torch.nn as nn
 import torch.nn.functional as Fn
 import torch.optim as optim
 import tensordict
-from dimarray import DimArray
 from tensordict import TensorDict
 
 # from huggingface_hub import hf_hub_download
 from transformers import GPT2Config, GPT2Model
 
 from infrastructure import utils, loader
-from infrastructure.utils import PTR
+from infrastructure.labeled_array import LabeledArray
 from infrastructure.experiment import *
 from infrastructure.settings import DTYPE, DEVICE
 from infrastructure.discrete_are import solve_discrete_are

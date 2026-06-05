@@ -17,7 +17,6 @@ from infrastructure import loader
 from infrastructure import utils
 from infrastructure.experiment import *
 from infrastructure.settings import DEVICE
-from infrastructure.utils import PTR
 from model.base import Predictor
 from model.convolutional import CnnPredictorLeastSquares
 from model.sequential import RnnPredictorPretrainAnalytical

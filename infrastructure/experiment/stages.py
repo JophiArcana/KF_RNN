@@ -143,7 +143,7 @@ class InitializationStage(TrainingStage):
                 stacked_modules[tdk] = v.expand_as(stacked_modules[tdk])
             self._state.initialization_error = error_.expand(stacked_modules.shape)
             error = Predictor.evaluate_run(
-                0, ctx.train_info.dataset.obj, ("environment", "observation")
+                0, ctx.train_info.dataset, ("environment", "observation")
             ).mean(dim=-1)
         else:
             self._state.done = True

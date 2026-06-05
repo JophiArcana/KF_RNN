@@ -2,7 +2,6 @@ import dataclasses
 from argparse import Namespace
 from typing import Callable
 
-import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -19,8 +18,8 @@ __all__ = [
     "TRAINING_DATASET_TYPES",
     "TESTING_DATASET_TYPE",
     "DATASET_SUPPORT_PARAMS",
-    "INFO_DTYPE",
-    "RESULT_DTYPE",
+    "INFO_FIELDS",
+    "RESULT_FIELDS",
 ]
 
 
@@ -54,18 +53,20 @@ DATASET_SUPPORT_PARAMS: list[str] = [
     *(f.name for f in dataclasses.fields(DataConfig) if f.name != "n_systems"),
     "system.n_systems",
 ]
-INFO_DTYPE: np.dtype = np.dtype([
-    ("systems", object), # ("systems", SystemGroup),
-    ("system_params", object),
-    ("dataset", object)
-])
-RESULT_DTYPE: np.dtype = np.dtype([
-    ("time", float),
-    ("output", TensorDict),
-    ("learned_kfs", tuple),
-    ("systems", object),
-    ("metrics", object),
-])
+# Per-cell field names for the struct-of-arrays info / result grids. Each name
+# maps to one LabeledArray field on InfoGrid / ResultGrid.
+INFO_FIELDS: tuple[str, ...] = (
+    "systems",
+    "system_params",
+    "dataset",
+)
+RESULT_FIELDS: tuple[str, ...] = (
+    "time",
+    "output",
+    "learned_kfs",
+    "systems",
+    "metrics",
+)
 
 
 
