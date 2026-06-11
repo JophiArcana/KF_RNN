@@ -22,6 +22,11 @@ class RnnHoKalmanBasePredictor(RnnPredictor):
     FIR_ATTR: str = "fir"
 
     def __init__(self, modelArgs: Namespace, **kwargs: Any):
+        if self.FIR_CLS is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must set the ``FIR_CLS`` class attribute to a concrete "
+                f"ConvolutionalPredictor subclass before instantiation."
+            )
         RnnPredictor.__init__(self, modelArgs, **kwargs)
         self.register_module(RnnHoKalmanBasePredictor.FIR_ATTR, self.FIR_CLS(modelArgs, **kwargs))
 
@@ -38,7 +43,7 @@ class RnnHoKalmanBasePredictor(RnnPredictor):
 
         # SUBSECTION: Concatenate impulse responses
         irs = [observation_ir, *map(input_ir.__getitem__, controller_keys)]
-        concatenated_irs = torch.cat([observation_ir, *map(input_ir.__getitem__, controller_keys)], dim=-1)
+        concatenated_irs = torch.cat(irs, dim=-1)
         padded_irs = Fn.pad(concatenated_irs, (0, 0, 0, 1,), mode="constant", value=0.0)
         cum_lengths = np.cumsum([ir.shape[-1] for ir in irs]).tolist()
 
@@ -48,7 +53,8 @@ class RnnHoKalmanBasePredictor(RnnPredictor):
         hankel_neg = einops.rearrange(hankel_matrix[..., :, :, :-1, :], "... o d1 d2 i -> ... (d1 o) (d2 i)")   # float: [... x (d1 O_D) x (d2 ?+)]
         hankel_pos = einops.rearrange(hankel_matrix[..., :, :, 1:, :], "... o d1 d2 i -> ... (d1 o) (d2 i)")    # float: [... x (d1 O_D) x (d2 ?+)]
 
-        U, S, V = torch.svd(hankel_neg, some=True)                                      # float: [... x (d1 O_D) x (d1 O_D)], [... x (d1 O_D)], [... x (d2 ?+) x (d1 O_D)]
+        U, S, Vh = torch.linalg.svd(hankel_neg, full_matrices=False)                    # float: [... x (d1 O_D) x r], [... x r], [... x r x (d2 ?+)]
+        V = Vh.mT                                                                       # float: [... x (d2 ?+) x r]
         U, S, V = U[..., :self.S_D], S[..., :self.S_D], V[..., :self.S_D]               # float: [... x (d1 O_D) x S_D], [... x S_D], [... x (d2 ?+) x S_D]
         sqrt_S = torch.sqrt(S)                                                          # float: [... x S_D]
 

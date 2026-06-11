@@ -2,7 +2,6 @@ from argparse import Namespace
 from typing import Sequence
 
 import torch
-import torch.nn as nn
 from tensordict import TensorDict
 
 from infrastructure import utils
@@ -12,7 +11,7 @@ from model.convolutional import ConvolutionalPredictor
 
 class CopyPredictor(Predictor):
     def __init__(self, modelArgs: Namespace):
-        nn.Module.__init__(self)
+        Predictor.__init__(self, modelArgs)
 
     @classmethod
     def _analytical_error_and_cache(cls,

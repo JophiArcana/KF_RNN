@@ -1,26 +1,16 @@
 import torch
 
 from infrastructure import utils
+from infrastructure.discrete_are import _torch_schur
 
 
 """
 Manually implemented computation of the Riccati solution. Worse precision but parallelizes much faster.
+
+The Schur routine itself lives in ``infrastructure.discrete_are._torch_schur`` (call with
+``vectors_only=False`` to get the (T, U) pair); the functions below are scaling experiments
+on top of it.
 """
-
-
-def _torch_schur(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    A_complex = torch.complex(A, torch.zeros_like(A))
-    L, V = torch.linalg.eig(A_complex)                          # [B... x N], [B... x N x N]
-    order = torch.argsort(L.abs(), dim=-1)                      # [B... x N]
-    L = torch.take_along_dim(L, order, dim=-1)
-    V = torch.vmap(torch.take_along_dim, in_dims=(-2, None), out_dims=(-2,))(V, order, dim=-1)
-
-    Q, R = torch.linalg.qr(V)                                   # [B... x N x N], [B... x N x N]
-    D = torch.diagonal(R, dim1=-2, dim2=-1)                     # [B... x N]
-    R = R / D.unsqueeze(-2)                                     # [B... x N x N] / [B... x 1 x N]
-
-    T = R @ torch.diag_embed(L) @ torch.inverse(R)              # [B... x N x N]
-    return T.real, Q.real
 
 
 def solve_discrete_are(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R: torch.Tensor, r_scale: float) -> torch.Tensor:
@@ -33,7 +23,7 @@ def solve_discrete_are(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R: tor
     Z = torch.cat([-B @ torch.inverse(R * r_scale) @ B.mT, I], dim=-2) @ torch.inverse(A.mT) @ torch.cat([-Q, I], dim=-1)
     Z[..., :m, :m] = Z[..., :m, :m] + A
 
-    T, U = _torch_schur(Z)
+    T, U = _torch_schur(Z, vectors_only=False)
     U_1 = U[..., :m]
     U11 = U_1[..., :m, :]
     U21 = U_1[..., m:, :]
@@ -53,7 +43,7 @@ def solve_discrete_are2(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R: to
     # print("Z:")
     # print(Z)
 
-    T, U = _torch_schur(Z)
+    T, U = _torch_schur(Z, vectors_only=False)
     U_1 = U[..., :m]
     U11 = U_1[..., :m, :]
     U21 = U_1[..., m:, :]
@@ -72,7 +62,7 @@ def solve_discrete_are_zero(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R
     # print("Z:")
     # print(Z)
 
-    T, U = _torch_schur(Z)
+    T, U = _torch_schur(Z, vectors_only=False)
     U_1 = U[..., :m]
     U11 = U_1[..., :m, :]
     U21 = U_1[..., m:, :]

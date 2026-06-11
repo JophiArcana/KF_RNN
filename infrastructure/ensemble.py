@@ -72,6 +72,10 @@ class EnsembleModule:
         for chunk_indices in torch.chunk(torch.arange(_dataset.shape[-2]), chunks=n_chunks, dim=0):
             slice_td = _dataset.reshape(-1, *_dataset.shape[-2:])[:, chunk_indices].view(*shape, -1, L)
             results.append(per_chunk(slice_td))
+            # Reclaim memory only when we actually split for memory reasons. ``empty_cache``
+            # (gc.collect + cuda.empty_cache) is expensive and serves no purpose for a single chunk.
+            if n_chunks > 1:
+                utils.empty_cache()
         return TensorDict.cat(results, dim=n).view(dataset.shape)
 
     def run(
@@ -81,20 +85,27 @@ class EnsembleModule:
             split_size: int = DEFAULT_SPLIT_SIZE,
     ) -> TensorDict:
         def per_chunk(slice_td: TensorDict) -> TensorDict:
-            out = TensorDict(utils.run_module_arr(self.pair, slice_td, kwargs), batch_size=slice_td.shape)
-            utils.empty_cache()
-            return out
+            return TensorDict(utils.run_module_arr(self.pair, slice_td, kwargs), batch_size=slice_td.shape)
         return self._chunked_apply(dataset, per_chunk, split_size)
+
+    @staticmethod
+    def _default_gradient_loss(out: TensorDict) -> torch.Tensor:
+        """Default scalar objective for ``gradient``: squared norm of the final-step
+        observation prediction."""
+        return out[..., -1]["environment", "observation"].norm() ** 2
 
     def gradient(
             self,
             dataset: TensorDict,
             kwargs: dict[str, Any] = MappingProxyType(dict()),
             split_size: int = DEFAULT_SPLIT_SIZE,
+            loss_fn: "Any" = None,
     ) -> TensorDict:
+        loss_fn = self._default_gradient_loss if loss_fn is None else loss_fn
+
         def per_chunk(slice_td: TensorDict) -> TensorDict:
             slice_td = TensorDict.from_dict(slice_td, batch_size=slice_td.shape)
-            out = self.run(slice_td)[..., -1]["environment", "observation"].norm() ** 2
+            out = loss_fn(self.run(slice_td, kwargs, split_size))
             params = OrderedDict({k: v for k, v in slice_td.items() if v.requires_grad})
             return TensorDict(dict(zip(
                 params.keys(),

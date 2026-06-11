@@ -38,7 +38,10 @@ def solve_discrete_are(A: torch.Tensor, B: torch.Tensor, Q: torch.Tensor, R: tor
     U_1 = U[..., :m]
     U11 = U_1[..., :m, :]
     U21 = U_1[..., m:, :]
-    return U21 @ torch.inverse(U11)
+    # P = U21 U11^{-1}; solve rather than invert, and symmetrize to absorb numerical
+    # drift (the Riccati solution is symmetric by construction).
+    P = torch.linalg.solve(U11.mT, U21.mT).mT
+    return 0.5 * (P + P.mT)
 
 
 

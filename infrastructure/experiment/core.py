@@ -1,7 +1,7 @@
 import collections
 import json
 import os
-import shutil
+import subprocess
 import time
 import traceback
 from argparse import Namespace
@@ -113,6 +113,31 @@ def _write_hparams(subdir: str, HP: Namespace) -> None:
     if not os.path.exists(hp_fname):
         with open(hp_fname, "w") as fp:
             json.dump(utils.toJSON(HP), fp, indent=4)
+
+
+def _record_code_version(subdir: str) -> None:
+    """Record the git commit, dirty flag, and working-tree diff for reproducibility.
+
+    Replaces copying entire source trees into the output directory: the code state
+    is reproducible by checking out ``commit`` and applying ``diff``. Degrades
+    gracefully (records ``commit: None``) outside a git repo or if git is missing.
+    """
+    def _git(*args: str) -> str:
+        return subprocess.run(
+            ("git", *args),
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    version: dict[str, Any] = {"commit": None, "dirty": None, "diff": None}
+    try:
+        version["commit"] = _git("rev-parse", "HEAD").strip()
+        version["dirty"] = bool(_git("status", "--porcelain").strip())
+        version["diff"] = _git("diff", "HEAD")
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        print(f"WARNING: failed to record git code version: {e}")
+
+    with open(f"{subdir}/code_version.json", "w") as fp:
+        json.dump(version, fp, indent=4)
 
 
 def run_experiments(
@@ -278,13 +303,8 @@ def run_training_experiments(
         # Save full results to final output file
         _cleanup_backup_tiers(output_fnames)
 
-        # Save code for experiment reproducibility
-        code_base_dir = f"{output_dir}/code"
-        os.makedirs(code_base_dir, exist_ok=True)
-        for dir_name in ("infrastructure", "model", "system"):
-            code_dir = f"{code_base_dir}/{dir_name}"
-            if not os.path.exists(code_dir):
-                shutil.copytree(dir_name, code_dir, dirs_exist_ok=True)
+        # Record code version (git commit + diff) for experiment reproducibility
+        _record_code_version(output_dir)
 
         # Write hyperparameters to JSON
         _write_hparams(train_output_dir, HP)
@@ -330,7 +350,7 @@ def run_testing_experiments(
     )
 
 
-    # TODO: Result setup
+    # SECTION: Recover any previously-saved testing result, else fall back to the training result
     found_result, output_fname = _recover_result(output_fnames, "testing")
     if found_result is not None:
         result = found_result

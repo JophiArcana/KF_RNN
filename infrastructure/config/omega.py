@@ -11,16 +11,6 @@ from omegaconf import OmegaConf
 KNOWN_BRANCHES = ("problem", "system", "dataset", "model", "training", "experiment", "eval")
 
 
-def to_yaml(obj: Any) -> str:
-    """Serialize a config object to YAML via OmegaConf, tolerating live objects."""
-    try:
-        container = OmegaConf.create(obj) if not OmegaConf.is_config(obj) else obj
-        return OmegaConf.to_yaml(container)
-    except Exception:
-        from infrastructure import utils
-        return utils.str_namespace(obj) if isinstance(obj, Namespace) else str(obj)
-
-
 def _is_container(o: Any) -> bool:
     return isinstance(o, Namespace) or OmegaConf.is_config(o)
 

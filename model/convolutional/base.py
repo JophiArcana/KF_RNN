@@ -14,48 +14,35 @@ class ConvolutionalPredictor(Predictor):
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
     ) -> tuple[TensorDict, Namespace]:                       # [B...]
-        # Variable definition
-        controller_keys = systems.get(("environment", "B"), {}).keys()
-        shape = utils.broadcast_shapes(kfs.shape, systems.shape)
-        default_td = TensorDict({}, batch_size=shape)
+        # Shared augmented-plant modal decomposition (see Predictor helper).
+        b = Predictor._augmented_plant_modal_decomposition(kfs, systems)
+        controller_keys = b.controller_keys
+        shape = b.shape
 
         Q = utils.complex(kfs["observation_IR"])                                                        # [B... x O_D x R x O_D]
         Q = Q.permute(*range(Q.ndim - 3), -2, -1, -3)                                                   # [B... x R x O_D x O_D]
 
-        P = utils.complex(kfs["input_IR"]) if len(controller_keys) > 0 else default_td                  # [B... x I_D x R x O_D]
+        P = utils.complex(kfs["input_IR"]) if len(controller_keys) > 0 else b.default_td                # [B... x I_D x R x O_D]
         P = P.apply(lambda t: t.permute(*range(Q.ndim - 3), -2, -1, -3))                                # [B... x R x O_D x I_D]
 
-        F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
-        K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
-        L = utils.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
-        sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                                    # [B... x O_D x O_D]
+        K = b.K                                                                                         # [B... x S_D x O_D]
+        L = b.L                                                                                         # [B... x I_D? x S_D]
+        sqrt_S_V = b.sqrt_S_V                                                                           # [B... x O_D x O_D]
 
-        Fa = utils.complex(systems["F_augmented"])                                                      # [B... x 2S_D x 2S_D]
-        Ha = utils.complex(systems["H_augmented"])                                                      # [B... x O_D x 2S_D]
-        La = utils.complex(systems["L_augmented"]) if len(controller_keys) > 0 else default_td          # [B... x I_D? x 2S_D]
-
-        S_D, O_D = K.shape[-2:]
+        O_D = b.O_D
         R = Q.shape[-3]
 
-        M = Fa                                                                                          # [B... x 2S_D x 2S_D]
-        D, V = torch.linalg.eig(M)                                                                      # [B... x 2S_D], [B... x 2S_D x 2S_D]
-        Vinv = torch.inverse(V)                                                                         # [B... x 2S_D x 2S_D]
-
-        Has = Ha @ V                                                                                    # [B... x O_D x 2S_D]
-        Las = La.apply(lambda t: t @ V)                                                                 # [B... x I_D? x 2S_D]
-        sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
+        D = b.D                                                                                         # [B... x 2S_D]
+        Has = b.Has                                                                                     # [B... x O_D x 2S_D]
+        Las = b.Las                                                                                     # [B... x I_D? x 2S_D]
+        sqrt_S_Ws = b.sqrt_S_Ws                                                                         # [B... x 2S_D x S_D]
 
         # Precomputation
-        Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
+        Dj = b.Dj                                                                                       # [B... x 1 x 2S_D]
         D_pow_series = D[..., None, :] ** torch.arange(R + 1)[:, None]                                  # [B... x (R + 1) x 2S_D]
         D_pow_series_inv = 1 / D_pow_series                                                             # [B... x (R + 1) x 2S_D]
 
-        BL = utils.complex(torch.zeros((*shape, S_D, S_D)) + sum(
-            systems["environment", "B", k] @ systems["controller", "L", k]
-            for k in controller_keys
-        ))                                                                                              # [B... x S_D x S_D]
-        Vinv_BL_F_BLK = Vinv @ torch.cat([-BL, F - BL], dim=-2) @ K                                     # [B... x 2S_D x O_D]
+        Vinv_BL_F_BLK = b.Vinv_BL_F_BLK                                                                 # [B... x 2S_D x O_D]
 
         Ql_PlLK = Q - sum(
             P[k] @ L[k] @ K

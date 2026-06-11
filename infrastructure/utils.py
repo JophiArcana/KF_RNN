@@ -195,8 +195,15 @@ def kl_div(cov1: torch.Tensor, cov2: torch.Tensor) -> torch.Tensor:
     return ((torch.det(cov2) / torch.det(cov1)).log() - cov1.shape[-1] + (torch.inverse(cov2) * cov1).sum(dim=(-2, -1))) / 2
 
 def sqrtm(t: torch.Tensor) -> torch.Tensor:
-    L, V = torch.linalg.eig(t)
-    return (V @ torch.diag_embed(L ** 0.5) @ torch.inverse(V)).real
+    """Symmetric matrix square root for symmetric positive-semidefinite ``t``.
+
+    Uses the Hermitian eigensolver (orthonormal eigenvectors, so no explicit inverse
+    and no complex arithmetic), which is substantially more stable than the general
+    ``eig`` + ``inverse`` form. Eigenvalues are clamped at 0 to absorb small negative
+    numerical drift.
+    """
+    L, V = torch.linalg.eigh(t)
+    return V @ torch.diag_embed(L.clamp_min(0.0).sqrt()) @ V.mT
 
 def complex(t: torch.Tensor | TensorDict) -> Union[torch.Tensor, TensorDict]:
     fn = lambda t_: t_ if torch.is_complex(t_) else torch.complex(t_, torch.zeros_like(t_))

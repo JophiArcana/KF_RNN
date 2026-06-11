@@ -29,12 +29,22 @@ _CUDA_NUM: int = 0
 DEVICE: str = "cpu" # f"cuda:{_CUDA_NUM}"
 DTYPE: torch.dtype = torch.float64
 PROJECT_NAME: str = "KF_RNN"
-PROJECT_PATH: str = os.getcwd()[:os.getcwd().find(PROJECT_NAME)] + PROJECT_NAME
+# Resolve the project root from this file's location (``<root>/infrastructure/settings.py``)
+# rather than searching the cwd for the substring ``PROJECT_NAME``, which silently
+# produced a wrong path when the cwd did not contain that substring.
+PROJECT_PATH: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["CUDA_VISIBLE_DEVICES"] = str(_CUDA_NUM)
+# Only constrain the visible CUDA devices when actually targeting a GPU.
+if DEVICE.startswith("cuda"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(_CUDA_NUM)
 torch.set_default_device(DEVICE)
 torch.set_default_dtype(DTYPE)
-os.chdir(PROJECT_PATH)
+
+# Many scripts reference paths relative to the project root (e.g. ``data/...``), so
+# change into it on import by default. Set ``KF_RNN_NO_CHDIR=1`` to opt out when the
+# caller manages its own working directory.
+if os.environ.get("KF_RNN_NO_CHDIR", "").lower() not in ("1", "true", "yes") and os.path.isdir(PROJECT_PATH):
+    os.chdir(PROJECT_PATH)
 
 # Anomaly detection is expensive; only enable it in debug mode.
 torch.autograd.set_detect_anomaly(DEBUG)

@@ -8,7 +8,7 @@ still consumes. The schemas give type-checking, validation, and serialization
 
 Key entry points:
     - ``ExperimentConfig`` and friends in ``schema``: the typed config tree.
-    - ``config_to_namespace`` / ``namespace_to_config`` in ``bridge``.
+    - ``config_to_namespace`` in ``bridge``.
     - ``register_configs`` in ``store``: registers schemas with Hydra's
       ConfigStore for ``_target_`` instantiation and CLI composition.
 """
@@ -29,11 +29,10 @@ from infrastructure.config.schema import (
 )
 from infrastructure.config.bridge import (
     config_to_namespace,
-    namespace_to_config,
     split_for,
 )
 from infrastructure.config.store import register_configs, instantiate_target
-from infrastructure.config.omega import to_yaml, validate_sweep_targets
+from infrastructure.config.omega import validate_sweep_targets
 
 
 __all__ = [
@@ -51,10 +50,8 @@ __all__ = [
     "ModelConfig",
     "ExperimentConfig",
     "config_to_namespace",
-    "namespace_to_config",
     "split_for",
     "register_configs",
     "instantiate_target",
-    "to_yaml",
     "validate_sweep_targets",
 ]

@@ -27,40 +27,35 @@ class SequentialPredictor(Predictor):
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
     ) -> tuple[TensorDict, Namespace]:                       # [B...]
-        # Variable definition
-        controller_keys = systems.get(("environment", "B"), {}).keys()
-        shape = utils.broadcast_shapes(kfs.shape, systems.shape)
-        default_td = TensorDict({}, batch_size=shape)
+        # Shared augmented-plant modal decomposition (see Predictor helper).
+        b = Predictor._augmented_plant_modal_decomposition(kfs, systems)
+        controller_keys = b.controller_keys
+        shape = b.shape
+        default_td = b.default_td
 
         Fh = utils.complex(kfs["F"])                                                                    # [B... x S_Dh x S_Dh]
         Hh = utils.complex(kfs["H"])                                                                    # [B... x O_D x S_Dh]
         Kh = utils.complex(kfs["K"])                                                                    # [B... x S_Dh x O_D]
         Bh = utils.complex(kfs["B"]) if len(controller_keys) > 0 else default_td                        # [B... x S_Dh x I_D?]
 
-        F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
-        K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
-        L = utils.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
-        sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                                    # [B... x O_D x O_D]
+        K = b.K                                                                                         # [B... x S_D x O_D]
+        L = b.L                                                                                         # [B... x I_D? x S_D]
+        sqrt_S_V = b.sqrt_S_V                                                                           # [B... x O_D x O_D]
 
-        Fa = utils.complex(systems["F_augmented"])                                                      # [B... x 2S_D x 2S_D]
-        Ha = utils.complex(systems["H_augmented"])                                                      # [B... x O_D x 2S_D]
-        La = utils.complex(systems["L_augmented"]) if len(controller_keys) > 0 else default_td          # [B... x I_D? x 2S_D]
-
-        S_D, O_D = K.shape[-2:]
+        O_D = b.O_D
         S_Dh = Fh.shape[-1]
 
-        M, Mh = Fa, Fh @ (torch.eye(S_Dh) - Kh @ Hh)                                                    # [B... x 2S_D x 2S_D], [B... x S_Dh x S_Dh]
-        D, V = torch.linalg.eig(M)                                                                      # [B... x 2S_D], [B... x 2S_D x 2S_D]
+        # Filter-side closed-loop dynamics and its modal decomposition.
+        Mh = Fh @ (torch.eye(S_Dh) - Kh @ Hh)                                                           # [B... x S_Dh x S_Dh]
         Dh, Vh = torch.linalg.eig(Mh)                                                                   # [B... x S_Dh], [B... x S_Dh x S_Dh]
-        Vinv, Vhinv = torch.inverse(V), torch.inverse(Vh)                                               # [B... x 2S_D x 2S_D], [B... x S_Dh x S_Dh]
+        Vhinv = torch.inverse(Vh)                                                                       # [B... x S_Dh x S_Dh]
 
         # if torch.any(Dh.abs() > 1.0):
         #     print(f"Eigenvalues of Fh {Dh[Dh.abs() > 1.0]} exceed magnitude 1.")
 
-        Has, Hhs = Ha @ V, Hh @ Vh                                                                      # [B... x O_D x 2S_D], [B... x O_D x S_Dh]
-        Las = La.apply(lambda t: t @ V)                                                                 # [B... x I_D? x 2S_D]
-        sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
+        Has, Hhs = b.Has, Hh @ Vh                                                                       # [B... x O_D x 2S_D], [B... x O_D x S_Dh]
+        Las = b.Las                                                                                     # [B... x I_D? x 2S_D]
+        sqrt_S_Ws = b.sqrt_S_Ws                                                                         # [B... x 2S_D x S_D]
 
         # Precomputation
         # Convention note: the underlying system matrices are real and are only cast to complex
@@ -71,17 +66,13 @@ class SequentialPredictor(Predictor):
         # Hence every quadratic form below uses .mT (transpose), NOT .mH (conjugate transpose),
         # and the imaginary parts cancel so a single torch.real(...) is taken at the end.
         # (An older Hermitian formulation used .mH with a .real on each intermediate term.)
-        Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
+        Dj = b.Dj                                                                                       # [B... x 1 x 2S_D]
         Dhi, Dhj = Dh[..., :, None], Dh[..., None, :]                                                   # [B... x S_Dh x 1], [B... x 1 x S_Dh]
 
         HhstHhs = Hhs.mT @ Hhs                                                                          # [B... x S_Dh x S_Dh]
         HhstHas = Hhs.mT @ Has
 
-        BL = utils.complex(torch.zeros((*shape, S_D, S_D)) + sum(
-            systems["environment", "B", k] @ systems["controller", "L", k]
-            for k in controller_keys
-        ))                                                                                              # [B... x S_D x S_D]
-        Vinv_BL_F_BLK = Vinv @ torch.cat([-BL, F - BL], dim=-2) @ K                                     # [B... x 2S_D x O_D]
+        Vinv_BL_F_BLK = b.Vinv_BL_F_BLK                                                                 # [B... x 2S_D x O_D]
 
         VhinvFhKh_BhLK = Vhinv @ (Fh @ Kh - sum(Bh[k] @ L[k] @ K for k in controller_keys))             # [B... x S_Dh x O_D]
         VhinvFhKhHas_BhLas = Vhinv @ (Fh @ Kh @ Has - sum(Bh[k] @ Las[k] for k in controller_keys))     # [B... x S_Dh x 2S_D]
@@ -226,13 +217,7 @@ class SequentialPredictor(Predictor):
         M = E @ self.F
 
         subL = L if mode == "form" else hsqrtL                                                                                          # Length of vectorized subsequence
-        # Compute the weights efficiently by eigenvalue decomposition of (I - KH)F and repeated powers
-        """
-        Lambda, V = torch.linalg.eig(M)
-        eig_powers = torch.diag_embed(torch.pow(Lambda, torch.arange(subL + 1)[:, None]))                                               # [(subL + 1) x S_D x S_D]
-        state_weights = (V @ eig_powers @ torch.inverse(V)).real                                                                        # [(subL + 1) x S_D x S_D]
-        state_weights = torch.stack([torch.matrix_power(M, n) for n in range(subL + 1)])
-        """
+        # Compute the weights efficiently as repeated powers of (I - KH)F
         state_weights = utils.pow_series(M, subL + 1)                                                                                   # [(subL + 1) x S_D x S_D]
         observation_weights = (self.H @ self.F) @ state_weights                                                                         # [(subL + 1) x O_D x S_D]
 

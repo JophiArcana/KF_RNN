@@ -12,8 +12,29 @@ import dataclasses
 from argparse import Namespace
 from typing import Any
 
+from omegaconf import OmegaConf
+
 from infrastructure.config import schema
 from infrastructure.config.store import instantiate_target
+
+
+def _to_namespace(obj: Any) -> Any:
+    """Recursively convert a dataclass / OmegaConf config / dict into a nested
+    ``Namespace``. Leaf values (and live Python objects) are returned unchanged.
+
+    This replaces the per-branch field-by-field ``Namespace(...)`` construction
+    for the regular (object-free) config branches.
+    """
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return Namespace(**{
+            f.name: _to_namespace(getattr(obj, f.name))
+            for f in dataclasses.fields(obj)
+        })
+    if OmegaConf.is_config(obj):
+        obj = OmegaConf.to_container(obj, resolve=True)
+    if isinstance(obj, dict):
+        return Namespace(**{k: _to_namespace(v) for k, v in obj.items()})
+    return obj
 
 
 def split_for(split_cfg: "schema.SplitConfig | Namespace", split: str) -> Any:
@@ -43,26 +64,27 @@ def _split_namespace(split_cfg: schema.SplitConfig) -> Namespace:
     return Namespace(**kwargs)
 
 
-def _dict_to_namespace(d: dict) -> Namespace:
-    return Namespace(**{
-        k: _dict_to_namespace(v) if isinstance(v, dict) else v
-        for k, v in d.items()
-    })
-
-
 def config_to_namespace(cfg: schema.ExperimentConfig) -> Namespace:
     """Convert a typed ``ExperimentConfig`` into the runtime ``Namespace`` HP.
 
-    The problem shape is authored once on ``cfg.problem`` and materialized into
-    independent ``system`` and ``model`` Namespaces (the runtime applies split
-    defaulting to ``system`` only, so the two must not alias the same object).
+    The regular (object-free) branches (``training``, ``experiment``) are converted
+    generically by ``_to_namespace``. The branches that carry live objects or need
+    bespoke shaping are handled explicitly:
+
+    - the problem shape is authored once on ``cfg.problem`` and materialized into
+      independent ``system`` and ``model`` Namespaces (the runtime applies split
+      defaulting to ``system`` only, so the two must not alias the same object);
+    - ``SplitConfig`` dataset fields are flattened with train-fallback;
+    - ``_target_`` specs (``system.distribution`` / ``model.model``) are resolved;
+    - ``model.params`` is flattened onto the ``model`` Namespace;
+    - ``eval`` metrics are folded into the ``experiment`` Namespace as sets.
     """
     system = Namespace(
         S_D=cfg.system.S_D,
         problem_shape=_problem_shape_namespace(cfg.problem),
         distribution=instantiate_target(cfg.system.distribution),
-        auxiliary=_dict_to_namespace(dict(cfg.system.auxiliary)),
-        settings=_dict_to_namespace(dict(cfg.system.settings)),
+        auxiliary=_to_namespace(dict(cfg.system.auxiliary)),
+        settings=_to_namespace(dict(cfg.system.settings)),
     )
 
     dataset = Namespace(
@@ -80,25 +102,9 @@ def config_to_namespace(cfg: schema.ExperimentConfig) -> Namespace:
     for k, v in dict(cfg.model.params).items():
         setattr(model, k, v)
 
-    training = Namespace(
-        sampling=Namespace(**dataclasses.asdict(cfg.training.sampling)),
-        optimizer=Namespace(**dataclasses.asdict(cfg.training.optimizer)),
-        scheduler=Namespace(**dataclasses.asdict(cfg.training.scheduler)),
-        loss=cfg.training.loss,
-        control_coefficient=cfg.training.control_coefficient,
-        ignore_initial=cfg.training.ignore_initial,
-    )
+    training = _to_namespace(cfg.training)
 
-    experiment = Namespace(
-        exp_name=cfg.experiment.exp_name,
-        n_experiments=cfg.experiment.n_experiments,
-        ensemble_size=cfg.experiment.ensemble_size,
-        backup_frequency=cfg.experiment.backup_frequency,
-        checkpoint_frequency=cfg.experiment.checkpoint_frequency,
-        print_frequency=cfg.experiment.print_frequency,
-        debug=cfg.experiment.debug,
-        split_size=cfg.experiment.split_size,
-    )
+    experiment = _to_namespace(cfg.experiment)
     if cfg.eval.metrics:
         experiment.metrics = Namespace(**{k: set(v) for k, v in cfg.eval.metrics.items()})
     if cfg.eval.ignore_metrics:
@@ -115,45 +121,3 @@ def config_to_namespace(cfg: schema.ExperimentConfig) -> Namespace:
         training=training,
         experiment=experiment,
     )
-
-
-def namespace_to_config(ns: Namespace) -> schema.ExperimentConfig:
-    """Best-effort extraction of the structured/primitive portion of a runtime
-    Namespace HP into a typed ``ExperimentConfig`` (object-valued fields such as
-    the model class / distribution are left as-is for ``_target_``-free use)."""
-    def get(o: Any, name: str, default: Any = None) -> Any:
-        return getattr(o, name, default)
-
-    sys_ns = get(ns, "system", Namespace())
-    ds_ns = get(ns, "dataset", Namespace())
-    model_ns = get(ns, "model", Namespace())
-    train_ns = get(ns, "training", Namespace())
-    exp_ns = get(ns, "experiment", Namespace())
-
-    ps_ns = get(sys_ns, "problem_shape", get(model_ns, "problem_shape", Namespace()))
-    env = get(ps_ns, "environment", Namespace(observation=1))
-    controller = get(ps_ns, "controller", Namespace())
-
-    def split(o: Any) -> schema.SplitConfig:
-        return schema.SplitConfig(
-            train=get(o, "train"), valid=get(o, "valid"), test=get(o, "test"),
-        )
-
-    cfg = schema.ExperimentConfig()
-    cfg.problem = schema.ProblemShape(
-        environment=schema.EnvironmentShape(observation=get(env, "observation", 1)),
-        controller={k: v for k, v in vars(controller).items()},
-    )
-    cfg.system = schema.SystemConfig(
-        S_D=get(sys_ns, "S_D"),
-        distribution=get(sys_ns, "distribution"),
-        auxiliary=dict(vars(get(sys_ns, "auxiliary", Namespace()))),
-        settings=dict(vars(get(sys_ns, "settings", Namespace()))),
-    )
-    cfg.dataset = schema.DataConfig(
-        n_systems=split(get(ds_ns, "n_systems", Namespace(train=1))),
-        n_traces=split(get(ds_ns, "n_traces", Namespace(train=1))),
-        total_sequence_length=split(get(ds_ns, "total_sequence_length", Namespace(train=2000))),
-    )
-    cfg.model = schema.ModelConfig(model=get(model_ns, "model"), S_D=get(model_ns, "S_D"))
-    return cfg

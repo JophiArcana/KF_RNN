@@ -390,12 +390,14 @@ def _run_training(
             results.append(r)
 
             # Print every epoch for non-SGD stages, else at the configured frequency.
-            if (stage.t % EHP.print_frequency == 0) or (not is_sgd_stage):
+            # A ``None`` frequency disables periodic printing for SGD stages.
+            if (not is_sgd_stage) or (EHP.print_frequency is not None and stage.t % EHP.print_frequency == 0):
                 print_losses(r, f"Epoch {stage.t}", ("training", *metrics, *log.keys(),))
             stage.t += 1
 
             # Save checkpoint before stepping so reloading and saving align on the same stage.
-            if stage.t % EHP.checkpoint_frequency == 0:
+            # A ``None`` frequency disables checkpointing.
+            if EHP.checkpoint_frequency is not None and stage.t % EHP.checkpoint_frequency == 0:
                 checkpoint = Checkpoint(
                     stage_idx=idx,
                     stage_state=stage.state,

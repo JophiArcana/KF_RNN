@@ -7,7 +7,7 @@ from argparse import Namespace
 
 from infrastructure import loader
 from infrastructure.experiment import run_experiments, plot_experiment, get_result_attr
-from model.sequential import RnnKalmanInitializedPredictor, RnnLeastSquaresPredictor
+from model.sequential import RnnKalmanInitializedPredictor
 from model.convolutional import CnnLeastSquaresPredictor
 
 
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     max_state_dimension = 10
     configurations = [
         ("model", {
-            "model.model": [RnnLeastSquaresPredictor, CnnLeastSquaresPredictor],
+            "model.model": [CnnLeastSquaresPredictor],
             "model.S_D": [args.system.S_D.default(), None],
             "model.ir_length": [None, 2],
         }),

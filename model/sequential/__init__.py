@@ -4,7 +4,6 @@ from .rnn_predictor import (
     RnnKalmanPredictor,
     RnnKalmanInitializedPredictor,
     RnnComplexDiagonalPredictor,
-    # RnnLeastSquaresPredictor,
 )
 from .rnn_ho_kalman import (
     RnnHoKalmanAnalyticalPredictor,

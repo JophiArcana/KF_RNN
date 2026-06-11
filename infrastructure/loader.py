@@ -1,5 +1,4 @@
 import copy
-import dataclasses
 from argparse import Namespace
 
 import numpy as np
@@ -10,7 +9,7 @@ from infrastructure.labeled_array import LabeledArray
 
 from infrastructure import utils
 from infrastructure.config import schema
-from infrastructure.config.bridge import _split_namespace, config_to_namespace
+from infrastructure.config.bridge import config_to_namespace
 from infrastructure.settings import DEVICE
 from system.linear_time_invariant import LTISystem
 
@@ -18,44 +17,20 @@ from system.linear_time_invariant import LTISystem
 """
 Loading and generating args
 
-The base argument Namespaces below are derived from the typed dataclass schemas
-in ``infrastructure.config.schema`` so the schema remains the single source of
-truth for defaults, while the runtime pipeline keeps consuming Namespaces.
+The base argument Namespaces below are derived from a single default
+``ExperimentConfig`` via the same ``config_to_namespace`` bridge the runtime uses,
+so the typed schema in ``infrastructure.config.schema`` remains the single source
+of truth for defaults while the pipeline keeps consuming Namespaces.
 """
-def _dataset_args_from_schema() -> Namespace:
-    dc = schema.DataConfig()
-    return Namespace(
-        n_systems=_split_namespace(dc.n_systems),
-        n_traces=_split_namespace(dc.n_traces),
-        total_sequence_length=_split_namespace(dc.total_sequence_length),
-    )
+_BASE_ARGS = config_to_namespace(schema.ExperimentConfig())
 
-def _training_args_from_schema() -> Namespace:
-    tc = schema.TrainConfig()
-    return Namespace(
-        sampling=Namespace(**dataclasses.asdict(tc.sampling)),
-        optimizer=Namespace(**dataclasses.asdict(tc.optimizer)),
-        scheduler=Namespace(**dataclasses.asdict(tc.scheduler)),
-        loss=tc.loss,
-        control_coefficient=tc.control_coefficient,
-        ignore_initial=tc.ignore_initial,
-    )
-
-def _experiment_args_from_schema() -> Namespace:
-    rc = schema.RuntimeConfig()
-    return Namespace(
-        n_experiments=rc.n_experiments,
-        ensemble_size=rc.ensemble_size,
-        backup_frequency=rc.backup_frequency,
-        checkpoint_frequency=rc.checkpoint_frequency,
-        print_frequency=rc.print_frequency,
-        debug=rc.debug,
-        split_size=rc.split_size,
-    )
-
-BaseDatasetArgs = _dataset_args_from_schema()
-BaseTrainingArgs = _training_args_from_schema()
-BaseExperimentArgs = _experiment_args_from_schema()
+BaseDatasetArgs = _BASE_ARGS.dataset
+BaseTrainingArgs = _BASE_ARGS.training
+BaseExperimentArgs = _BASE_ARGS.experiment
+# The historical base omitted ``exp_name`` (callers set it per experiment); drop
+# the schema default so the shape matches and a missing override surfaces loudly.
+if hasattr(BaseExperimentArgs, "exp_name"):
+    delattr(BaseExperimentArgs, "exp_name")
 
 def args_from(HP: Namespace):
     HP.system = utils.process_defaulting_roots(HP.system)

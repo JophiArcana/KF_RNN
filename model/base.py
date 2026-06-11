@@ -1,6 +1,4 @@
-import gc
 from argparse import Namespace
-from collections import OrderedDict
 from types import MappingProxyType
 from typing import Any, Sequence
 
@@ -105,6 +103,60 @@ class Predictor(Observer):
                                     sg_td: TensorDict    # [B... x ...]
     ) -> tuple[TensorDict, Namespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
+
+    @classmethod
+    def _augmented_plant_modal_decomposition(cls,
+                                             kfs: "TensorDict | None",     # [B... x ...]
+                                             systems: TensorDict,          # [B... x ...]
+    ) -> Namespace:
+        """Shared scaffolding for the closed-form analytical-error computations.
+
+        Casts the relevant LQG system matrices to complex, eigendecomposes the
+        augmented closed-loop plant ``F_augmented``, and projects the observation /
+        control / process-noise matrices into the plant's modal basis. Every
+        formulation-specific ``_analytical_error_and_cache`` (zero, sequential,
+        convolutional) consumes this and only adds its own terms, so the common
+        algebra lives in exactly one place.
+        """
+        controller_keys = systems.get(("environment", "B"), {}).keys()
+        shape = systems.shape if kfs is None else utils.broadcast_shapes(kfs.shape, systems.shape)
+        default_td = TensorDict({}, batch_size=shape)
+
+        F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
+        K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
+        L = utils.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
+        sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
+        sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                                    # [B... x O_D x O_D]
+
+        Fa = utils.complex(systems["F_augmented"])                                                      # [B... x 2S_D x 2S_D]
+        Ha = utils.complex(systems["H_augmented"])                                                      # [B... x O_D x 2S_D]
+        La = utils.complex(systems["L_augmented"]) if len(controller_keys) > 0 else default_td          # [B... x I_D? x 2S_D]
+
+        S_D, O_D = K.shape[-2:]
+
+        D, V = torch.linalg.eig(Fa)                                                                     # [B... x 2S_D], [B... x 2S_D x 2S_D]
+        Vinv = torch.inverse(V)                                                                         # [B... x 2S_D x 2S_D]
+
+        Has = Ha @ V                                                                                    # [B... x O_D x 2S_D]
+        Las = La.apply(lambda t: t @ V)                                                                 # [B... x I_D? x 2S_D]
+        sqrt_S_Ws = Vinv @ torch.cat([sqrt_S_W, torch.zeros_like(sqrt_S_W)], dim=-2)                    # [B... x 2S_D x S_D]
+
+        Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
+
+        BL = utils.complex(torch.zeros((*shape, S_D, S_D)) + sum(
+            systems["environment", "B", k] @ systems["controller", "L", k]
+            for k in controller_keys
+        ))                                                                                              # [B... x S_D x S_D]
+        Vinv_BL_F_BLK = Vinv @ torch.cat([-BL, F - BL], dim=-2) @ K                                     # [B... x 2S_D x O_D]
+
+        return Namespace(
+            controller_keys=controller_keys, shape=shape, default_td=default_td,
+            F=F, K=K, L=L, sqrt_S_W=sqrt_S_W, sqrt_S_V=sqrt_S_V,
+            Fa=Fa, Ha=Ha, La=La, S_D=S_D, O_D=O_D,
+            D=D, V=V, Vinv=Vinv,
+            Has=Has, Las=Las, sqrt_S_Ws=sqrt_S_Ws, Dj=Dj,
+            BL=BL, Vinv_BL_F_BLK=Vinv_BL_F_BLK,
+        )
 
 
 # A Controller is an Observer (it emits observations/actions); concrete controllers gain

@@ -65,7 +65,10 @@ class LTIEnvironment(EnvironmentGroup):
         if self.include_analytical:
             S_state_inf_intermediate = solve_discrete_are(self.F.mT, self.H.mT, self.S_W, self.S_V)                     # [N... x S_D x S_D]
             self.register_buffer("S_prediction_err_inf", self.H @ S_state_inf_intermediate @ self.H.mT + self.S_V)      # [N... x O_D x O_D]
-            self.register_buffer("K", S_state_inf_intermediate @ self.H.mT @ torch.inverse(self.S_prediction_err_inf))  # [N... x S_D x O_D]
+            # K = (P H^T) S_pred^{-1}; solve against the symmetric innovation covariance
+            # rather than forming an explicit inverse for numerical stability.
+            PHt = S_state_inf_intermediate @ self.H.mT                                                                  # [N... x S_D x O_D]
+            self.register_buffer("K", torch.linalg.solve(self.S_prediction_err_inf, PHt.mT).mT)                        # [N... x S_D x O_D]
             self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
 
         self.initial_state_scale = initial_state_scale

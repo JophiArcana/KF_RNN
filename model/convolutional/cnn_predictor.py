@@ -110,7 +110,9 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
             error = utils.batch_trace(
                 cache.yTy + cache.XTy.mT @ (XTX_lI_inv @ cache.XTX @ XTX_lI_inv - 2 * XTX_lI_inv) @ cache.XTy
             ) / (cache.B * cache.L)                                                             # float: [NE...]
-        except Exception:
+        except torch.linalg.LinAlgError:
+            # ``XTX`` is singular (not yet enough samples to identify the filter);
+            # fall back to a pseudo-inverse on the accumulated design matrix.
             cache.X = torch.cat((cache.X, flattened_X,), dim=-2)
             cache.y = torch.cat((cache.y, flattened_y,), dim=-2)
             flattened_w = torch.linalg.pinv(cache.X) @ cache.y                                  # float: [NE... x RF x O_D]

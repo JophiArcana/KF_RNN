@@ -31,7 +31,8 @@ class LQGController(LinearControllerGroup):
         for k in vars(self.problem_shape.controller):
             F, B, Q, R = params["environment", "F"], params["environment", "B", k], self.Q[k], self.R[k]
             S = solve_discrete_are(F, B, Q, R)
-            self.L.register_buffer(k, torch.inverse(B.mT @ S @ B + R) @ B.mT @ S @ F)
+            # L = (B^T S B + R)^{-1} B^T S F; solve against the SPD control-cost matrix.
+            self.L.register_buffer(k, torch.linalg.solve(B.mT @ S @ B + R, B.mT @ S @ F))
 
         self.control_noise_std = control_noise_std
 
@@ -90,13 +91,6 @@ class LTISystem(SystemGroup):
         self.register_module("L_augmented", L_augmented)
 
         # SECTION: Register irreducible loss
-        # zero_predictor_loss = ZeroController.analytical_error(None, self.td())
-        # self.register_module("zero_predictor_loss", utils.buffer_dict(zero_predictor_loss))
-
-        # assert len(vars(self.environment.problem_shape.controller)) == 0
-        # copy_predictor_loss = CopyPredictor.analytical_error(None, self.td())
-        # self.register_module("copy_predictor_loss", utils.buffer_dict(copy_predictor_loss))
-
         irreducible_loss = TensorDict({
             (*k.split("."),): torch.zeros(self.group_shape)
             for k in utils.nested_vars(self.environment.problem_shape).keys()
