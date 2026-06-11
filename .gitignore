@@ -1,18 +1,45 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
-.DS_Store
-.git/
-.idea/
-images/
-output/
-papers/
+# Virtual environments
 venv/
-scripts/cdc_reconstruction_save.pt
-scripts/cdc_reconstruction_save_backup.pt
+.venv/
+env/
+.env
 
 # Editable install / build artifacts
 *.egg-info/
 build/
 dist/
+.eggs/
+
+# Test / coverage / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editor / IDE / tooling metadata
+.idea/
+.vscode/
+.cursor/
+.cursorignore
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Data, model weights, and experiment artifacts
+data/
+output/
+images/
+papers/
+*.pt
+*.out

@@ -1,9 +1,0 @@
-{
-    "python.defaultInterpreterPath": "/Users/wentinnliao/anaconda3/envs/kf_rnn/bin/python",
-    "python.terminal.activateEnvironment": true,
-    "python.condaPath": "/Users/wentinnliao/anaconda3/bin/conda",
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": [],
-    "jupyter.notebookFileRoot": "${workspaceFolder}",
-}
