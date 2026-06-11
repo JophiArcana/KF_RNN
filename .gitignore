@@ -9,5 +9,10 @@ images/
 output/
 papers/
 venv/
-sandbox/cdc_reconstruction_save.pt
-sandbox/cdc_reconstruction_save_backup.pt
+scripts/cdc_reconstruction_save.pt
+scripts/cdc_reconstruction_save_backup.pt
+
+# Editable install / build artifacts
+*.egg-info/
+build/
+dist/

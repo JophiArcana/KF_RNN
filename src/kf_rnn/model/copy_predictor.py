@@ -1,0 +1,53 @@
+from argparse import Namespace
+from typing import Sequence
+
+import torch
+from tensordict import TensorDict
+
+from kf_rnn.infrastructure import utils
+from kf_rnn.model.base import Predictor
+from kf_rnn.model.convolutional import ConvolutionalPredictor
+
+
+class CopyPredictor(Predictor):
+    def __init__(self, modelArgs: Namespace = None):
+        # Used as an analytical baseline (instantiated with ``None`` in engine.error),
+        # where no problem shape is available; only initialize the shape-bearing base
+        # when real model args are supplied.
+        if modelArgs is None:
+            torch.nn.Module.__init__(self)
+        else:
+            Predictor.__init__(self, modelArgs)
+
+    @classmethod
+    def _analytical_error_and_cache(cls,
+                                    kfs: TensorDict,         # [B... x ...]
+                                    systems: TensorDict,     # [B... x ...]
+    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+        K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
+        S_D, O_D = K.shape[-2:]
+
+        shape = systems.shape if kfs is None else kfs.shape
+        cnn_kfs = TensorDict({
+            "observation_IR": torch.eye(O_D)[:, None, :],
+        }, batch_size=()).expand(shape)
+        return ConvolutionalPredictor._analytical_error_and_cache(cnn_kfs, systems)
+
+    def training_recipe(self) -> Sequence[str]:
+        return []
+
+    def forward(self, trace: dict[str, dict[str, torch.Tensor]], **kwargs) -> dict[str, torch.Tensor]:
+        trace = TensorDict(trace, batch_size=trace["environment"]["observation"].shape[:-1])
+        valid_keys = [("environment", "observation",),] + [("controller", ac_name) for ac_name in trace["controller"].keys()]        
+        result: TensorDict = TensorDict.cat((
+            trace[..., -1:].apply(torch.zeros_like),
+            trace[..., :-1],
+        ), dim=-1)
+        for k in [*result.keys(include_nested=True, leaves_only=True),]:
+            if k not in valid_keys:
+                result.del_(k)
+        return result
+
+
+
+

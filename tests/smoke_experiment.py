@@ -14,15 +14,15 @@ from argparse import Namespace
 import numpy as np
 import torch
 
-from infrastructure import loader
-from infrastructure.experiment import run_experiments, get_result_attr
-from model.convolutional import CnnPredictor
-from system.linear_time_invariant import MOPDistribution
+from kf_rnn.infrastructure import loader
+from kf_rnn.infrastructure.experiment import run_experiments, get_result_attr
+from kf_rnn.model.convolutional import CnnPredictor
+from kf_rnn.system.linear_time_invariant import MOPDistribution
 
 
 def _build_typed_args():
     """Build the same experiment via the typed ExperimentConfig path."""
-    from infrastructure.config import (
+    from kf_rnn.infrastructure.config import (
         ExperimentConfig, ProblemShape, EnvironmentShape, SystemConfig,
         DataConfig, SplitConfig, ModelConfig, RuntimeConfig, EvalConfig,
     )
@@ -31,7 +31,7 @@ def _build_typed_args():
         system=SystemConfig(
             S_D=4,
             distribution={
-                "_target_": "system.linear_time_invariant.MOPDistribution",
+                "_target_": "kf_rnn.system.linear_time_invariant.MOPDistribution",
                 "F_mode": "gaussian", "H_mode": "gaussian", "W_std": 0.1, "V_std": 0.1,
             },
             settings={"include_analytical": True},
@@ -42,7 +42,7 @@ def _build_typed_args():
             total_sequence_length=SplitConfig(train=200, valid=200, test=200),
         ),
         model=ModelConfig(
-            model={"_target_": "model.convolutional.cnn_predictor.CnnPredictor", "_partial_": True},
+            model={"_target_": "kf_rnn.model.convolutional.cnn_predictor.CnnPredictor", "_partial_": True},
             S_D=4, params={"ir_length": 4},
         ),
         eval=EvalConfig(metrics={"training": ["overfit", "validation"], "testing": ["l", "il"]}),
@@ -88,7 +88,7 @@ def main() -> None:
 
     model_kind = os.environ.get("SMOKE_MODEL", "cnn")
     if model_kind == "analytical":
-        from model.convolutional import CnnAnalyticalPredictor
+        from kf_rnn.model.convolutional import CnnAnalyticalPredictor
         args.model.model = CnnAnalyticalPredictor          # recipe: analytical init only
     else:
         args.model.model = CnnPredictor                    # recipe: SGD only

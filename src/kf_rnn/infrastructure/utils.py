@@ -1,0 +1,658 @@
+import collections
+import functools
+import gc
+import hashlib
+import inspect
+import json
+import math
+import os
+import sys
+import time
+import warnings
+from argparse import Namespace
+from collections import OrderedDict
+from matplotlib import transforms
+from matplotlib.patches import Ellipse
+from types import MappingProxyType
+from typing import Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union
+
+import einops
+import numpy as np
+import torch
+import torch.nn as nn
+from tensordict import TensorDict
+from torch.utils._pytree import tree_flatten, tree_unflatten
+
+from kf_rnn.infrastructure.labeled_array import LabeledArray, LabeledDataset, put_object
+from kf_rnn.infrastructure.settings import DEVICE
+from kf_rnn.infrastructure.static import (
+    ModelPair,
+    TRAINING_DATASET_TYPES,
+    TESTING_DATASET_TYPE,
+)
+
+
+_T = TypeVar("_T")
+"""
+System and model functions
+"""
+
+def _as_ndarray(arr: "np.ndarray | LabeledArray") -> np.ndarray:
+    return arr.values if isinstance(arr, LabeledArray) else arr
+
+def stack_tensor_arr(tensor_arr: np.ndarray[torch.Tensor], dim: int = 0) -> Union[torch.Tensor, TensorDict]:
+    base = _as_ndarray(tensor_arr)
+    tensor_list = [*base.ravel()]
+    if isinstance(t := tensor_list[0], torch.Tensor):
+        result = torch.stack(tensor_list, dim=dim)
+    else:
+        result = TensorDict.maybe_dense_stack(tensor_list, dim=dim)
+    return result.reshape((*base.shape, *t.shape,))
+
+def stack_module_arr(module_arr: np.ndarray[nn.Module]) -> ModelPair:
+    params, buffers = torch.func.stack_module_state(module_arr.ravel().tolist())
+    td = TensorDict({}, batch_size=module_arr.shape)
+
+    def _unflatten(t: torch.Tensor, dim: int, shape: tuple[int, ...]):
+        if len(shape) == 0:
+            return t.squeeze(dim=dim)
+        elif len(shape) == 1:
+            return t
+        else:
+            return t.unflatten(dim, shape)
+
+    for k, v in params.items():
+        td[(*k.split("."),)] = nn.Parameter(_unflatten(v, 0, module_arr.shape), requires_grad=v.requires_grad)
+    for k, v in buffers.items():
+        td[(*k.split("."),)] = _unflatten(v, 0, module_arr.shape)
+
+    return module_arr.ravel()[0].to(DEVICE), td.to(DEVICE)
+
+def stack_module_arr_preserve_reference(module_arr: np.ndarray[nn.Module]) -> ModelPair:
+    flattened_td = TensorDict.maybe_dense_stack([
+        TensorDict({
+            k: v
+            for k in dir(module) if isinstance((v := getattr(module, k)), torch.Tensor)
+        }, batch_size=())
+        for module in module_arr.ravel()
+    ], dim=0)
+    td = flattened_td.reshape(module_arr.shape)
+    return module_arr.ravel()[0], td.to(DEVICE)
+
+def run_module_arr(
+        model_pair: ModelPair,
+        args: Any,  # Note: a TensorDict is only checked for as the immediate argument and will not work inside a nested structure
+        kwargs: dict[str, Any] = MappingProxyType(dict()),
+        vmap: bool = True,
+) -> Any:
+    if "TensorDict" in type(args).__name__:
+        args = args.to_dict()
+
+    reference_module, module_td = model_pair
+    module_td = TensorDict(td_items(module_td), batch_size=module_td.shape)
+    n = int(np.prod(module_td.shape))
+
+    # vmap requires more than one stacked module; a single module always uses the
+    # explicit per-module loop below. When vmap is requested but fails at runtime
+    # we fall back to the loop, but warn loudly so genuine model bugs are not hidden.
+    if vmap and n > 1:
+        try:
+            def vmap_run(module_d, ags):
+                return torch.func.functional_call(reference_module, module_d, ags, kwargs)
+            for _ in range(module_td.ndim):
+                vmap_run = torch.func.vmap(vmap_run, randomness="different")
+            return vmap_run(module_td.to_dict(), args)
+        except RuntimeError as e:
+            warnings.warn(
+                f"vmap execution of {type(reference_module).__name__} failed and is "
+                f"falling back to a serial per-module loop (this is slower and may hide "
+                f"a model bug): {e}",
+                RuntimeWarning,
+            )
+
+    # Serial per-module fallback (single module, or vmap disabled / failed above).
+    flat_args, args_spec = tree_flatten(args)
+    single_flat_args_list = [
+        [t.view(n, *t.shape[module_td.ndim:])[idx] for t in flat_args]
+        for idx in range(n)
+    ]
+    single_args_list = [tree_unflatten(single_flat_args, args_spec) for single_flat_args in single_flat_args_list]
+
+    single_out_list = [
+        torch.func.functional_call(reference_module, module_td.view(n)[idx].to_dict(), single_args)
+        for idx, single_args in enumerate(single_args_list)
+    ]
+    _, out_spec = tree_flatten(single_out_list[0])
+    single_flat_out_list = [tree_flatten(single_out)[0] for single_out in single_out_list]
+    flat_out = [
+        torch.stack([*out_component_list], dim=0).view(*module_td.shape, *out_component_list[0].shape)
+        for out_component_list in zip(*single_flat_out_list)
+    ]
+    return tree_unflatten(flat_out, out_spec)
+
+def multi_vmap(func: Callable, n: int, **kwargs: Any) -> Callable:
+    f = func
+    for _ in range(n):
+        f = torch.vmap(f, **kwargs)
+    return f
+
+def buffer_dict(td: TensorDict) -> nn.Module:
+    def _buffer_dict(parent_module: nn.Module, td: TensorDict) -> nn.Module:
+        for k, v in td.items(include_nested=False):
+            if isinstance(v, torch.Tensor):
+                parent_module.register_buffer(k, v)
+            else:
+                parent_module.register_module(k, _buffer_dict(nn.Module(), v))
+        return parent_module
+    return _buffer_dict(nn.Module(), td)
+
+def td_items(td: TensorDict) -> dict[str, torch.Tensor]:
+    return {
+        k if isinstance(k, str) else ".".join(k): v
+        for k, v in td.items(include_nested=True, leaves_only=True)
+    }
+
+def parameter_td(m: nn.Module) -> TensorDict:
+    result = TensorDict({}, batch_size=())
+    for k, v in m.named_parameters():
+        k_ = (*k.split("."),)
+        result[k_[0] if len(k_) == 1 else k_] = v
+    return result
+
+def mask_dataset_with_total_sequence_length(ds: TensorDict, total_sequence_length: int) -> TensorDict:
+    batch_size, sequence_length = ds.shape[-2:]
+    ds["mask"] = torch.Tensor(torch.arange(batch_size * sequence_length) < total_sequence_length).view(
+        sequence_length, batch_size
+    ).mT.expand(ds.shape)
+    return ds
+
+
+"""
+Computation
+"""
+def pow_series(M: torch.Tensor, n: int) -> torch.Tensor:
+    N = M.shape[0]
+    I = torch.eye(N, device=M.device)
+    if n == 1:
+        return I[None]
+    else:
+        k = int(math.ceil(math.log2(n)))
+        bits = [M]
+        for _ in range(k - 1):
+            bits.append(bits[-1] @ bits[-1])
+
+        result = I
+        for bit in bits:
+            augmented_bit = torch.cat([I, bit], dim=1)
+            blocked_result = result @ augmented_bit
+            result = torch.cat([blocked_result[:, :N], blocked_result[:, N:]], dim=0)
+        return result.reshape(1 << k, N, N)[:n]
+
+def batch_trace(x: torch.Tensor) -> torch.Tensor:
+    return x.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+
+def kl_div(cov1: torch.Tensor, cov2: torch.Tensor) -> torch.Tensor:
+    return ((torch.det(cov2) / torch.det(cov1)).log() - cov1.shape[-1] + (torch.inverse(cov2) * cov1).sum(dim=(-2, -1))) / 2
+
+def sqrtm(t: torch.Tensor) -> torch.Tensor:
+    """Symmetric matrix square root for symmetric positive-semidefinite ``t``.
+
+    Uses the Hermitian eigensolver (orthonormal eigenvectors, so no explicit inverse
+    and no complex arithmetic), which is substantially more stable than the general
+    ``eig`` + ``inverse`` form. Eigenvalues are clamped at 0 to absorb small negative
+    numerical drift.
+    """
+    L, V = torch.linalg.eigh(t)
+    return V @ torch.diag_embed(L.clamp_min(0.0).sqrt()) @ V.mT
+
+def complex(t: torch.Tensor | TensorDict) -> Union[torch.Tensor, TensorDict]:
+    fn = lambda t_: t_ if torch.is_complex(t_) else torch.complex(t_, torch.zeros_like(t_))
+    return fn(t) if isinstance(t, torch.Tensor) else t.apply(fn)
+
+def ceildiv(a: int, b: int) -> int:
+    return -(-a // b)
+
+def ceil(a: int) -> int:
+    return ceildiv(a, 1)
+
+def T(t: torch.Tensor) -> torch.Tensor:
+    return t.permute((*range(t.ndim - 1, -1, -1),))
+
+def hadamard_conjugation(
+        A: torch.Tensor,        # [B... x m x n]
+        B: torch.Tensor,        # [B... x p x q]
+        alpha: torch.Tensor,    # [B... x m x n]
+        beta: torch.Tensor,     # [B... x p x q]
+        C: torch.Tensor         # [B... x m x p]
+) -> torch.Tensor:              # [B... x n x q]
+    coeff = 1 / (1 - alpha[..., :, None, :, None] * beta[..., None, :, None, :])            # [B... x m x p x n x q]
+    return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", A, B, complex(C), coeff,)  # [B... x n x q]
+
+def hadamard_conjugation_diff_order1(
+        A: torch.Tensor,        # [B... x m x n]
+        B: torch.Tensor,        # [B... x p x q]
+        alpha: torch.Tensor,    # [B... x m x n]
+        beta1: torch.Tensor,    # [B... x p x q]
+        beta2: torch.Tensor,    # [B... x p x q]
+        C: torch.Tensor         # [B... x m x p]
+) -> torch.Tensor:              # [B... x n x q]
+    alpha_ = alpha[..., :, None, :, None]                                                   # [B... x m x 1 x n x 1]
+    _beta1, _beta2 = beta1[..., None, :, None, :], beta2[..., None, :, None, :]             # [B... x 1 x p x 1 x q]
+    coeff = alpha_ / ((1 - alpha_ * _beta1) * (1 - alpha_ * _beta2))                        # [B... x m x p x n x q]
+    return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", A, B, complex(C), coeff,)  # [B... x n x q]
+
+def hadamard_conjugation_diff_order2(
+        B: torch.Tensor,        # [B... x p x q]
+        beta1: torch.Tensor,    # [B... x p x q]
+        beta2: torch.Tensor,    # [B... x p x q]
+        C: torch.Tensor         # [B... x p x p]
+) -> torch.Tensor:              # [B... x q x q]
+    beta1_, _beta1 = beta1[..., :, None, :, None], beta1[..., None, :, None, :]             # b1_ik, b1_jl
+    beta2_, _beta2 = beta2[..., :, None, :, None], beta2[..., None, :, None, :]             # b2_ik, b2_jl
+
+    beta12 = beta1_ * _beta2                                                                # b1_ik * b2_jl
+    beta21 = einops.rearrange(beta12, "... i j k l -> ... j i l k")                         # b2_ik * b1_jl
+    beta11, beta22 = (beta1_ * _beta1), (beta2_ * _beta2),                                  # b1_ik * b1_jl, b2_ik * b2_jl,
+
+    coeff = 1 - beta12 * beta21
+    for t in (beta11, beta12, beta21, beta22,):
+        coeff.div_(1 - t)
+    return torch.einsum("...mn, ...pq, ...mp, ...mpnq -> ...nq", B, B, C, coeff,)
+
+
+"""
+NumPy Array Comprehension Operations
+"""
+
+def multi_iter(arr: np.ndarray | LabeledArray) -> Iterable[Any]:
+    for x in np.nditer(_as_ndarray(arr), flags=["refs_ok",],):
+        yield x[()]
+
+def multi_enumerate(arr: np.ndarray | LabeledArray) -> Iterable[tuple[Sequence[int], Any]]:
+    it = np.nditer(_as_ndarray(arr), flags=["multi_index", "refs_ok",],)
+    for x in it:
+        yield it.multi_index, x[()]
+
+def multi_map(func: Callable[[Any], Any], arr: np.ndarray | LabeledArray, dtype: type = None):
+    base = _as_ndarray(arr)
+    if dtype is None:
+        dtype = type(func(base.ravel()[0]))
+    result = np.empty_like(base, dtype=dtype)
+    for idx, x in multi_enumerate(base):
+        result[idx] = func(x)
+    return LabeledArray(result, arr.dims) if isinstance(arr, LabeledArray) else result
+
+def multi_zip(*arrs: "np.ndarray | LabeledArray") -> np.ndarray:
+    """Zip element-wise into an object array of tuples.
+
+    Unlike a structured recarray, an object array of plain tuples never lets
+    numpy introspect ``.dtype``/``.names`` on the elements, so it is safe to
+    hold ``Tensor``/``TensorDict`` cells.
+    """
+    bases = [_as_ndarray(arr) for arr in arrs]
+    result = np.empty(bases[0].shape, dtype=object)
+    for idx in np.ndindex(bases[0].shape):
+        result[idx] = tuple(base[idx] for base in bases)
+    return result
+
+
+"""
+LabeledArray Operations
+"""
+
+def dim_array_like(arr: LabeledArray, dtype: type) -> LabeledArray:
+    empty_arr = np.full_like(_as_ndarray(arr), None, dtype=dtype)
+    return LabeledArray(empty_arr, arr.dims)
+
+def broadcast_dim_array_shapes(*dim_arrs: Iterable[LabeledArray]) -> OrderedDict[str, int]:
+    dim_dict = OrderedDict()
+    for dim_arr in dim_arrs:
+        for dim_name, dim_len in zip(dim_arr.dims, dim_arr.shape):
+            dim_dict.setdefault(dim_name, []).append(dim_len)
+    return OrderedDict((k, np.broadcast_shapes(*v)[0]) for k, v in dim_dict.items())
+
+def broadcast_dim_arrays(*dim_arrs: Iterable[np.ndarray]) -> Iterator[LabeledArray]:
+    _dim_arrs = []
+    for dim_arr in dim_arrs:
+        if isinstance(dim_arr, LabeledArray):
+            _dim_arrs.append(dim_arr)
+        elif isinstance(dim_arr, np.ndarray):
+            assert dim_arr.ndim == 0
+            _dim_arrs.append(LabeledArray(dim_arr, ()))
+        else:
+            _dim_arrs.append(LabeledArray(array_of(dim_arr), ()))
+
+    dim_dict = broadcast_dim_array_shapes(*_dim_arrs)
+    return (dim_arr.broadcast(dim_dict) for dim_arr in _dim_arrs)
+
+def take_from_dim_array(dim_arr: LabeledArray | LabeledDataset, idx: dict[str, Any]):
+    return dim_arr.take(indices=idx)
+
+
+"""
+Recursive attribute functions
+"""
+def rgetattr(obj: object, attr: str, *args):
+    def _getattr(obj: object, attr: str) -> Any:
+        return getattr(obj, attr, *args)
+    return functools.reduce(_getattr, [obj] + attr.split("."))
+
+def rsetattr(obj: object, attr: str, value: Any) -> None:
+    def _rsetattr(obj: object, attrs: list[str], value: Any) -> None:
+        if len(attrs) == 1:
+            setattr(obj, attrs[0], value)
+        else:
+            _rsetattr(next_obj := getattr(obj, attrs[0], Namespace()), attrs[1:], value)
+            setattr(obj, attrs[0], next_obj)
+    _rsetattr(obj, attr.split("."), value)
+
+def rhasattr(obj: object, attr: str) -> bool:
+    try:
+        rgetattr(obj, attr)
+        return True
+    except AttributeError:
+        return False
+
+def rgetitem(obj: dict[str, Any], item: str, *args):
+    def _getitem(obj: dict[str, Any], item: str) -> Any:
+        return obj.get(item, *args)
+    return functools.reduce(_getitem, [obj] + item.split("."))
+
+def rsetitem(obj: dict[str, Any], item: str, value: Any) -> None:
+    def _rsetitem(obj: dict[str, Any], items: list[str], value: Any) -> None:
+        if len(items) == 1:
+            obj[items[0]] = value
+        else:
+            _rsetitem(next_obj := obj.get(items[0], {}), items[1:], value)
+            obj[items[0]] = next_obj
+    _rsetitem(obj, item.split("."), value)
+
+
+"""
+Argument namespace processing
+"""
+class DefaultingParameter(Namespace):
+    def __init__(self, default_key: str = TRAINING_DATASET_TYPES[0], **kwargs):
+        Namespace.__init__(self, **kwargs)
+        self._default_key = default_key
+
+    def __getattr__(self, item):
+        return vars(self).get(item, vars(self)[self._default_key])
+    
+    def default(self):
+        return vars(self)[self._default_key]
+
+    def update(self, **kwargs) -> None:
+        vars(self).update(kwargs)
+
+    def reset(self, **kwargs) -> None:
+        vars(self).clear()
+        vars(self).update(kwargs)
+
+def process_defaulting_roots(o: _T) -> _T:
+    ds_types = (*TRAINING_DATASET_TYPES, TESTING_DATASET_TYPE)
+    if isinstance(o, Namespace):
+        if len(vars(o)) > 0 and all(k in ds_types for k in vars(o)):
+            return DefaultingParameter(**vars(o))
+        else:
+            for k, v in vars(o).items():
+                setattr(o, k, process_defaulting_roots(v))
+            return o
+    else:
+        return DefaultingParameter(**{TRAINING_DATASET_TYPES[0]: o})
+
+def index_defaulting_with_attr(o: object, attr: str = None) -> Any:
+    if isinstance(o, DefaultingParameter):
+        return getattr(o, o._default_key if attr is None else attr)
+    elif isinstance(o, Namespace):
+        return Namespace(**{k: index_defaulting_with_attr(v, attr) for k, v in vars(o).items()})
+    else:
+        return o
+
+def deepcopy_namespace(n: Namespace) -> Namespace:
+    def _deepcopy_helper(o: _T) -> _T:
+        if isinstance(o, Namespace):
+            return type(o)(**{k: _deepcopy_helper(v) for k, v in vars(o).items()})
+        else:
+            return o
+    return _deepcopy_helper(n)
+
+def toJSON(o: object):
+    if isinstance(o, Namespace):
+        return {k: toJSON(v) for k, v in vars(o).items()}
+    elif isinstance(o, dict):
+        return {k: toJSON(v) for k, v in o.items()}
+    elif isinstance(o, (list, tuple, set)):
+        return list(map(toJSON, o))
+    else:
+        try:
+            json.dumps(o)
+            return o
+        except TypeError:
+            return str(o)
+
+def str_namespace(n: Namespace) -> str:
+    return json.dumps(toJSON(n), indent=4)
+
+def print_namespace(n: Namespace) -> None:
+    print(str_namespace(n))
+
+def hash_namespace(n: Namespace) -> str:
+    return hashlib.sha256(str_namespace(n).encode("utf-8")).hexdigest()[:8]
+
+def print_dict(d: dict[str, Any] | object, n: int = 0, indent: int = 4,) -> None:
+    if isinstance(d, dict):
+        for k, v in d.items():
+            print(" " * (n * indent) + k)
+            print_dict(v, n=n + 1, indent=indent,)
+    else:
+        to_print = str(d)
+        print("\n".join([" " * (n * indent) + s for s in to_print.split("\n")]))
+
+
+"""
+Miscellaneous
+"""
+class Timer:
+    def __init__(self):
+        self.t = time.perf_counter()
+
+    def reset(self):
+        t = time.perf_counter()
+        out = t - self.t
+        self.t = t
+        return out
+
+def identity(x: Any) -> Any:
+    return x
+
+# Global seed for reset_seed(); None means reseed nondeterministically.
+SEED: Union[int, None] = None
+
+def reset_seed():
+    if SEED is None:
+        torch.seed()
+        np.random.seed()
+    else:
+        torch.manual_seed(SEED)
+        np.random.seed(SEED)
+
+def torch_load(f: torch.serialization.FILE_LIKE, **kwargs) -> Any:
+    return torch.load(f, map_location=DEVICE, weights_only=False,)
+
+def empty_cache():
+    gc.collect()
+    torch.cuda.empty_cache()
+
+def get_tensors_in_memory(allowed_classes: tuple[type] = (torch.Tensor,)) -> OrderedDict[int, torch.Tensor]:
+    gc.collect()
+    tensors = [obj for obj in gc.get_objects() if (type(obj) in allowed_classes) and (torch.is_tensor(obj) or torch.is_tensor(getattr(obj, "data", None)))]
+    indices = np.argsort([t.numel() for t in tensors])[::-1]
+    result = collections.OrderedDict()
+    for idx in indices:
+        t = tensors[idx]
+        result[t.data_ptr()] = t
+    return result
+
+def print_tensors_in_memory(allowed_classes: tuple[type] = (torch.Tensor,)) -> None:
+    t_dict = get_tensors_in_memory(allowed_classes=allowed_classes)
+    for t in t_dict.values():
+        print(type(t), t.size(), t.numel())
+
+def get_all_hooks(module: nn.Module) -> dict[str, dict[int, Callable]]:
+    """
+    Retrieves all forward and backward hooks, including pre-hooks, from a module and its submodules.
+
+    Args:
+        module: The nn.Module to inspect.
+
+    Returns:
+        A dictionary where keys are module names (or "" for the input module itself),
+        and values are dictionaries of hook IDs to hook functions.
+    """
+    all_hooks = {}
+    def _get_hooks(m: nn.Module, prefix=""):
+        hooks = {}
+        if hasattr(m, "_forward_hooks") and m._forward_hooks != OrderedDict():
+            hooks.update({"forward_hooks": m._forward_hooks})
+        if hasattr(m, "_forward_pre_hooks") and m._forward_pre_hooks != OrderedDict():
+            hooks.update({"forward_pre_hooks": m._forward_pre_hooks})
+        if hasattr(m, "_backward_hooks") and m._backward_hooks != OrderedDict():
+             hooks.update({"backward_hooks": m._backward_hooks})
+        if hasattr(m, "_full_backward_hooks") and m._full_backward_hooks != OrderedDict():
+            hooks.update({"full_backward_hooks": m._full_backward_hooks})
+        if hooks:
+            all_hooks[prefix] = hooks
+
+        for name, child in m.named_children():
+            _get_hooks(child, prefix=f"{prefix}.{name}" if prefix else name)
+
+    _get_hooks(module)
+    return all_hooks
+
+class print_disabled:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
+
+def flatten_nested_dict(d: dict[str, Any]) -> dict[str, Any]:
+    result = {}
+    def _flatten_nested_dict(s: tuple[str, ...], d: dict[str, Any]) -> None:
+        for k, v in d.items():
+            if isinstance(v, dict):
+                _flatten_nested_dict((*s, k), v)
+            else:
+                result[".".join((*s, k))] = v
+    _flatten_nested_dict((), d)
+    return result
+
+def nested_vars(n: Namespace) -> dict[str, Any]:
+    result = {}
+    def _nested_vars(s: tuple[str, ...], n: Namespace) -> None:
+        for k, v in vars(n).items():
+            if isinstance(v, Namespace):
+                _nested_vars((*s, k), v)
+            else:
+                result[(*s, k)] = v
+    _nested_vars((), n)
+    return {".".join(k): v for k, v in result.items()}
+
+def nested_type(o: object) -> object:
+    if type(o) in [list, tuple]:
+        return type(o)(map(nested_type, o))
+    elif type(o) == dict:
+        return {k: nested_type(v) for k, v in o.items()}
+    else:
+        return type(o)
+
+def map_dict(d: dict[str, Any], func: Callable[[Any], Any]) -> dict[str, Any]:
+    return {
+        k: map_dict(v, func) if hasattr(v, "items") else func(v)
+        for k, v in d.items()
+    }
+
+def array_of(o: _T) -> np.ndarray[_T]:
+    M = np.array(None, dtype=object)
+    M[()] = o
+    return M
+
+def model_size(m: nn.Module):
+    return sum(p.numel() for p in m.parameters())
+
+def call_func_with_kwargs(func: Callable, args: tuple[Any, ...], kwargs: dict[str, Any]):
+    params = inspect.signature(func).parameters
+    required_args = [
+        kwargs[k] if k in kwargs else args[i] for i, (k, v) in enumerate(params.items())
+        if v.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD and v.default is inspect.Parameter.empty
+    ]
+    additional_args = args[len(required_args):]
+
+    allow_var_keywords = any(v.kind is inspect.Parameter.VAR_KEYWORD for v in params.values())
+    valid_kwargs = {
+        k: v for k, v in kwargs.items()
+        if ((params[k].default is not inspect.Parameter.empty) if k in params else allow_var_keywords)
+    }
+    return func(*required_args, *additional_args, **valid_kwargs)
+
+def broadcast_shapes(*shapes: tuple[int, ...]):
+    def to_tuple(shape: tuple[int, ...]) -> tuple[int, ...]:
+        return (*map(int, shape),)
+    return to_tuple(torch.broadcast_shapes(*map(to_tuple, shapes)))
+
+""" Plotting code """
+def color(z: float, scale: float = 120.) -> np.ndarray:
+    k = 2 * np.pi * z / scale
+    return (1 + np.asarray([np.sin(k), np.sin(k + 2 * np.pi / 3), np.sin(k + 4 * np.pi / 3)], dtype=float)) / 2
+
+def confidence_ellipse(x, y, ax, n_std=1.0, facecolor="none", **kwargs):
+    """
+    Create a plot of the covariance confidence ellipse of *x* and *y*.
+
+    Parameters
+    ----------
+    x, y : array-like, shape (n, )
+        Input data.
+
+    ax : matplotlib.axes.Axes
+        The Axes object to draw the ellipse into.
+
+    n_std : float
+        The number of standard deviations to determine the ellipse"s radiuses.
+
+    **kwargs
+        Forwarded to `~matplotlib.patches.Ellipse`
+
+    Returns
+    -------
+    matplotlib.patches.Ellipse
+    """
+    x, y = np.array(x), np.array(y)
+    if x.size != y.size:
+        raise ValueError("x and y must be the same size")
+
+    M = np.stack([x, y], axis=0)
+    cov = (M @ M.T) / len(x)
+    pearson = cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1])
+    # Using a special case to obtain the eigenvalues of this two-dimensional dataset.
+    ell_radius_x = np.sqrt(1 + pearson)
+    ell_radius_y = np.sqrt(1 - pearson)
+    ellipse = Ellipse((0, 0), width=ell_radius_x * 2, height=ell_radius_y * 2, facecolor=facecolor, **kwargs)
+
+    # Calculating the standard deviation of x from the squareroot of the variance and multiplying with the given number of standard deviations.
+    scale_x = np.sqrt(cov[0, 0]) * n_std
+
+    # Calculating the standard deviation of y
+    scale_y = np.sqrt(cov[1, 1]) * n_std
+
+    transf = transforms.Affine2D().rotate_deg(45).scale(scale_x, scale_y)
+
+    ellipse.set_transform(transf + ax.transData)
+    return ax.add_patch(ellipse)
+
+
+
+

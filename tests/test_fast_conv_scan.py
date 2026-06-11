@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from infrastructure.fast_conv_scan import conv_scan
-from infrastructure.utils import Timer
+from kf_rnn.infrastructure.fast_conv_scan import conv_scan
+from kf_rnn.infrastructure.utils import Timer
 
 
 if __name__ == "__main__":

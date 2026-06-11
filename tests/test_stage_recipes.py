@@ -8,10 +8,10 @@ warnings.filterwarnings("ignore")
 from argparse import Namespace
 
 # Importing training registers the universal "sgd" stage.
-import infrastructure.experiment.training  # noqa: F401
-from infrastructure.experiment.stages import build_stages, STAGE_REGISTRY
+import kf_rnn.infrastructure.experiment.training  # noqa: F401
+from kf_rnn.infrastructure.experiment.stages import build_stages, STAGE_REGISTRY
 
-from model.convolutional.cnn_predictor import (
+from kf_rnn.model.convolutional.cnn_predictor import (
     CnnPredictor,
     CnnLeastSquaresPredictor,
     CnnLeastSquaresPretrainPredictor,
@@ -20,13 +20,13 @@ from model.convolutional.cnn_predictor import (
     CnnLeastSquaresRandomStepPredictor,
     CnnLeastSquaresNegationPredictor,
 )
-from model.sequential.rnn_predictor import RnnKalmanPredictor, RnnKalmanInitializedPredictor
-from model.sequential.rnn_ho_kalman import (
+from kf_rnn.model.sequential.rnn_predictor import RnnKalmanPredictor, RnnKalmanInitializedPredictor
+from kf_rnn.model.sequential.rnn_ho_kalman import (
     RnnHoKalmanAnalyticalPredictor,
     RnnHoKalmanAnalyticalLeastSquaresPredictor,
 )
-from model.zero_predictor import ZeroPredictor
-from model.copy_predictor import CopyPredictor
+from kf_rnn.model.zero_predictor import ZeroPredictor
+from kf_rnn.model.copy_predictor import CopyPredictor
 
 
 def _model_args() -> Namespace:

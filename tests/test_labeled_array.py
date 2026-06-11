@@ -7,7 +7,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from infrastructure.labeled_array import LabeledArray, LabeledDataset, array_of
+from kf_rnn.infrastructure.labeled_array import LabeledArray, LabeledDataset, array_of
 
 
 def test_construction_and_attrs() -> None:
