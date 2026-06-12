@@ -1,5 +1,5 @@
 import collections
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import Any, Callable, OrderedDict
 
 import numpy as np
@@ -7,14 +7,14 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.infrastructure.static import ModelPair
 from kf_rnn.infrastructure.experiment.losses import LossFn
 from kf_rnn.model.base import Predictor
 from kf_rnn.system.base import SystemGroup
 
 
-MetricVars = tuple[Namespace, ModelPair]
+MetricVars = tuple[SimpleNamespace, ModelPair]
 
 class Metric(object):
     @classmethod
@@ -26,9 +26,9 @@ class Metric(object):
         if dependency not in cache:
             exclusive, model_pair = mv
             with torch.set_grad_enabled(False):
-                run_arr = utils.multi_map(
+                run_arr = eu.multi_map(
                     lambda dataset: Predictor.run(model_pair, dataset),
-                    utils.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=TensorDict,
+                    eu.rgetattr(exclusive, f"info.{dependency}.dataset"), dtype=TensorDict,
                 )
             cache[dependency] = run_arr
         return cache[dependency]
@@ -44,7 +44,7 @@ class Metric(object):
     ) -> torch.Tensor:
         assert sweep_position in ("inside", "outside"), f"Position of hyperparameter sweep must be either before model_shape (outside) or after model_shape (inside), but got {sweep_position}."
         result_arr = self._evaluate_func(mv, cache, with_batch_dim)
-        return utils.stack_tensor_arr(result_arr, dim=(0 if sweep_position == "outside" else 2))
+        return eu.stack_tensor_arr(result_arr, dim=(0 if sweep_position == "outside" else 2))
 
 
 METRIC_DICT: OrderedDict[str, Metric] = collections.OrderedDict()
@@ -93,17 +93,17 @@ def _get_metric_with_loss_fn_and_dataset_type(ds_type: str, loss_fn: LossFn, kwa
             
             if noiseless:
                 env = sg.environment
-                irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)
+                irreducible_error = eu.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)
                 if with_batch_dim:
                     irreducible_error = irreducible_error[..., None]
                 return reducible_error + irreducible_error
             else:
                 return reducible_error
 
-        return utils.multi_map(compute_loss_with_result_dataset_pair, utils.multi_zip(
+        return eu.multi_map(compute_loss_with_result_dataset_pair, eu.multi_zip(
             Metric.compute(mv, ds_type, cache),
-            utils.rgetattr(mv[0], f"info.{ds_type}.dataset"),
-            utils.rgetattr(mv[0], f"info.{ds_type}.systems"),
+            eu.rgetattr(mv[0], f"info.{ds_type}.dataset"),
+            eu.rgetattr(mv[0], f"info.{ds_type}.systems"),
         ), dtype=torch.Tensor,)
     return Metric(eval_func)
 
@@ -129,12 +129,12 @@ def _get_noiseless_error_with_dataset_type_and_target(ds_type: str, target: tupl
                 batch_mean=not with_batch_dim
             )
             env = sg.environment
-            irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
-            return utils.T(utils.T(reducible_error) + utils.T(irreducible_error))
+            irreducible_error = eu.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None]
+            return eu.T(eu.T(reducible_error) + eu.T(irreducible_error))
             
-        return utils.multi_map(noiseless_error, utils.multi_zip(
-            utils.rgetattr(exclusive, f"info.{ds_type}.dataset"),
-            utils.rgetattr(exclusive, f"info.{ds_type}.systems"),
+        return eu.multi_map(noiseless_error, eu.multi_zip(
+            eu.rgetattr(exclusive, f"info.{ds_type}.dataset"),
+            eu.rgetattr(exclusive, f"info.{ds_type}.systems"),
         ), dtype=torch.Tensor)
 
     return Metric(eval_func)
@@ -146,9 +146,9 @@ def _get_comparator_metric_with_dataset_type_and_targets(ds_type: str, target1: 
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
         exclusive, _ = mv
-        return utils.multi_map(
+        return eu.multi_map(
             lambda dataset: Predictor.evaluate_run(dataset[target1], dataset, target2, batch_mean=not with_batch_dim),
-            utils.rgetattr(exclusive, f"info.{ds_type}.dataset"), dtype=torch.Tensor
+            eu.rgetattr(exclusive, f"info.{ds_type}.dataset"), dtype=torch.Tensor
         )
     return Metric(eval_func)
 
@@ -167,7 +167,7 @@ def _get_analytical_error_with_dataset_type_and_key(ds_type: str, key: tuple[str
             )[key], with_batch_dim)
 
         with torch.set_grad_enabled(False):
-            return utils.multi_map(analytical_error, utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
+            return eu.multi_map(analytical_error, eu.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
     return Metric(eval_func)
 
 def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
@@ -182,15 +182,15 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
         reset_model_pair = Predictor.clone_parameter_state(model_pair)
         params = [p for p in reset_model_pair[1].values() if isinstance(p, nn.Parameter)]
 
-        dataset_arr = utils.rgetattr(exclusive, f"info.{ds_type}.dataset")
+        dataset_arr = eu.rgetattr(exclusive, f"info.{ds_type}.dataset")
         with torch.set_grad_enabled(True):
-            run_arr = utils.multi_map(
+            run_arr = eu.multi_map(
                 lambda dataset: Predictor.run(reset_model_pair, dataset)["environment", "observation"],
                 dataset_arr, dtype=torch.Tensor,
             )
-            loss_arr = utils.multi_map(
+            loss_arr = eu.multi_map(
                 lambda pair: Predictor.evaluate_run(pair[0], pair[1], ("environment", "observation")).mean(dim=-1),
-                utils.multi_zip(run_arr, dataset_arr), dtype=torch.Tensor,
+                eu.multi_zip(run_arr, dataset_arr), dtype=torch.Tensor,
             )
 
         def gradient_norm(loss: torch.Tensor) -> torch.Tensor:
@@ -200,7 +200,7 @@ def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
                 for grad in grads if grad is not None
             ]).sum(dim=0), with_batch_dim)
 
-        return utils.multi_map(
+        return eu.multi_map(
             gradient_norm,
             loss_arr, dtype=torch.Tensor
         )
@@ -213,9 +213,9 @@ def _get_irreducible_loss_with_dataset_type_and_key(ds_type: str, key: tuple[str
             with_batch_dim: bool
     ) -> np.ndarray[torch.Tensor]:
         exclusive, _ = mv
-        return utils.multi_map(
+        return eu.multi_map(
             lambda sg: _unsqueeze_if(sg.td()[("irreducible_loss", *key)][:, None], with_batch_dim),
-            utils.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor
+            eu.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor
         )
     return Metric(eval_func)
 

@@ -2,8 +2,8 @@ import collections
 import itertools
 import json
 import os
-from argparse import Namespace
 from dataclasses import dataclass
+from types import SimpleNamespace
 from tqdm import tqdm
 from typing import Any, Callable, Iterable
 
@@ -14,7 +14,9 @@ import torch.nn as nn
 import torch.optim as optim
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import schema
+from kf_rnn.infrastructure.config.schema import ExperimentConfig, RuntimeConfig, TrainConfig
 from kf_rnn.infrastructure.experiment.engine import error
 from kf_rnn.infrastructure.experiment.losses import LOSS_DICT, LossFn
 from kf_rnn.infrastructure.experiment.metrics import METRIC_DICT
@@ -29,7 +31,7 @@ from kf_rnn.model.base import Predictor
 # Optimizer configuration
 def _get_optimizer_and_scheduler(
         params: Iterable[tuple[str, torch.Tensor]],
-        THP: Namespace
+        THP: TrainConfig
 ) -> tuple[optim.Optimizer, optim.lr_scheduler.LRScheduler]:
 
     optimizer_params = THP.optimizer
@@ -38,7 +40,7 @@ def _get_optimizer_and_scheduler(
     named_params = list(params)
     param_names = [k for k, _ in named_params]
     param_tensors = [v for _, v in named_params]
-    optimizer = utils.call_func_with_kwargs(
+    optimizer = eu.call_func_with_kwargs(
         getattr(optim, optimizer_params.type),
         (param_tensors, optimizer_params.max_lr), vars(optimizer_params)
     )
@@ -48,18 +50,18 @@ def _get_optimizer_and_scheduler(
     scheduler_type = scheduler_params.type
     match scheduler_type:
         case "cosine":
-            scheduler = utils.call_func_with_kwargs(
+            scheduler = eu.call_func_with_kwargs(
                 optim.lr_scheduler.CosineAnnealingWarmRestarts,
                 (optimizer, scheduler_params.T_0), vars(scheduler_params)
             )
             scheduler_params.epochs = scheduler_params.T_0 * ((scheduler_params.T_mult ** scheduler_params.num_restarts - 1) // (scheduler_params.T_mult - 1))
         case "exponential":
-            scheduler = utils.call_func_with_kwargs(
+            scheduler = eu.call_func_with_kwargs(
                 optim.lr_scheduler.ExponentialLR,
                 (optimizer, scheduler_params.lr_decay), vars(scheduler_params)
             )
         case "reduce_on_plateau":
-            scheduler = utils.call_func_with_kwargs(
+            scheduler = eu.call_func_with_kwargs(
                 optim.lr_scheduler.ReduceLROnPlateau,
                 (optimizer,), vars(scheduler_params)
             )
@@ -169,8 +171,8 @@ def _extract_dataset_from_indices(
         subsequence_idx,
     ]
 
-def get_loss_fn(THP: Namespace) -> LossFn:
-    loss_fn: LossFn = getattr(THP, "loss", "mse")
+def get_loss_fn(THP: TrainConfig) -> LossFn:
+    loss_fn: LossFn = THP.loss
     if not callable(loss_fn):
         loss_fn = LOSS_DICT[loss_fn]
     return loss_fn
@@ -271,7 +273,7 @@ class SGDStage(TrainingStage):
             "learning_rate": torch.tensor(cache.optimizer.param_groups[0]["lr"]),
         }
         if cache.optimizer.param_groups[0]["lr"] >= THP.optimizer.min_lr:
-            utils.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
+            eu.call_func_with_kwargs(cache.scheduler.step, (), {"metrics": result.mean(-1).median(-1).values.mean().item()})
 
         return result, log,
 
@@ -283,15 +285,15 @@ register_stage("sgd", SGDStage, requires=lambda model: True, description="univer
 @dataclass
 class Checkpoint:
     stage_idx: int
-    stage_state: Namespace
+    stage_state: SimpleNamespace
     stacked_modules: TensorDict
     results: list[TensorDict]
 
 
 # Full training scheme
 def _run_training(
-        HP: Namespace,
-        exclusive: Namespace,
+        HP: ExperimentConfig,
+        exclusive: SimpleNamespace,
         model_pair: ModelPair,  # [N x E x ...]
         checkpoint_paths: list[str],
 ) -> TensorDict:
@@ -307,7 +309,7 @@ def _run_training(
     checkpoint: Checkpoint = None
     for checkpoint_path in checkpoint_paths:
         try:
-            checkpoint = utils.torch_load(checkpoint_path)
+            checkpoint = eu.torch_load(checkpoint_path)
             break
         except FileNotFoundError:
             pass
@@ -336,14 +338,16 @@ def _run_training(
         results = []
 
     # Metrics computed each epoch (overfit, validation, gradient norm, impulse response).
-    metrics: set = utils.rgetattr(EHP, "metrics.training", {
-        "overfit",
-        "validation",
-        "validation_target",
-        "validation_analytical",
-        "impulse_target",
-        "overfit_gradient_norm"
-    } - utils.rgetattr(EHP, "ignore_metrics.training", set()))
+    metrics: set = EHP.metrics.training
+    if metrics is None:
+        metrics = {
+            "overfit",
+            "validation",
+            "validation_target",
+            "validation_analytical",
+            "impulse_target",
+            "overfit_gradient_norm"
+        } - (EHP.ignore_metrics.training or set())
 
     def evaluate_metrics() -> TensorDict:
         reference_module.eval()
@@ -407,7 +411,7 @@ def _run_training(
                 for checkpoint_path in checkpoint_paths:
                     torch.save(checkpoint, checkpoint_path)
 
-            utils.empty_cache()
+            eu.empty_cache()
     
     r = evaluate_metrics()
     for k, v in results[0].items(include_nested=True, leaves_only=True):
@@ -427,16 +431,18 @@ def _run_training(
 
 
 def _build_model_ensemble(
-        MHP: Namespace,
+        MHP: "Predictor.Config",
         model_shape: tuple[int, ...],
         initialization: TensorDict,
 ) -> ModelPair:
-    """Construct the ensemble of models and load any provided initialization."""
-    learned_kfs = utils.multi_map(
-        lambda _: MHP.model(MHP),
+    """Construct the ensemble of models and load any provided initialization.
+
+    The model class is identified by the config type itself (``Config.cls``)."""
+    learned_kfs = eu.multi_map(
+        lambda _: MHP.cls(MHP),
         np.empty(model_shape), dtype=nn.Module,
     )
-    model_pair = utils.stack_module_arr(learned_kfs)
+    model_pair = eu.stack_module_arr(learned_kfs)
 
     for k, v in initialization.items(include_nested=True, leaves_only=True):
         if k in model_pair[1].keys(include_nested=True, leaves_only=True):
@@ -444,14 +450,14 @@ def _build_model_ensemble(
     return model_pair
 
 
-def _print_baseline_errors(info: Namespace) -> None:
+def _print_baseline_errors(info: SimpleNamespace) -> None:
     """Print zero/copy/irreducible baseline errors per dataset type for comparison."""
     loss_types = ("zero_predictor", "copy_predictor", "irreducible",)
     for ds_type, ds_info in vars(info).items():
         print(f"Mean loss for dataset type {ds_type} {'-' * 80}")
         evaluation_targets = collections.OrderedDict([
             ("analytical", ds_info.systems.values,),
-            ("empirical", utils.multi_map(utils.identity, ds_info.dataset, dtype=TensorDict,).values,),
+            ("empirical", eu.multi_map(eu.identity, ds_info.dataset, dtype=TensorDict,).values,),
         ])
         shape = [*evaluation_targets.values()][0].shape
         assert all(arr.shape == shape for arr in evaluation_targets.values()), "Not sure when this is not true but we'll deal with it later."
@@ -460,9 +466,9 @@ def _print_baseline_errors(info: Namespace) -> None:
         for args in itertools.product(enumerate(evaluation_targets.items()), enumerate(loss_types),):
             idx, ((target_type, td_arr), loss_type,) = zip(*args)
             try:
-                err_dict_arr = utils.multi_map(lambda td: error(loss_type, td), td_arr, dtype=TensorDict,)
+                err_dict_arr = eu.multi_map(lambda td: error(loss_type, td), td_arr, dtype=TensorDict,)
                 for k in err_dict_arr.ravel()[0].keys(include_nested=True, leaves_only=True):
-                    loss_arr_dict.setdefault(k, np.full((len(evaluation_targets), len(loss_types), *shape,), None, dtype=object))[idx] = utils.multi_map(
+                    loss_arr_dict.setdefault(k, np.full((len(evaluation_targets), len(loss_types), *shape,), None, dtype=object))[idx] = eu.multi_map(
                         lambda td: td[k].mean().item(), err_dict_arr, dtype=float,
                     )
             except (RuntimeError, ValueError, KeyError, TypeError):
@@ -472,35 +478,35 @@ def _print_baseline_errors(info: Namespace) -> None:
 
         df_dict = {}
         for k, v in loss_arr_dict.items():
-            utils.rsetitem(df_dict, ".".join(map(str.upper, k)), pd.DataFrame(v, evaluation_targets.keys(), loss_types))
-        utils.print_dict(df_dict)
+            eu.rsetitem(df_dict, ".".join(map(str.upper, k)), pd.DataFrame(v, evaluation_targets.keys(), loss_types))
+        eu.print_dict(df_dict)
 
 
 def _run_unit_training_experiment(
-        HP: Namespace,
-        info: Namespace,
+        HP: ExperimentConfig,
+        info: SimpleNamespace,
         checkpoint_paths: list[str],
         initialization: TensorDict,
         print_hyperparameters: bool = False
 ) -> dict[str, Any]:
 
-    MHP, DHP, THP, EHP = map(vars(HP).__getitem__, ("model", "dataset", "training", "experiment",))
+    MHP, DHP, EHP = HP.model, HP.dataset, HP.experiment,
     if print_hyperparameters:
         print("-" * 160)
-        print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
+        print("Hyperparameters:", json.dumps(schema.config_to_jsonable(HP), indent=4))
     print("=" * 160)
 
     model_pair = _build_model_ensemble(MHP, EHP.model_shape, initialization)
 
     # Slice the train dataset down to the configured train shape.
-    info.train.dataset = utils.multi_map(
-        lambda dataset: utils.mask_dataset_with_total_sequence_length(
+    info.train.dataset = eu.multi_map(
+        lambda dataset: eu.mask_dataset_with_total_sequence_length(
             dataset[..., :DHP.n_systems.train, :DHP.n_traces.train, :DHP.sequence_length.train],
             DHP.total_sequence_length.train
         ), info.train.dataset, dtype=TensorDict,
     )
 
-    exclusive = Namespace(
+    exclusive = SimpleNamespace(
         info=info,
         train_info=info.train[()],
         n_train_systems=DHP.n_systems.train,

@@ -1,4 +1,5 @@
-from argparse import Namespace
+from types import SimpleNamespace
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 import einops
@@ -8,20 +9,26 @@ import torch.nn as nn
 import torch.nn.functional as Fn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.model.sequential.rnn_predictor import RnnPredictor
 from kf_rnn.model.convolutional.base import ConvolutionalPredictor
 from kf_rnn.model.convolutional.cnn_predictor import (
     CnnAnalyticalPredictor,
     CnnAnalyticalLeastSquaresPredictor,
 )
+from kf_rnn.infrastructure.config.schema import controller_dims
 
 
 class RnnHoKalmanBasePredictor(RnnPredictor):
+    @dataclass
+    class Config(RnnPredictor.Config, CnnAnalyticalLeastSquaresPredictor.Config):
+        """Carries both the RNN hyperparameters and those of the FIR submodule
+        (``ir_length`` / ``ridge``), which is constructed from the same config."""
+
     FIR_CLS: type[ConvolutionalPredictor] = None    # TODO: Subclasses of Ho-Kalman Predictor need to explicitly state the FIR class
     FIR_ATTR: str = "fir"
 
-    def __init__(self, modelArgs: Namespace, **kwargs: Any):
+    def __init__(self, modelArgs: "RnnHoKalmanBasePredictor.Config", **kwargs: Any):
         if self.FIR_CLS is None:
             raise NotImplementedError(
                 f"{type(self).__name__} must set the ``FIR_CLS`` class attribute to a concrete "
@@ -30,12 +37,12 @@ class RnnHoKalmanBasePredictor(RnnPredictor):
         RnnPredictor.__init__(self, modelArgs, **kwargs)
         self.register_module(RnnHoKalmanBasePredictor.FIR_ATTR, self.FIR_CLS(modelArgs, **kwargs))
 
-    def convert_fir(self, stacked_modules: TensorDict, exclusive: Namespace) -> tuple[dict[str, Any], torch.Tensor]:
+    def convert_fir(self, stacked_modules: TensorDict, exclusive: SimpleNamespace) -> tuple[dict[str, Any], torch.Tensor]:
         O_D = self.problem_shape.environment.observation
-        controller_keys = [*vars(self.problem_shape.controller).keys()]
+        controller_keys = [*controller_dims(self.problem_shape).keys()]
         ir_length: int = self.get_submodule(RnnHoKalmanBasePredictor.FIR_ATTR).ir_length
         D = max(2 * self.S_D, ir_length)
-        d1 = d2 = utils.ceildiv(D, 2)
+        d1 = d2 = eu.ceildiv(D, 2)
 
         fir_weights = stacked_modules[RnnHoKalmanBasePredictor.FIR_ATTR]
         observation_ir: torch.Tensor = fir_weights["observation_IR"]

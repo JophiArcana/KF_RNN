@@ -1,10 +1,10 @@
-from argparse import Namespace
+from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as Fn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.model.base import Predictor
 
 
@@ -13,16 +13,16 @@ class ConvolutionalPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
         # Shared augmented-plant modal decomposition (see Predictor helper).
         b = Predictor._augmented_plant_modal_decomposition(kfs, systems)
         controller_keys = b.controller_keys
         shape = b.shape
 
-        Q = utils.complex(kfs["observation_IR"])                                                        # [B... x O_D x R x O_D]
+        Q = eu.complex(kfs["observation_IR"])                                                        # [B... x O_D x R x O_D]
         Q = Q.permute(*range(Q.ndim - 3), -2, -1, -3)                                                   # [B... x R x O_D x O_D]
 
-        P = utils.complex(kfs["input_IR"]) if len(controller_keys) > 0 else b.default_td                # [B... x I_D x R x O_D]
+        P = eu.complex(kfs["input_IR"]) if len(controller_keys) > 0 else b.default_td                # [B... x I_D x R x O_D]
         P = P.apply(lambda t: t.permute(*range(Q.ndim - 3), -2, -1, -3))                                # [B... x R x O_D x I_D]
 
         K = b.K                                                                                         # [B... x S_D x O_D]
@@ -61,7 +61,7 @@ class ConvolutionalPredictor(Predictor):
         Has_cumQlHas_PlLasD_lDk_R = Has_cumQlHas_PlLasD_lDk[..., -1, :, :]                              # [B... x O_D x 2S_D]
         Has_cumQlHas_PlLasD_lDk = Has_cumQlHas_PlLasD_lDk[..., :-1, :, :]                               # [B... x R x O_D x 2S_D]
 
-        inf_geometric_Has_cumQlHas_PlLasD_lDk = utils.hadamard_conjugation(
+        inf_geometric_Has_cumQlHas_PlLasD_lDk = eu.hadamard_conjugation(
             Has_cumQlHas_PlLasD_lDk_R, Has_cumQlHas_PlLasD_lDk_R,
             Dj, Dj, torch.eye(O_D)
         )                                                                                               # [B... x 2S_D x 2S_D]
@@ -71,7 +71,7 @@ class ConvolutionalPredictor(Predictor):
         ws_recent_err = (torch.norm(Has_cumQlHas_PlLasD_lDk @ sqrt_S_Ws[..., None, :, :], dim=[-2, -1]) ** 2).sum(dim=-1)
 
         # Highlight
-        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric_Has_cumQlHas_PlLasD_lDk @ sqrt_S_Ws)  # [B...]
+        ws_geometric_err = eu.batch_trace(sqrt_S_Ws.mT @ inf_geometric_Has_cumQlHas_PlLasD_lDk @ sqrt_S_Ws)  # [B...]
 
         # Observation noise error
         # Highlight
@@ -81,15 +81,15 @@ class ConvolutionalPredictor(Predictor):
         v_recent_err = (torch.norm((Has_cumQlHas_PlLasD_lDk @ Vinv_BL_F_BLK[..., None, :, :] - Ql_PlLK) @ sqrt_S_V[..., None, :, :], dim=[-2, -1]) ** 2).sum(dim=-1)
 
         # Highlight
-        v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ Vinv_BL_F_BLK.mT @ (
+        v_geometric_err = eu.batch_trace(sqrt_S_V.mT @ Vinv_BL_F_BLK.mT @ (
             inf_geometric_Has_cumQlHas_PlLasD_lDk
         ) @ Vinv_BL_F_BLK @ sqrt_S_V)                                                                   # [B...]
 
         err = torch.real(ws_recent_err + ws_geometric_err + v_current_err + v_recent_err + v_geometric_err)
-        cache = Namespace()
+        cache = SimpleNamespace()
         return TensorDict.from_dict({"environment": {"observation": err}}, batch_size=shape), cache
 
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "ConvolutionalPredictor.Config"):
         Predictor.__init__(self, modelArgs)
         self.input_IR = None
         self.observation_IR = None

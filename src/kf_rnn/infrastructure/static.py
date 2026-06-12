@@ -1,10 +1,6 @@
 import dataclasses
-from argparse import Namespace
-from typing import Callable
 
-import torch
-import torch.nn as nn
-from tensordict import TensorDict
+from ecliseutils.types import ModelPair
 
 from kf_rnn.infrastructure.config.schema import DataConfig
 
@@ -13,30 +9,12 @@ from kf_rnn.infrastructure.config.schema import DataConfig
 
 __all__ = [
     "ModelPair",
-    "TrainFunc",
     "PARAM_GROUP_FORMATTER",
     "TRAINING_DATASET_TYPES",
     "TESTING_DATASET_TYPE",
     "DATASET_SUPPORT_PARAMS",
     "INFO_FIELDS",
     "RESULT_FIELDS",
-]
-
-
-ModelPair = tuple[nn.Module, TensorDict]
-TrainFunc = tuple[
-    Callable[[
-        Namespace,
-        Namespace,
-        ModelPair,
-        Namespace
-    ], tuple[torch.Tensor, dict[str, torch.Tensor],]],
-    Callable[[
-        Namespace,
-        Namespace,
-        ModelPair,
-        Namespace
-    ], bool],
 ]
 
 PARAM_GROUP_FORMATTER: str = "{0}_d({1})"

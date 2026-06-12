@@ -1,4 +1,3 @@
-from argparse import Namespace
 
 import einops
 import numpy as np
@@ -6,29 +5,30 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.discrete_are import solve_discrete_are
+import ecliseutils as eu
+from ecliseutils.are import solve_discrete_are
 from kf_rnn.model.zero_predictor import ZeroController
 from kf_rnn.model.copy_predictor import CopyPredictor
 from kf_rnn.system.base import SystemGroup, SystemDistribution
 from kf_rnn.system.controller import LinearControllerGroup
 from kf_rnn.system.environment import LTIEnvironment, LTIZeroNoiseEnvironment
+from kf_rnn.infrastructure.config.schema import ProblemShape, SystemConfig, controller_dims, shape_leaves
 
 
 class LQGController(LinearControllerGroup):
-    def __init__(self, problem_shape: Namespace, params: TensorDict, control_noise_std: float):
+    def __init__(self, problem_shape: ProblemShape, params: TensorDict, control_noise_std: float):
         LinearControllerGroup.__init__(self, problem_shape, params.shape)
 
         self.Q = nn.ParameterDict({
             k: params["controller", "Q", k]
-            for k in vars(self.problem_shape.controller)
+            for k in controller_dims(self.problem_shape)
         })
         self.R = nn.ParameterDict({
             k: params["controller", "R", k]
-            for k in vars(self.problem_shape.controller)
+            for k in controller_dims(self.problem_shape)
         })
 
-        for k in vars(self.problem_shape.controller):
+        for k in controller_dims(self.problem_shape):
             F, B, Q, R = params["environment", "F"], params["environment", "B", k], self.Q[k], self.R[k]
             S = solve_discrete_are(F, B, Q, R)
             # L = (B^T S B + R)^{-1} B^T S F; solve against the SPD control-cost matrix.
@@ -49,7 +49,7 @@ class LTISystem(SystemGroup):
         def __init__(self):
             SystemDistribution.__init__(self, LTISystem)
 
-    def __init__(self, hyperparameters: Namespace, params: TensorDict):
+    def __init__(self, hyperparameters: SystemConfig, params: TensorDict):
         # SECTION: Set up controller
         problem_shape = hyperparameters.problem_shape
         auxiliary = hyperparameters.auxiliary
@@ -74,7 +74,7 @@ class LTISystem(SystemGroup):
         KH = K @ H
         BL = zeros + sum(
             self.environment.B[k] @ getattr(self.controller.L, k)
-            for k in vars(self.hyperparameters.problem_shape.controller)
+            for k in controller_dims(self.hyperparameters.problem_shape)
         )
         F_BL, I_KH = F - BL, I - KH
 
@@ -85,7 +85,7 @@ class LTISystem(SystemGroup):
         ], dim=-2))
         self.register_buffer("H_augmented", torch.cat([H, torch.zeros_like(H)], dim=-1))
         L_augmented = nn.Module()
-        for k in vars(self.hyperparameters.problem_shape.controller):
+        for k in controller_dims(self.hyperparameters.problem_shape):
             L = getattr(self.controller.L, k)
             L_augmented.register_buffer(k, L @ torch.cat([KH, I_KH,], dim=-1))
         self.register_module("L_augmented", L_augmented)
@@ -93,10 +93,10 @@ class LTISystem(SystemGroup):
         # SECTION: Register irreducible loss
         irreducible_loss = TensorDict({
             (*k.split("."),): torch.zeros(self.group_shape)
-            for k in utils.nested_vars(self.environment.problem_shape).keys()
+            for k in shape_leaves(self.environment.problem_shape)
         }, batch_size=self.group_shape)
         irreducible_loss["environment", "observation"] = self.environment.irreducible_loss.clone()
-        self.register_module("irreducible_loss", utils.buffer_dict(irreducible_loss))
+        self.register_module("irreducible_loss", eu.buffer_dict(irreducible_loss))
 
 
 class LTIZeroNoiseSystem(LTISystem):
@@ -104,7 +104,7 @@ class LTIZeroNoiseSystem(LTISystem):
         def __init__(self):
             SystemDistribution.__init__(self, LTIZeroNoiseSystem)
 
-    def __init__(self, hyperparameters: Namespace, params: TensorDict):
+    def __init__(self, hyperparameters: SystemConfig, params: TensorDict):
         # SECTION: Set up controller
         problem_shape = hyperparameters.problem_shape
         auxiliary = hyperparameters.auxiliary
@@ -178,14 +178,14 @@ class MOPDistribution(LTISystem.Distribution):
         self.W_std, self.V_std = W_std, V_std
         self.B_scale, self.Q_scale, self.R_scale = B_scale, Q_scale, R_scale
 
-    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: SystemConfig, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
         F = _sample_by_mode(self.F_mode, (*shape, S_D, S_D,))
         F *= (0.95 / torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None])
         B = TensorDict({
             k: self.B_scale * torch.randn((*shape, S_D, I_D)) / (3 ** 0.5)
-            for k, I_D in vars(SHP.problem_shape.controller).items()
+            for k, I_D in controller_dims(SHP.problem_shape).items()
         }, batch_size=(*shape, S_D))
 
         H = _sample_by_mode(self.H_mode, (*shape, O_D, S_D,), gaussian_scale=1 / (3 ** 0.5))
@@ -193,24 +193,24 @@ class MOPDistribution(LTISystem.Distribution):
         sqrt_S_W = (torch.eye(S_D) * self.W_std).expand((*shape, S_D, S_D,))
         sqrt_S_V = (torch.eye(O_D) * self.V_std).expand((*shape, O_D, O_D,))
 
-        to_psd = lambda M: utils.sqrtm(M @ M.mT)
+        to_psd = lambda M: eu.sqrtm(M @ M.mT)
         Q = TensorDict({
             k: torch.randn((*shape, SHP.S_D, SHP.S_D)) * self.Q_scale
-            for k, d in vars(SHP.problem_shape.controller).items()
+            for k, d in controller_dims(SHP.problem_shape).items()
         }, batch_size=shape).apply(to_psd)
         R = TensorDict({
             k: torch.randn((*shape, d, d)) * self.R_scale
-            for k, d in vars(SHP.problem_shape.controller).items()
+            for k, d in controller_dims(SHP.problem_shape).items()
         }, batch_size=shape).apply(to_psd)
 
         return _pack_lti_params(shape, F, B, H, sqrt_S_W, sqrt_S_V, Q, R)
 
 
 class OrthonormalDistribution(LTIZeroNoiseSystem.Distribution):
-    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: SystemConfig, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert S_D == O_D, "Orthonormal system setting is assumed to be fully observed."
-        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Orthonormal system setting is assumed to have no controls."
+        assert len(controller_dims(SHP.problem_shape).items()) == 0, "Orthonormal system setting is assumed to have no controls."
 
         _Z = torch.randn((*shape, S_D, S_D,))
         _Q, _R = torch.linalg.qr(_Z)
@@ -242,7 +242,7 @@ class ContinuousDistribution(LTISystem.Distribution):
         self.eps = eps
         self.W_std, self.V_std = W_std, V_std
 
-    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: SystemConfig, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
 
         F = _sample_by_mode(self.F_mode, (*shape, S_D, S_D))
@@ -271,9 +271,9 @@ class ContinuousNoiselessDistribution(LTIZeroNoiseSystem.Distribution):
         self.H_mode = H_mode
         self.eps = eps
 
-    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: SystemConfig, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
-        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Continuous noiseless system setting is assumed to have no controls."
+        assert len(controller_dims(SHP.problem_shape).items()) == 0, "Continuous noiseless system setting is assumed to have no controls."
 
         F = _sample_by_mode(self.F_mode, (*shape, S_D, S_D))
         F /= torch.linalg.eigvals(F).abs().max(dim=-1).values[..., None, None]
@@ -300,10 +300,10 @@ class PeriodicDistribution(LTIZeroNoiseSystem.Distribution):
         self.periods = torch.tensor(periods)
         self.deterministic = deterministic
 
-    def sample_parameters(self, SHP: Namespace, shape: tuple[int, ...]) -> TensorDict:
+    def sample_parameters(self, SHP: SystemConfig, shape: tuple[int, ...]) -> TensorDict:
         S_D, O_D = SHP.S_D, SHP.problem_shape.environment.observation
         assert S_D == 2 * O_D, "State dimension is expected to be twice observation dimension."
-        assert len(vars(SHP.problem_shape.controller).items()) == 0, "Periodic system setting is assumed to have no controls."
+        assert len(controller_dims(SHP.problem_shape).items()) == 0, "Periodic system setting is assumed to have no controls."
 
         if not self.deterministic:
             period_idx = torch.randint(0, len(self.periods), (*shape, O_D,))

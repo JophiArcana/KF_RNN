@@ -1,4 +1,4 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 
@@ -7,7 +7,10 @@ from .modeling_mamba import ObservableMambaConfig, ObservableMambaModel
 
 
 class ObservableMambaInContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        config: ObservableMambaConfig = None
+    def __init__(self, modelArgs: "ObservableMambaInContextPredictor.Config"):
         self.config: ObservableMambaConfig = modelArgs.config
         TransformerPredictor.__init__(self, modelArgs, ObservableMambaModel(self.config), self.config.hidden_size)
 

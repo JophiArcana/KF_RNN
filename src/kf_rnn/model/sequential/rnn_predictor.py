@@ -1,31 +1,32 @@
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import Sequence
 
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.model.base import Predictor
 from kf_rnn.model.sequential.base import SequentialPredictor
+from kf_rnn.infrastructure.config.schema import controller_dims
 
 
 class RnnPredictor(SequentialPredictor):
-    def __init__(self, modelArgs: Namespace, **initialization: torch.Tensor | nn.Parameter):
+    def __init__(self, modelArgs: "RnnPredictor.Config", **initialization: torch.Tensor | nn.Parameter):
         SequentialPredictor.__init__(self, modelArgs)
         self.S_D = modelArgs.S_D
 
         self.F = nn.Parameter(initialization.get("F", (1 - self.eps) * torch.eye(self.S_D)))
         self.B = nn.ParameterDict({
-            k: nn.Parameter(utils.rgetitem(initialization, f"B.{k}", torch.zeros((self.S_D, d,))))
-            for k, d in vars(self.problem_shape.controller).items()
+            k: nn.Parameter(eu.rgetitem(initialization, f"B.{k}", torch.zeros((self.S_D, d,))))
+            for k, d in controller_dims(self.problem_shape).items()
         })
         self.H = nn.Parameter(initialization.get("H", nn.init.kaiming_normal_(torch.zeros((self.O_D, self.S_D,)))))
         self.K = nn.Parameter(initialization.get("K", torch.zeros((self.S_D, self.O_D,))))
 
 
 class RnnKalmanPredictor(RnnPredictor):
-    def analytical_initialization(self, exclusive: Namespace) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    def analytical_initialization(self, exclusive: SimpleNamespace) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
         systems_td = exclusive.train_info.systems.td()
         initialization = {
@@ -48,7 +49,7 @@ class RnnKalmanInitializedPredictor(RnnKalmanPredictor):
 
 
 class RnnComplexDiagonalPredictor(SequentialPredictor):
-    def __init__(self, modelArgs: Namespace, **initialization: torch.Tensor | nn.Parameter):
+    def __init__(self, modelArgs: "RnnComplexDiagonalPredictor.Config", **initialization: torch.Tensor | nn.Parameter):
         SequentialPredictor.__init__(self, modelArgs)
         self.S_D = modelArgs.S_D
 
@@ -60,7 +61,7 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
             P_init = torch.zeros((self.S_D, self.O_D,))
             B_init = {
                 k: torch.zeros((self.S_D, d,))
-                for k, d in vars(self.problem_shape.controller).items()
+                for k, d in controller_dims(self.problem_shape).items()
             }
             H_init = nn.init.kaiming_normal_(torch.zeros((self.O_D, self.S_D,)))
             logD_init = torch.complex(
@@ -77,18 +78,18 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
             P_init = Vinv @ FK
             B_init = {k: Vinv @ _B for k, _B in B.items()}
             H_init = H @ V
-            logD_init = torch.log(utils.complex(L))
+            logD_init = torch.log(eu.complex(L))
         
-        self.P = nn.Parameter(utils.complex(P_init))
-        self.B = nn.ParameterDict({k: nn.Parameter(utils.complex(v)) for k, v in B_init.items()})
-        self.H = nn.Parameter(utils.complex(H_init))
+        self.P = nn.Parameter(eu.complex(P_init))
+        self.B = nn.ParameterDict({k: nn.Parameter(eu.complex(v)) for k, v in B_init.items()})
+        self.H = nn.Parameter(eu.complex(H_init))
         self.logD = nn.Parameter(logD_init)
 
     @classmethod
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
         kfs = kfs.clone()
         F = torch.diag_embed(torch.exp(kfs["logD"])) + kfs["P"] @ kfs["H"]
         kfs["F"] = F
@@ -102,11 +103,11 @@ class RnnComplexDiagonalPredictor(SequentialPredictor):
         L = trace.shape[-1]
         state_initialization = self.sample_initial_as_observations(observations, (*trace.shape[:-1], self.S_D,))    # [B... x S_D]
 
-        observation_embds = utils.complex(torch.cat((
+        observation_embds = eu.complex(torch.cat((
             torch.zeros_like(observations[..., :1, :]),
             observations[..., :-1, :],
         ), dim=-2)) @ self.P.mT                                                                                     # [B... x L x S_D]
-        action_embds = sum(utils.complex(ac) @ self.B[ac_name].mT for ac_name, ac in actions.items())               # [B... x L x S_D]
+        action_embds = sum(eu.complex(ac) @ self.B[ac_name].mT for ac_name, ac in actions.items())               # [B... x L x S_D]
         embds = observation_embds + action_embds                                                                    # [B... x L x S_D]
         embds = torch.cat((state_initialization[..., None, :], embds,), dim=-2)                                     # [B... x (L + 1) x S_D]
 

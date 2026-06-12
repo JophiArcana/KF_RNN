@@ -34,7 +34,7 @@ from transformers.utils import (
     logging,
 )
 from .configuration_mamba import ObservableMambaConfig
-from kf_rnn.infrastructure.fast_conv_scan import conv_scan
+from ecliseutils.fast_conv_scan import conv_scan
 
 
 logger = logging.get_logger(__name__)

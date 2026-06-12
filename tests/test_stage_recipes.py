@@ -5,8 +5,6 @@ Run: PYTHONPATH=. python tests/test_stage_recipes.py
 import warnings
 warnings.filterwarnings("ignore")
 
-from argparse import Namespace
-
 # Importing training registers the universal "sgd" stage.
 import kf_rnn.infrastructure.experiment.training  # noqa: F401
 from kf_rnn.infrastructure.experiment.stages import build_stages, STAGE_REGISTRY
@@ -29,16 +27,20 @@ from kf_rnn.model.zero_predictor import ZeroPredictor
 from kf_rnn.model.copy_predictor import CopyPredictor
 
 
-def _model_args() -> Namespace:
-    return Namespace(
-        problem_shape=Namespace(
-            environment=Namespace(observation=2),
-            controller=Namespace(),
-        ),
+from kf_rnn.infrastructure.config.schema import EnvironmentShape, ProblemShape
+
+
+def _model_args(model_cls):
+    """Build the model's typed Config, passing only the fields it declares."""
+    candidate = dict(
+        problem_shape=ProblemShape(environment=EnvironmentShape(observation=2), controller={}),
         S_D=4,
         ir_length=4,
         ridge=0.0,
     )
+    import dataclasses
+    names = {f.name for f in dataclasses.fields(model_cls.Config)}
+    return model_cls.Config(**{k: v for k, v in candidate.items() if k in names})
 
 
 EXPECTED = {
@@ -60,7 +62,7 @@ EXPECTED = {
 
 def test_recipes() -> None:
     for model_cls, expected_names in EXPECTED.items():
-        model = model_cls(_model_args())
+        model = model_cls(_model_args(model_cls))
         stages = build_stages(model.training_recipe(), model)
         names = [s.name for s in stages]
         assert names == expected_names, f"{model_cls.__name__}: expected {expected_names}, got {names}"
@@ -69,7 +71,7 @@ def test_recipes() -> None:
 
 def test_incompatibility() -> None:
     # A plain CnnPredictor lacks analytical/least-squares/newton/ho-kalman capabilities.
-    model = CnnPredictor(_model_args())
+    model = CnnPredictor(_model_args(CnnPredictor))
     for bad in ("analytical_init", "least_squares_init", "newton_init", "ho_kalman"):
         try:
             build_stages([bad], model)

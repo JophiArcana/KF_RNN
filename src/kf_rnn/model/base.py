@@ -1,21 +1,57 @@
-from argparse import Namespace
-from types import MappingProxyType
-from typing import Any, Sequence
+import dataclasses
+from types import MappingProxyType, SimpleNamespace
+from typing import Any, ClassVar, Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.ensemble import EnsembleModule
+import ecliseutils as eu
+from kf_rnn.infrastructure.config.schema import ProblemShape, TrainConfig
+from ecliseutils.ensemble import EnsembleModule
 
 
 class Observer(nn.Module):
-    def __init__(self, modelArgs: Namespace):
+    """Base of the model hierarchy.
+
+    Every subclass owns a nested ``Config`` dataclass holding its
+    hyperparameters. Subclasses that introduce hyperparameters declare their
+    own ``Config`` (inheriting the base ones); subclasses that don't get one
+    auto-generated, so ``SomePredictor.Config`` always identifies exactly
+    ``SomePredictor`` via its ``cls`` attribute. The framework instantiates
+    models as ``model_config.cls(model_config)``.
+    """
+
+    @dataclasses.dataclass
+    class Config:
+        cls: ClassVar["type[Observer]"]
+        problem_shape: ProblemShape = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if "Config" not in cls.__dict__:
+            # Merge the distinct Config classes of the direct bases so multiple
+            # inheritance (e.g. CnnPredictor + LeastSquaresPredictor) combines
+            # their hyperparameter fields.
+            config_bases: list[type] = []
+            for base in cls.__bases__:
+                base_config = getattr(base, "Config", None)
+                if base_config is not None and base_config not in config_bases:
+                    config_bases.append(base_config)
+            cls.Config = dataclasses.dataclass(type("Config", tuple(config_bases), {
+                "__qualname__": f"{cls.__qualname__}.Config",
+                "__module__": cls.__module__,
+            }))
+        cls.Config.cls = cls
+
+    def __init__(self, modelArgs: "Observer.Config"):
         super().__init__()
         self.problem_shape = modelArgs.problem_shape
         self.O_D: int = self.problem_shape.environment.observation
+
+
+Observer.Config.cls = Observer
 
 
 class Predictor(Observer):
@@ -28,7 +64,7 @@ class Predictor(Observer):
 
     @classmethod
     def run(cls,
-            model_pair: "utils.ModelPair",
+            model_pair: "eu.ModelPair",
             dataset: TensorDict,
             kwargs: dict[str, Any] = MappingProxyType(dict()),
             split_size: int = EnsembleModule.DEFAULT_SPLIT_SIZE,
@@ -38,7 +74,7 @@ class Predictor(Observer):
 
     @classmethod
     def gradient(cls,
-                 model_pair: "utils.ModelPair",
+                 model_pair: "eu.ModelPair",
                  dataset: TensorDict,
                  kwargs: dict[str, Any] = MappingProxyType(dict()),
                  split_size: int = EnsembleModule.DEFAULT_SPLIT_SIZE,
@@ -58,7 +94,7 @@ class Predictor(Observer):
         return result_.mean(dim=-1) if batch_mean else result_
 
     @classmethod
-    def clone_parameter_state(cls, model_pair: "utils.ModelPair") -> "utils.ModelPair":
+    def clone_parameter_state(cls, model_pair: "eu.ModelPair") -> "eu.ModelPair":
         return EnsembleModule.from_pair(model_pair).clone().pair
 
     """ forward
@@ -101,14 +137,14 @@ class Predictor(Observer):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,     # [B... x ...]
                                     sg_td: TensorDict    # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                   # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                   # [B...]
         raise NotImplementedError(f"Analytical error does not exist for model {cls}")
 
     @classmethod
     def _augmented_plant_modal_decomposition(cls,
                                              kfs: "TensorDict | None",     # [B... x ...]
                                              systems: TensorDict,          # [B... x ...]
-    ) -> Namespace:
+    ) -> SimpleNamespace:
         """Shared scaffolding for the closed-form analytical-error computations.
 
         Casts the relevant LQG system matrices to complex, eigendecomposes the
@@ -119,18 +155,18 @@ class Predictor(Observer):
         algebra lives in exactly one place.
         """
         controller_keys = systems.get(("environment", "B"), {}).keys()
-        shape = systems.shape if kfs is None else utils.broadcast_shapes(kfs.shape, systems.shape)
+        shape = systems.shape if kfs is None else eu.broadcast_shapes(kfs.shape, systems.shape)
         default_td = TensorDict({}, batch_size=shape)
 
-        F = utils.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
-        K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
-        L = utils.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
-        sqrt_S_W = utils.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
-        sqrt_S_V = utils.complex(systems["environment", "sqrt_S_V"])                                    # [B... x O_D x O_D]
+        F = eu.complex(systems["environment", "F"])                                                  # [B... x S_D x S_D]
+        K = eu.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
+        L = eu.complex(systems["controller", "L"]) if len(controller_keys) > 0 else default_td       # [B... x I_D? x S_D]
+        sqrt_S_W = eu.complex(systems["environment", "sqrt_S_W"])                                    # [B... x S_D x S_D]
+        sqrt_S_V = eu.complex(systems["environment", "sqrt_S_V"])                                    # [B... x O_D x O_D]
 
-        Fa = utils.complex(systems["F_augmented"])                                                      # [B... x 2S_D x 2S_D]
-        Ha = utils.complex(systems["H_augmented"])                                                      # [B... x O_D x 2S_D]
-        La = utils.complex(systems["L_augmented"]) if len(controller_keys) > 0 else default_td          # [B... x I_D? x 2S_D]
+        Fa = eu.complex(systems["F_augmented"])                                                      # [B... x 2S_D x 2S_D]
+        Ha = eu.complex(systems["H_augmented"])                                                      # [B... x O_D x 2S_D]
+        La = eu.complex(systems["L_augmented"]) if len(controller_keys) > 0 else default_td          # [B... x I_D? x 2S_D]
 
         S_D, O_D = K.shape[-2:]
 
@@ -143,13 +179,13 @@ class Predictor(Observer):
 
         Dj = D[..., None, :]                                                                            # [B... x 1 x 2S_D]
 
-        BL = utils.complex(torch.zeros((*shape, S_D, S_D)) + sum(
+        BL = eu.complex(torch.zeros((*shape, S_D, S_D)) + sum(
             systems["environment", "B", k] @ systems["controller", "L", k]
             for k in controller_keys
         ))                                                                                              # [B... x S_D x S_D]
         Vinv_BL_F_BLK = Vinv @ torch.cat([-BL, F - BL], dim=-2) @ K                                     # [B... x 2S_D x O_D]
 
-        return Namespace(
+        return SimpleNamespace(
             controller_keys=controller_keys, shape=shape, default_td=default_td,
             F=F, K=K, L=L, sqrt_S_W=sqrt_S_W, sqrt_S_V=sqrt_S_V,
             Fa=Fa, Ha=Ha, La=La, S_D=S_D, O_D=O_D,
@@ -168,7 +204,7 @@ class Controller(Observer):
         cls,
         result: TensorDict,
         dataset: TensorDict,
-        THP: Namespace,
+        THP: "TrainConfig",
     ) -> torch.Tensor:
         observation_losses = Predictor.evaluate_run(
             result["environment", "observation"],

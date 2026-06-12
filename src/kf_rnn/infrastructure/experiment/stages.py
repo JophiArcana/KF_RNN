@@ -34,14 +34,15 @@ and raises ``TypeError`` otherwise. The compatibility map:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from argparse import Namespace
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
 
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.ensemble import EnsembleModule
+import ecliseutils as eu
+from kf_rnn.infrastructure.config.schema import TrainConfig
+from ecliseutils.ensemble import EnsembleModule
 from kf_rnn.infrastructure.static import ModelPair
 from kf_rnn.model.base import Predictor
 
@@ -54,7 +55,7 @@ class TrainingContext:
     ``(THP, exclusive, model_pair, cache)`` tuple of Namespaces. Per-stage
     mutable state lives on the stage object, not here."""
 
-    def __init__(self, thp: Namespace, exclusive: Namespace, model_pair: ModelPair):
+    def __init__(self, thp: TrainConfig, exclusive: SimpleNamespace, model_pair: ModelPair):
         self.thp = thp
         self.exclusive = exclusive
         self.model_pair = model_pair
@@ -72,25 +73,25 @@ class TrainingContext:
         return getattr(self.exclusive, "n_train_systems", 1)
 
     @property
-    def train_info(self) -> Namespace:
+    def train_info(self) -> SimpleNamespace:
         return self.exclusive.train_info
 
 
 class TrainingStage(ABC):
     """One stage of a training recipe (e.g. analytical init, then SGD).
 
-    Mutable state lives in ``self._state`` (a Namespace owning at least ``t``),
-    which the engine serializes for checkpointing.
+    Mutable state lives in ``self._state`` (a SimpleNamespace owning at least
+    ``t``), which the engine serializes for checkpointing.
     """
 
     name: str = "stage"
 
     def __init__(self):
-        self._state = Namespace(t=0)
+        self._state = SimpleNamespace(t=0)
 
     def reset(self) -> None:
         """Clear per-stage mutable state (called when starting the stage fresh)."""
-        self._state = Namespace(t=0)
+        self._state = SimpleNamespace(t=0)
 
     @abstractmethod
     def step(self, ctx: TrainingContext) -> StepResult:
@@ -111,10 +112,10 @@ class TrainingStage(ABC):
 
     # Checkpointable mutable state.
     @property
-    def state(self) -> Namespace:
+    def state(self) -> SimpleNamespace:
         return self._state
 
-    def load_state(self, state: Namespace) -> None:
+    def load_state(self, state: SimpleNamespace) -> None:
         self._state = state
 
 
@@ -138,7 +139,7 @@ class InitializationStage(TrainingStage):
         stacked_modules = ctx.model_pair[1]
         if not hasattr(self._state, "initialization_error"):
             initialization, error_ = self.initialization(ctx)
-            for k, v in utils.flatten_nested_dict(initialization).items():
+            for k, v in eu.flatten_nested_dict(initialization).items():
                 tdk = (*k.split("."),)
                 stacked_modules[tdk] = v.expand_as(stacked_modules[tdk])
             self._state.initialization_error = error_.expand(stacked_modules.shape)
@@ -192,10 +193,10 @@ class SubmoduleStage(TrainingStage):
         self.inner.t = value
 
     @property
-    def state(self) -> Namespace:
+    def state(self) -> SimpleNamespace:
         return self.inner.state
 
-    def load_state(self, state: Namespace) -> None:
+    def load_state(self, state: SimpleNamespace) -> None:
         self.inner.load_state(state)
 
 

@@ -1,7 +1,6 @@
 import os
 import sys
 import traceback
-from argparse import Namespace
 from typing import *
 
 import numpy as np
@@ -14,7 +13,8 @@ from tensordict import TensorDict
 from transformers import GPT2Config, TransfoXLConfig
 
 from kf_rnn.infrastructure import loader
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.infrastructure.settings import DEVICE, OUTPUT_PATH, DATA_PATH
 from kf_rnn.model.base import Predictor
@@ -34,14 +34,15 @@ if __name__ == "__main__":
 
     weights = TensorDict({
         (*k.split("."),): v
-        for k, v in utils.torch_load(f"{DATA_PATH}/transformer_weights/{system_type}_state_dict.pt").items()
+        for k, v in eu.torch_load(f"{DATA_PATH}/transformer_weights/{system_type}_state_dict.pt").items()
     }, batch_size=())
 
     S_D, O_D = 10, 5
-    problem_shape = Namespace(
-        environment=Namespace(observation=O_D),
-        controller=Namespace()
+    problem_shape = ProblemShape(
+        environment=EnvironmentShape(observation=O_D),
+        controller={},
     )
+    system_cfg = SystemConfig(S_D=S_D, problem_shape=problem_shape)
 
     # SECTION: Transformer architecture parameters
     context_length = 2048
@@ -50,7 +51,7 @@ if __name__ == "__main__":
     n_head = 8
     d_inner = 4 * d_embed
 
-    model_hyperparameters = Namespace(
+    model_hyperparameters = GPT2InContextPredictor.Config(
         problem_shape=problem_shape, gpt2=GPT2Config(
             n_positions=context_length,
             n_embd=d_embed,
@@ -62,7 +63,7 @@ if __name__ == "__main__":
     )
     model = GPT2InContextPredictor(model_hyperparameters)
 
-    model.core.load_state_dict(utils.td_items(weights["_backbone"]))
+    model.core.load_state_dict(eu.td_items(weights["_backbone"]))
     model.observation_in.data = weights["_read_in", "weight"]
     model.observation_bias.data = weights["_read_in", "bias"]
     model.observation_out.data = weights["_read_out", "weight"]
@@ -73,9 +74,9 @@ if __name__ == "__main__":
 
     if not os.path.exists(save_fname):
         n_test_traces = 64
-        lsg = MOPDistribution("gaussian", "gaussian", 0.1, 0.1).sample(Namespace(
-            S_D=S_D, problem_shape=problem_shape, auxiliary=Namespace()
-        ), (n_adversarial_systems,))
+        lsg = MOPDistribution("gaussian", "gaussian", 0.1, 0.1).sample(
+            system_cfg, (n_adversarial_systems,)
+        )
 
         optimizer = torch.optim.SGD(lsg.parameters(), lr=1e-4)
         log = []
@@ -89,8 +90,8 @@ if __name__ == "__main__":
 
                 target = ("environment", "observation")
                 loss = Predictor.evaluate_run_with_dict(out[target], ds, target)
-                zero_predictor_loss = utils.rgetattr(lsg.zero_predictor_loss, ".".join(target))
-                irreducible_loss = utils.rgetattr(lsg.irreducible_loss, ".".join(target))
+                zero_predictor_loss = eu.rgetattr(lsg.zero_predictor_loss, ".".join(target))
+                irreducible_loss = eu.rgetattr(lsg.irreducible_loss, ".".join(target))
 
                 normalized_loss = (loss - irreducible_loss) / (zero_predictor_loss - irreducible_loss)
                 print(f"Normalized Loss: {normalized_loss.mean().item()}")
@@ -99,7 +100,7 @@ if __name__ == "__main__":
                 (-normalized_loss.sum()).backward()
                 optimizer.step()
 
-                lsg = LTISystem(lsg.problem_shape, lsg.auxiliary, lsg.td())
+                lsg = LTISystem(system_cfg, lsg.td())
                 log.append(TensorDict({
                     "system_params": lsg.td().apply(lambda t: t.detach().clone()),
                     "normalized_loss": normalized_loss
@@ -113,7 +114,7 @@ if __name__ == "__main__":
         log = TensorDict.maybe_dense_stack(log, dim=0)
         torch.save(log, save_fname)
     else:
-        log = utils.torch.load(save_fname)
+        log = eu.torch.load(save_fname)
     log = log.detach()
 
 
@@ -160,7 +161,7 @@ if __name__ == "__main__":
 
 
     S_W = log["system_params", "environment", "S_W"][:, sys_idx]
-    S_W_traces = utils.batch_trace(S_W)
+    S_W_traces = eu.batch_trace(S_W)
     axs[2, 0].plot(S_W_traces.cpu(), color='black')
     axs[2, 0].set_title('Trace of evolution noise covariance')
     axs[2, 0].set_xlabel('iteration')
@@ -168,7 +169,7 @@ if __name__ == "__main__":
 
 
     S_V = log["system_params", "environment", "S_V"][:, sys_idx]
-    S_V_traces = utils.batch_trace(S_V)
+    S_V_traces = eu.batch_trace(S_V)
     axs[2, 1].plot(S_V_traces.cpu(), color='black')
     axs[2, 1].set_title('Trace of observation noise covariance')
     axs[2, 1].set_xlabel('iteration')

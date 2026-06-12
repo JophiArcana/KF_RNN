@@ -1,4 +1,4 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 from transformers import (
@@ -13,13 +13,19 @@ from kf_rnn.model.transformer.mamba.modeling_testmamba2 import TestMamba2Config,
 
 
 class MambaInContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        config: MambaConfig = None
+    def __init__(self, modelArgs: "MambaInContextPredictor.Config"):
         self.config: MambaConfig = modelArgs.config
         TransformerPredictor.__init__(self, modelArgs, MambaModel(self.config), self.config.hidden_size)
 
 
 class Mamba2InContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        config: Mamba2Config = None
+    def __init__(self, modelArgs: "Mamba2InContextPredictor.Config"):
         self.config: Mamba2Config = modelArgs.config
         TransformerPredictor.__init__(self, modelArgs, Mamba2Model(self.config), self.config.hidden_size)
 
@@ -44,7 +50,10 @@ class Mamba2InContextPredictor(TransformerPredictor):
 
 
 class TestMamba2InContextPredictor(Mamba2InContextPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(Mamba2InContextPredictor.Config):
+        config: TestMamba2Config = None
+    def __init__(self, modelArgs: "TestMamba2InContextPredictor.Config"):
         self.config: TestMamba2Config = modelArgs.config
         TransformerPredictor.__init__(self, modelArgs, TestMamba2Model(self.config), self.config.hidden_size)
 

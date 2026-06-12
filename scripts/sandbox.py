@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import time
-from argparse import Namespace
 from matplotlib import pyplot as plt
 from matplotlib.collections import LineCollection
 from typing import *
@@ -23,11 +22,15 @@ from tensordict import TensorDict
 # from huggingface_hub import hf_hub_download
 from transformers import GPT2Config, GPT2Model
 
-from kf_rnn.infrastructure import utils, loader
-from kf_rnn.infrastructure.labeled_array import LabeledArray
+from kf_rnn.infrastructure import loader
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import (
+    EnvironmentShape, ProblemShape, SystemAuxiliary, SystemConfig,
+)
+from ecliseutils.labeled_array import LabeledArray
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.infrastructure.settings import DTYPE, DEVICE
-from kf_rnn.infrastructure.discrete_are import solve_discrete_are
+from ecliseutils.are import solve_discrete_are
 from kf_rnn.model.base import Predictor
 from kf_rnn.model.sequential import *
 from kf_rnn.model.convolutional import *
@@ -61,14 +64,14 @@ if __name__ == '__main__':
     # # n_kfs = 5
     #
     # # initialization = TensorDict({
-    # #     'F': torch.stack([utils.sample_stable_state_matrix(modelArgs.S_D) for _ in range(n_kfs)]),
+    # #     'F': torch.stack([eu.sample_stable_state_matrix(modelArgs.S_D) for _ in range(n_kfs)]),
     # #     'B': torch.randn((n_kfs, modelArgs.S_D, modelArgs.I_D)) / 3.,
     # #     'H': torch.randn((n_kfs, modelArgs.O_D, modelArgs.S_D)) / 3.,
     # #     'K': torch.randn((n_kfs, modelArgs.S_D, modelArgs.O_D)) / 3.
     # # }, batch_size=(n_kfs,))
     # # kfs = [RnnKF(modelArgs, **initialization[_]) for _ in range(n_kfs)]
     # kfs = [AnalyticalKF(sys) for sys in systems]
-    # stacked_kfs = TensorDict(utils.stack_modules(kfs), batch_size=(n_sys,))[None, :]
+    # stacked_kfs = TensorDict(eu.stack_modules(kfs), batch_size=(n_sys,))[None, :]
     #
     # il = torch.Tensor([torch.trace(sys.S_observation_inf) for sys in systems])
     # zl = torch.Tensor([torch.trace(sys.H @ sys.S_state_inf @ sys.H.mT + sys.S_V) for sys in systems])
@@ -150,7 +153,7 @@ if __name__ == '__main__':
     # config_ = model_.config
     #
     # D = 1   # Size of the output we want
-    # new_config_params = utils.deepcopy(config_.__dict__)
+    # new_config_params = eu.deepcopy(config_.__dict__)
     # new_config_params.update({
     #     'input_size': D,
     #     "num_static_categorical_features": 0,
@@ -389,7 +392,7 @@ if __name__ == '__main__':
 
     # r_max = 32
     # for r in range(1, r_max + 1):
-    #     modelArgs = utils.deepcopy_namespace(_modelArgs)
+    #     modelArgs = eu.deepcopy_namespace(_modelArgs)
     #     modelArgs.ir_length = r
     #
     #     kf = CnnKFAnalytical(modelArgs)
@@ -592,7 +595,7 @@ if __name__ == '__main__':
     #
     # n = 200
     # systems = [LinearSystem.sample_stable_system(systemArgs) for _ in range(n)]
-    # stacked_systems = TensorDict(utils.stack_modules(systems), batch_size=(n,))
+    # stacked_systems = TensorDict(eu.stack_modules(systems), batch_size=(n,))
     #
     # kfs = [CnnKFAnalytical(modelArgs).eval() for _ in range(n)]
     # for kf, sys_td in zip(kfs, stacked_systems):
@@ -654,7 +657,7 @@ if __name__ == '__main__':
     #     }, system2, save_experiment=False
     # )
     # M = get_metric_namespace_from_result(result)
-    # print(utils.stack_tensor_arr(utils.multi_map(
+    # print(eu.stack_tensor_arr(eu.multi_map(
     #     lambda metrics: metrics.obj,
     #     get_result_attr(result, "metrics"), dtype=TensorDict
     # )))
@@ -802,12 +805,16 @@ if __name__ == '__main__':
 
     torch.set_printoptions(precision=12, sci_mode=False)
 
-    SHP = Namespace(S_D=10, problem_shape=Namespace(
-        environment=Namespace(observation=5),
-        # controller=Namespace(),
-        controller=Namespace(input=2),
-    ), auxiliary=Namespace(control_noise_std=2.0))
-    # systems = utils.torch_load("output/imitation_learning/ControlNoiseComparison/training/systems.pt")["train"].values[()][0]
+    SHP = SystemConfig(
+        S_D=10,
+        problem_shape=ProblemShape(
+            environment=EnvironmentShape(observation=5),
+            # controller={},
+            controller={"input": 2},
+        ),
+        auxiliary=SystemAuxiliary(control_noise_std=2.0),
+    )
+    # systems = eu.torch_load("output/imitation_learning/ControlNoiseComparison/training/systems.pt")["train"].values[()][0]
     # systems = LTISystem(SHP.problem_shape, systems.td().squeeze(1).squeeze(0))
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
@@ -834,7 +841,9 @@ if __name__ == '__main__':
 
 
     sys_td = sys.td()
-    reference_module = RnnController(SHP).eval()
+    reference_module = RnnController(RnnController.Config(
+        S_D=SHP.S_D, problem_shape=SHP.problem_shape,
+    )).eval()
     kf_td = TensorDict.from_dict({
         k: v for k, v in {
             **sys_td.get("environment", {}),
@@ -849,7 +858,7 @@ if __name__ == '__main__':
     print(ZeroController.analytical_error(None, sys_td).to_dict())
 
     env_td = sys_td["environment"]
-    print(utils.batch_trace(env_td["S_V"] + env_td["H"] @ env_td["S_W"] @ env_td["H"].mT))
+    print(eu.batch_trace(env_td["S_V"] + env_td["H"] @ env_td["S_W"] @ env_td["H"].mT))
 
     raise Exception()
     ds = sys.generate_dataset(1, 12)
@@ -889,7 +898,7 @@ if __name__ == '__main__':
     # n_sys, B, L = 3, 5, 12
     #
     # MHP = Namespace(problem_shape=problem_shape, gpt2=configuration)
-    # models = utils.multi_map(
+    # models = eu.multi_map(
     #     lambda _: GPT2InContextPredictor(MHP),
     #     np.empty(model_shape), dtype=object
     # )
@@ -899,7 +908,7 @@ if __name__ == '__main__':
     # }, "controller": {}}, batch_size=(*model_shape, n_sys, B, L))
     #
     #
-    # out = Predictor.run(*utils.stack_module_arr(models), dataset)["environment", "observation"]
+    # out = Predictor.run(*eu.stack_module_arr(models), dataset)["environment", "observation"]
     # print(torch.autograd.grad(
     #     out[:, :, L - 1].norm(),
     #     dataset["environment", "observation"]
@@ -915,9 +924,9 @@ if __name__ == '__main__':
 
 
     S_D = 3
-    problem_shape = Namespace(
-        environment=Namespace(observation=2),
-        controller=Namespace(input=2)
+    problem_shape = ProblemShape(
+        environment=EnvironmentShape(observation=2),
+        controller={"input": 2},
     )
 
     d_model = (S_D + 1) >> 1 << 1
@@ -925,9 +934,8 @@ if __name__ == '__main__':
     n_head = 1
     d_inner = 2 * d_model
 
-    model = TransformerXLInContextController(Namespace(
+    model = TransformerXLInContextController(TransformerXLInContextController.Config(
         problem_shape=problem_shape,
-        model=TransformerXLInContextController,
         transformerxl=TransfoXLConfig(
             d_model=d_model,
             d_embed=d_model,
@@ -937,9 +945,9 @@ if __name__ == '__main__':
             d_inner=d_inner,
             dropout=0.0,
         ),
-        bias=True
+        bias=True,
     ))
-    print(utils.model_size(model))
+    print(eu.model_size(model))
     # embds = 10 * torch.randn((l, 2))
     # embds2 = embds.flip(dims=(-2,))
     # print(embds)

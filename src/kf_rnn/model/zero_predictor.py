@@ -1,15 +1,15 @@
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import Sequence
 
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.model.base import Predictor
 
 
 class ZeroPredictor(Predictor):
-    def __init__(self, modelArgs: Namespace = None):
+    def __init__(self, modelArgs: "ZeroPredictor.Config" = None):
         # Used as an analytical baseline (instantiated with ``None`` in engine.error),
         # where no problem shape is available; only initialize the shape-bearing base
         # when real model args are supplied.
@@ -22,27 +22,27 @@ class ZeroPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
         b = Predictor._augmented_plant_modal_decomposition(kfs, systems)
         shape, O_D = b.shape, b.O_D
 
-        inf_geometric = utils.hadamard_conjugation(b.Has, b.Has, b.Dj, b.Dj, torch.eye(O_D))
+        inf_geometric = eu.hadamard_conjugation(b.Has, b.Has, b.Dj, b.Dj, torch.eye(O_D))
 
         # State evolution noise error
         # Highlight
-        ws_geometric_err = utils.batch_trace(b.sqrt_S_Ws.mT @ inf_geometric @ b.sqrt_S_Ws)              # [B...]
+        ws_geometric_err = eu.batch_trace(b.sqrt_S_Ws.mT @ inf_geometric @ b.sqrt_S_Ws)              # [B...]
 
         # Observation noise error
         # Highlight
         v_current_err = torch.norm(b.sqrt_S_V, dim=[-2, -1]) ** 2                                       # [B...]
 
         # Highlight
-        v_geometric_err = utils.batch_trace(b.sqrt_S_V.mT @ b.Vinv_BL_F_BLK.mT @ (
+        v_geometric_err = eu.batch_trace(b.sqrt_S_V.mT @ b.Vinv_BL_F_BLK.mT @ (
             inf_geometric
         ) @ b.Vinv_BL_F_BLK @ b.sqrt_S_V)
 
         err = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                            # [B...]
-        cache = Namespace(
+        cache = SimpleNamespace(
             controller_keys=b.controller_keys,
             shape=shape, default_td=b.default_td,
             K=b.K, L=b.L, sqrt_S_V=b.sqrt_S_V,
@@ -68,7 +68,7 @@ class ZeroController(ZeroPredictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
         result, cache = ZeroPredictor._analytical_error_and_cache(kfs, systems)
 
         # Variable definition
@@ -90,18 +90,18 @@ class ZeroController(ZeroPredictor):
             L, Las = L_dict[k], Las_dict[k]                                                             # [B... x I_D x S_D], [B... x I_D x 2S_D]
             I_D = L.shape[-2]
 
-            inf_geometric = utils.hadamard_conjugation(Las, Las, Dj, Dj, torch.eye(I_D))
+            inf_geometric = eu.hadamard_conjugation(Las, Las, Dj, Dj, torch.eye(I_D))
 
             # State evolution noise error
             # Highlight
-            ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)              # [B...]
+            ws_geometric_err = eu.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)              # [B...]
 
             # Observation noise error
             # Highlight
             v_current_err = torch.norm((L @ K) @ sqrt_S_V, dim=[-1, -2]) ** 2                           # [B...]
 
             # Highlight
-            v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
+            v_geometric_err = eu.batch_trace(sqrt_S_V.mT @ (
                 Vinv_BL_F_BLK.mT @ inf_geometric @ Vinv_BL_F_BLK
             ) @ sqrt_S_V)                                                                               # [B...]
 

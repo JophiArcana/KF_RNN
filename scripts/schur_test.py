@@ -1,7 +1,7 @@
 import scipy as sc
 import torch
 
-from kf_rnn.infrastructure.discrete_are import _torch_schur
+from ecliseutils.are import _schur_vectors_only as _torch_schur
 
 
 def torch_schur(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

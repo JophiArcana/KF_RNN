@@ -4,17 +4,18 @@ import os
 import subprocess
 import time
 import traceback
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import Any, OrderedDict
 
 import numpy as np
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.infrastructure.settings import OUTPUT_PATH
-from kf_rnn.infrastructure.config import ExperimentConfig, validate_sweep_targets
-from kf_rnn.infrastructure.labeled_array import LabeledArray
+from kf_rnn.infrastructure.config import schema
+from kf_rnn.infrastructure.config.schema import ExperimentConfig, validate_sweep_targets
+from ecliseutils.labeled_array import LabeledArray
 from kf_rnn.infrastructure.experiment.internals import (
     _filter_dimensions_if_any_satisfy_condition,
     _supports_dataset_condition,
@@ -22,7 +23,6 @@ from kf_rnn.infrastructure.experiment.internals import (
     _construct_info_dict_from_dataset_types,
     _iterate_HP_with_params,
     _process_info_dict,
-    _populate_values,
 )
 from kf_rnn.infrastructure.experiment.metrics import METRIC_DICT, Metric
 from kf_rnn.infrastructure.experiment.results import ResultGrid, InfoGrid
@@ -41,15 +41,8 @@ from kf_rnn.infrastructure.settings import DEVICE
 
 # SECTION: Shared output / result-persistence helpers used by training and testing
 
-def _coerce_hp(HP: "Namespace | ExperimentConfig") -> Namespace:
-    """Accept either a typed ``ExperimentConfig`` or a runtime Namespace HP."""
-    if isinstance(HP, ExperimentConfig):
-        from kf_rnn.infrastructure import loader
-        return loader.args_from_config(HP)
-    return HP
-
 def _setup_output_paths(
-        HP: Namespace,
+        HP: ExperimentConfig,
         output_kwargs: dict[str, Any],
         save_experiment: bool,
         subdir_key: str,
@@ -80,15 +73,15 @@ def _recover_result(output_fnames: list[str], kind: str) -> tuple[ResultGrid, st
     last_fname: str = None
     for last_fname in output_fnames:
         try:
-            return utils.torch_load(last_fname), last_fname
+            return eu.torch_load(last_fname), last_fname
         except FileNotFoundError:
             pass
         except (RuntimeError, EOFError, OSError, AttributeError, ModuleNotFoundError, ValueError):
             print(f"WARNING: failed to load existing {kind} result from {last_fname}:\n{traceback.format_exc()}")
     return None, last_fname
 
-def _backup_frequency(HP: Namespace) -> int:
-    backup_frequency = utils.rgetattr(HP, "experiment.backup_frequency", None)
+def _backup_frequency(HP: ExperimentConfig) -> int:
+    backup_frequency = HP.experiment.backup_frequency
     return 10000 if backup_frequency is None else backup_frequency
 
 def _save_result_tiers(
@@ -109,11 +102,11 @@ def _cleanup_backup_tiers(output_fnames: list[str]) -> None:
         if os.path.exists(output_fname):
             os.remove(output_fname)
 
-def _write_hparams(subdir: str, HP: Namespace) -> None:
+def _write_hparams(subdir: str, HP: ExperimentConfig) -> None:
     hp_fname = f"{subdir}/hparams.json"
     if not os.path.exists(hp_fname):
         with open(hp_fname, "w") as fp:
-            json.dump(utils.toJSON(HP), fp, indent=4)
+            json.dump(schema.config_to_jsonable(HP), fp, indent=4)
 
 
 def _record_code_version(subdir: str) -> None:
@@ -142,14 +135,14 @@ def _record_code_version(subdir: str) -> None:
 
 
 def run_experiments(
-        HP: Namespace,
+        HP: ExperimentConfig,
         iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         output_kwargs: dict[str, Any],
         systems: dict[str, LabeledArray] = None,
         initialization: LabeledArray = None,
         save_experiment: bool = True
 ) -> tuple[ResultGrid, OrderedDict[str, OrderedDict[str, LabeledArray]]]:
-    HP = utils.deepcopy_namespace(_coerce_hp(HP))
+    HP = schema.copy_config(HP)
     validate_sweep_targets(HP, iterparams)
 
     training_iterparams = []
@@ -195,7 +188,7 @@ def run_experiments(
 
 
 def run_training_experiments(
-        HP: Namespace,
+        HP: ExperimentConfig,
         iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         output_kwargs: dict[str, Any],
         systems: dict[str, LabeledArray] = None,
@@ -203,7 +196,7 @@ def run_training_experiments(
         save_experiment: bool = True,
         print_hyperparameters: bool = False,
 ) -> tuple[ResultGrid, OrderedDict[str, OrderedDict[str, LabeledArray]]]:
-    HP = utils.deepcopy_namespace(_coerce_hp(HP))
+    HP = schema.copy_config(HP)
     validate_sweep_targets(HP, iterparams)
 
     # Set up file names
@@ -257,7 +250,7 @@ def run_training_experiments(
     print(HP.experiment.exp_name)
     if print_hyperparameters:
         print("=" * 160)
-        print("Hyperparameters:", json.dumps(utils.toJSON(HP), indent=4))
+        print("Hyperparameters:", json.dumps(schema.config_to_jsonable(HP), indent=4))
 
     counter = 1
     for experiment_dict_index, EXPERIMENT_HP in _iterate_HP_with_params(HP, train_dimensions, params_dataset):
@@ -266,17 +259,14 @@ def run_training_experiments(
             print("=" * 160)
             print(f'Experiment {done.sum().item()}/{done.size}')
 
-            # DONE: Set up experiment hyperparameters
-            _populate_values(EXPERIMENT_HP)
-
-            INFO = Namespace(**{
+            INFO = SimpleNamespace(**{
                 ds_type: ds_info.take(experiment_dict_index)
                 for ds_type, ds_info in PROCESSED_INFO_DICT.items()
             })
 
             # TODO: Set up experiment initialization if it exists
             if initialization is not None:
-                _initialization = utils.take_from_dim_array(initialization, experiment_dict_index).values[()]
+                _initialization = eu.take_from_dim_array(initialization, experiment_dict_index).values[()]
             else:
                 _initialization = TensorDict({}, batch_size=())
 
@@ -296,7 +286,7 @@ def run_training_experiments(
                 _save_result_tiers(result, output_fnames, counter, _backup_frequency(HP))
             print("#" * 160 + "\n")
 
-            utils.empty_cache()
+            eu.empty_cache()
             counter += 1
 
     # SECTION: Save relevant information
@@ -314,7 +304,7 @@ def run_training_experiments(
 
 
 def run_testing_experiments(
-        HP: Namespace,
+        HP: ExperimentConfig,
         iterparams: list[tuple[str, dict[str, list[Any] | np.ndarray[Any]]]],
         output_kwargs: dict[str, Any],
         systems: dict[str, LabeledArray] = None,
@@ -322,7 +312,7 @@ def run_testing_experiments(
         info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]] = None,
         save_experiment: bool = True
 ) -> tuple[ResultGrid, OrderedDict[str, OrderedDict[str, LabeledArray]]]:
-    HP = utils.deepcopy_namespace(_coerce_hp(HP))
+    HP = schema.copy_config(HP)
     validate_sweep_targets(HP, iterparams)
 
     # Set up file names
@@ -359,7 +349,7 @@ def run_testing_experiments(
     if result is None:
         train_output_fname = f"{output_dir}/{output_kwargs['training_dir']}/{output_kwargs['fname']}.pt"
         assert os.path.exists(train_output_fname), f"Training result was not provided, and could not be found at {train_output_fname}."
-        result = utils.torch_load(train_output_fname)
+        result = eu.torch_load(train_output_fname)
 
     def check_done() -> np.ndarray:
         return ~np.array(get_result_attr(result, "metrics") == None)
@@ -372,7 +362,7 @@ def run_testing_experiments(
 
     # SECTION: Validate that the testing dataset shape is constant across the sweep
     for ds_info in INFO_DICT.values():
-        shapes = utils.stack_tensor_arr(utils.multi_map(
+        shapes = eu.stack_tensor_arr(eu.multi_map(
             lambda dataset: torch.IntTensor([*dataset.shape, ]),
             ds_info["dataset"].values, dtype=tuple
         ))
@@ -391,26 +381,25 @@ def run_testing_experiments(
             done = ~np.array(get_result_attr(result, "metrics") == None)
             print(f"Computing metrics for experiment {done.sum().item()}/{done.size}")
 
-            # DONE: Set up experiment hyperparameters
-            _populate_values(EXPERIMENT_HP)
-
             # DONE: Set up metric information
             reference_module, stacked_modules = result.get(experiment_dict_index, "learned_kfs")
             reference_module.eval()
 
             INFO = TEST_INFO.take(experiment_dict_index)
-            exclusive = Namespace(info=Namespace(test=INFO), reference_module=reference_module)
+            exclusive = SimpleNamespace(info=SimpleNamespace(test=INFO), reference_module=reference_module)
 
             # DONE: Compute testing metrics
             metric_cache = {}
-            metrics: set = utils.rgetattr(HP, "experiment.metrics.testing", {
-                "nl", "al", "il", "neil"
-            } - utils.rgetattr(HP, "experiment.ignore_metrics.testing", set()))
+            metrics: set = HP.experiment.metrics.testing
+            if metrics is None:
+                metrics = {
+                    "nl", "al", "il", "neil"
+                } - (HP.experiment.ignore_metrics.testing or set())
 
             metric_result, metric_shape = {}, (
                 *INFO.dataset.shape,
                 *EXPERIMENT_HP.experiment.model_shape,
-                utils.rgetattr(EXPERIMENT_HP, f"dataset.n_systems.{TESTING_DATASET_TYPE}")
+                EXPERIMENT_HP.dataset.n_systems.for_split(TESTING_DATASET_TYPE)
             )
             metric_vars = exclusive, (reference_module, stacked_modules,),
             for m in metrics:
@@ -424,7 +413,7 @@ def run_testing_experiments(
                     # Per-metric resilience boundary: a single failing metric should
                     # not abort an otherwise-successful sweep.
                     print(f"WARNING: testing metric {m!r} failed and was skipped:\n{traceback.format_exc()}")
-            metric_result["output"] = utils.stack_tensor_arr(Metric.compute(metric_vars, "test", metric_cache))
+            metric_result["output"] = eu.stack_tensor_arr(Metric.compute(metric_vars, "test", metric_cache))
             metric_result = TensorDict(metric_result, batch_size=metric_shape)
             result.set(experiment_dict_index, metrics=metric_result)
 
@@ -435,7 +424,7 @@ def run_testing_experiments(
                     force=(done.sum().item() + 1 == done.size),
                 )
 
-            utils.empty_cache()
+            eu.empty_cache()
             counter += 1
 
     # SECTION: Save relevant information
@@ -453,15 +442,18 @@ def get_result_attr(r: ResultGrid, attr: str) -> np.ndarray[Any]:
     return r.field(attr)
 
 
-def get_metric_namespace_from_result(r: ResultGrid) -> Namespace:
-    result = Namespace()
-    for k, v in utils.stack_tensor_arr(
+def get_metric_namespace_from_result(r: ResultGrid) -> SimpleNamespace:
+    result = SimpleNamespace()
+    for k, v in eu.stack_tensor_arr(
             get_result_attr(r, "metrics")
     ).items(include_nested=True, leaves_only=True):
-        if isinstance(k, str):
-            setattr(result, k, v)
-        else:
-            utils.rsetattr(result, ".".join(k), v)
+        keys = (k,) if isinstance(k, str) else tuple(k)
+        node = result
+        for seg in keys[:-1]:
+            if not hasattr(node, seg):
+                setattr(node, seg, SimpleNamespace())
+            node = getattr(node, seg)
+        setattr(node, keys[-1], v)
     return result
 
 

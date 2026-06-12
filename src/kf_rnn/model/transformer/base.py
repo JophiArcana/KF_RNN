@@ -1,14 +1,20 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
 
 from kf_rnn.model.base import Predictor, Controller
+from kf_rnn.infrastructure.config.schema import controller_dims
 
 
 class TransformerPredictor(Predictor):
-    def __init__(self, modelArgs: Namespace, core: PreTrainedModel, S_D: int):
+    @dataclass
+    class Config(Predictor.Config):
+        adapter: bool = False
+        bias: bool = True
+
+    def __init__(self, modelArgs: "TransformerPredictor.Config", core: PreTrainedModel, S_D: int):
         Predictor.__init__(self, modelArgs)
         self.core = core
         self.S_D = S_D
@@ -25,7 +31,7 @@ class TransformerPredictor(Predictor):
 
         self.input_in = nn.ParameterDict({
             k: nn.Parameter(torch.zeros((self.S_D, d)))                             # [S_D x I_D?]
-            for k, d in vars(self.problem_shape.controller).items()
+            for k, d in controller_dims(self.problem_shape).items()
         })
         for v in self.input_in.values():
             nn.init.kaiming_normal_(v)
@@ -82,12 +88,12 @@ class TransformerPredictor(Predictor):
 
 
 class TransformerController(Controller, TransformerPredictor):
-    def __init__(self, modelArgs: Namespace, core: PreTrainedModel, S_D: int):
+    def __init__(self, modelArgs: "TransformerController.Config", core: PreTrainedModel, S_D: int):
         TransformerPredictor.__init__(self, modelArgs, core, S_D)
 
         self.input_out = nn.ParameterDict({
             k: nn.Parameter(torch.zeros((d, self.S_D)))
-            for k, d in vars(self.problem_shape.controller).items()
+            for k, d in controller_dims(self.problem_shape).items()
         })
 
     def embedding_to_output(self, embedding: dict[str, torch.Tensor]) -> dict[str, dict[str, torch.Tensor]]:

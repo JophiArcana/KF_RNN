@@ -1,5 +1,6 @@
 #%%
 from kf_rnn.infrastructure import loader
+from kf_rnn.infrastructure.config import MetricsConfig
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.model.convolutional import *
 from kf_rnn.model.sequential import *
@@ -11,35 +12,28 @@ if __name__ == "__main__":
     output_fname = "result"
 
 
-    system2, args = loader.load_system_and_args("2dim_scalar_system_matrices")
-    args.model.S_D = args.system.S_D
+    system2, cfg = loader.load_system_and_args("2dim_scalar_system_matrices")
 
-    args.training.sampling.batch_size = 64
-    args.training.sampling.subsequence_length = 32
+    cfg.training.sampling.batch_size = 64
+    cfg.training.sampling.subsequence_length = 32
 
-    # args.train.optimizer.type = "LBFGS"
-    # args.train.optimizer.max_lr = 1.0
-
-    # del args.train.scheduler.warmup_duration
-    args.training.scheduler.epochs = 2000
+    cfg.training.scheduler.epochs = 2000
 
 
-    args.experiment.exp_name = base_exp_name
-    args.experiment.ignore_metrics = {"impulse_target"}
-    # args.experiment.metrics = {"validation_analytical"}
+    cfg.experiment.exp_name = base_exp_name
+    cfg.experiment.ignore_metrics = MetricsConfig(training={"impulse_target"})
 
     configurations = [
         ("model", {
-            # "model.model": [CnnPredictor, CnnPredictorLeastSquares]
-            "model.model": [CnnPredictorLeastSquares]
+            "model": [CnnLeastSquaresPredictor.Config(ir_length=cfg.system.S_D)]
         }),
         ("total_trace_length", {
-            "dataset.train.total_sequence_length": [100, 200, 500, 1000, 2000, 5000, 10000]
+            "dataset.total_sequence_length.train": [100, 200, 500, 1000, 2000, 5000, 10000]
         })
     ]
 
     result, systems, dataset = run_experiments(
-        args, configurations, {
+        cfg, configurations, {
             "dir": output_dir,
             "fname": output_fname
         }, system2, save_experiment=False

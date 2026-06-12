@@ -1,6 +1,6 @@
 import os
 import sys
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import *
 
 import einops
@@ -16,8 +16,11 @@ from transformers import (
     Mamba2Config,
 )
 
-from kf_rnn.infrastructure import loader
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import (
+    EnvironmentShape, ExperimentConfig, MetricsConfig, OptimizerConfig,
+    ProblemShape, SamplingConfig, SchedulerConfig, SystemConfig, copy_config,
+)
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.infrastructure.settings import DEVICE, OUTPUT_PATH
 from kf_rnn.model.convolutional import CnnLeastSquaresPredictor
@@ -39,12 +42,9 @@ if __name__ == "__main__":
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
     S_D, O_D = 16, 8,
-    SHP = Namespace(
-        distribution=dist, S_D=S_D,
-        problem_shape=Namespace(
-            environment=Namespace(observation=O_D,),
-            controller=Namespace()
-        ), auxiliary=Namespace()
+    problem_shape = ProblemShape(
+        environment=EnvironmentShape(observation=O_D),
+        controller={},
     )
     
     context_length = 500
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     
     save_file = f"{OUTPUT_PATH}/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
-        save = utils.torch_load(save_file)
+        save = eu.torch_load(save_file)
     
         systems, dataset, result_transformer, result_cnn, result_rnn = map(vars(save).__getitem__, (
             "systems",
@@ -71,7 +71,10 @@ if __name__ == "__main__":
         """ Transformer experiment """
         exp_name_transformer = "CDCReconstruction_transformer"
     
-        ARGS_TRANSFORMER = loader.generate_args(SHP)
+        ARGS_TRANSFORMER = ExperimentConfig(
+            problem=problem_shape,
+            system=SystemConfig(S_D=S_D),
+        )
     
         # SECTION: Transformer architecture hyperparameters
         d_embed = 256
@@ -80,8 +83,7 @@ if __name__ == "__main__":
         mlp_ratio = 4
         d_inner = mlp_ratio * d_embed
     
-        ARGS_TRANSFORMER.model.bias = False
-        ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
+        gpt2_config = GPT2Config(
             n_positions=context_length,
             n_embd=d_embed,
             n_layer=n_layer,
@@ -89,7 +91,7 @@ if __name__ == "__main__":
             n_inner=d_inner,
             resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
         )
-        ARGS_TRANSFORMER.model.transformerxl = TransfoXLConfig(
+        transformerxl_config = TransfoXLConfig(
             d_model=d_embed,
             d_embed=d_embed,
             n_layer=n_layer,
@@ -98,14 +100,14 @@ if __name__ == "__main__":
             d_inner=d_inner,
             dropout=0.0,
         )
-        ARGS_TRANSFORMER.model.dinov2 = Dinov2Config(
+        dinov2_config = Dinov2Config(
             hidden_size=d_embed,
             num_hidden_layers=n_layer,
             num_attention_heads=n_head,
             mlp_ratio=mlp_ratio,
         )
         mamba_hidden_size, n_mamba_head, mamba_expand = O_D, O_D, 1
-        ARGS_TRANSFORMER.model.mamba = Mamba2Config(
+        mamba_config = Mamba2Config(
             state_size=512,
             hidden_size=mamba_hidden_size,
             num_hidden_layers=n_layer,
@@ -122,17 +124,17 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
 
         # SECTION: Training hyperparameters
-        ARGS_TRANSFORMER.training.sampling = Namespace(
+        ARGS_TRANSFORMER.training.sampling = SamplingConfig(
             method=None, # "subsequence_padded",
             subsequence_length=None, # context_length,
             batch_size=64,
         )
-        ARGS_TRANSFORMER.training.optimizer = Namespace(
+        ARGS_TRANSFORMER.training.optimizer = OptimizerConfig(
             type="AdamW",
             max_lr=3e-4, min_lr=1e-6,
             weight_decay=1e-2, momentum=0.9,
         )
-        ARGS_TRANSFORMER.training.scheduler = Namespace(
+        ARGS_TRANSFORMER.training.scheduler = SchedulerConfig(
             type="exponential",
             epochs=100, lr_decay=1.0,
         )
@@ -140,20 +142,17 @@ if __name__ == "__main__":
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-        ARGS_TRANSFORMER.experiment.metrics = Namespace(training={
+        ARGS_TRANSFORMER.experiment.metrics = MetricsConfig(training={
             # "noiseless_overfit",
             "noiseless_validation",
         }) # {"validation"}
     
         configurations_transformer = [
             ("model", {
-                # "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor,],
-                # "model.model": [GPT2AssociativeInContextPredictor, Dinov2AssociativeInContextPredictor,],
-                # "model.model": [GPT2InContextPredictor, GPT2AssociativeInContextPredictor,],
-                "model": {
-                    "model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
-                    "adapter": [True, True,],
-                },
+                "model": [
+                    GPT2InContextPredictor.Config(gpt2=gpt2_config, adapter=True, bias=False),
+                    Mamba2InContextPredictor.Config(config=mamba_config, adapter=True, bias=False),
+                ],
                 "training": {
                     # "sampling.batch_size": [32, 32,],
                     "optimizer.max_lr": [3e-4, 3e-4,],
@@ -184,7 +183,7 @@ if __name__ == "__main__":
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/training/systems.pt",
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/testing/systems.pt",
             ))):
-                baseline_systems = utils.multi_map(
+                baseline_systems = eu.multi_map(
                     lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
                     systems, dtype=LTISystem,
                 )
@@ -199,7 +198,7 @@ if __name__ == "__main__":
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/testing/dataset.pt",
             ))):
-                baseline_dataset = utils.multi_map(lambda dataset_: dataset_.permute(2, 3, 0, 1, 4), dataset, dtype=object)
+                baseline_dataset = eu.multi_map(lambda dataset_: dataset_.permute(2, 3, 0, 1, 4), dataset, dtype=object)
                 torch.save({
                     "train": baseline_dataset,
                     "valid": baseline_dataset,
@@ -211,7 +210,10 @@ if __name__ == "__main__":
     
     
         """ CNN Experiment """
-        ARGS_BASELINE_CNN = loader.generate_args(SHP)
+        ARGS_BASELINE_CNN = ExperimentConfig(
+            problem=problem_shape,
+            system=SystemConfig(S_D=S_D, distribution=dist),
+        )
 
         ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
         ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
@@ -221,13 +223,12 @@ if __name__ == "__main__":
 
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
         ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
-        ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
+        ARGS_BASELINE_CNN.experiment.metrics = MetricsConfig(training={"validation_analytical"})
     
         # SECTION: Make a copy for RNN args after setting shared parameters
-        ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
+        ARGS_BASELINE_RNN = copy_config(ARGS_BASELINE_CNN)
     
         # SECTION: Set CNN exclusive hyperparameters
-        ARGS_BASELINE_CNN.model.ridge = 1.0
         ARGS_BASELINE_CNN.experiment.exp_name = exp_name_cnn
     
         configurations_cnn = [
@@ -235,7 +236,7 @@ if __name__ == "__main__":
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [CnnLeastSquaresPredictor] * (context_length - 1),
+                "model": [ZeroPredictor.Config()] + [CnnLeastSquaresPredictor.Config(ridge=1.0)] * (context_length - 1),
                 "dataset.total_sequence_length.train": [*range(context_length),],
             })
         ]
@@ -251,20 +252,17 @@ if __name__ == "__main__":
 
         """ RNN Experiment """
         # SECTION: Set RNN exclusive hyperparameters
-        ARGS_BASELINE_RNN.model.S_D = SHP.S_D
-        ARGS_BASELINE_RNN.model.initial_state_scale = 1.0
-
-        ARGS_BASELINE_RNN.training.sampling = Namespace(
+        ARGS_BASELINE_RNN.training.sampling = SamplingConfig(
             method=None, # "subsequence_padded",
             subsequence_length=None, # context_length,
             batch_size=None, # 64,
         )
-        ARGS_BASELINE_RNN.training.optimizer = Namespace(
+        ARGS_BASELINE_RNN.training.optimizer = OptimizerConfig(
             type="SGD",
             max_lr=1e-3, min_lr=1e-7,
             weight_decay=0.0, momentum=0.9,
         )
-        ARGS_BASELINE_RNN.training.scheduler = Namespace(
+        ARGS_BASELINE_RNN.training.scheduler = SchedulerConfig(
             # type="reduce_on_plateau",
             # factor=0.5, patience=10, warmup_duration=0,
             type="exponential",
@@ -276,7 +274,9 @@ if __name__ == "__main__":
     
         configurations_rnn = [
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [RnnKalmanInitializedPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
+                "model": [ZeroPredictor.Config()] + [
+                    RnnKalmanInitializedPredictor.Config(S_D=S_D, initial_state_scale=1.0)
+                ] * (eu.ceildiv(context_length, rnn_increment) - 1),
                 "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
             })
         ]
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         )
     
         # SECTION: Save the collected experiment results
-        save = Namespace(
+        save = SimpleNamespace(
             systems=systems,
             dataset=dataset,
             result_transformer=result_transformer,
@@ -314,7 +314,7 @@ if __name__ == "__main__":
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
         env = systems.environment
         reducible_error = (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
-        irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
+        irreducible_error = eu.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
         return reducible_error + irreducible_error
     
     with torch.set_grad_enabled(False):
@@ -355,7 +355,7 @@ if __name__ == "__main__":
     
     
         rnn_indices = torch.tensor(rnn_sequence_lengths)
-        padded_rnn_output = torch.zeros((n_test_systems, n_test_traces, context_length, SHP.problem_shape.environment.observation))
+        padded_rnn_output = torch.zeros((n_test_systems, n_test_traces, context_length, O_D))
         padded_rnn_output[:, :, rnn_indices] = rnn_output
         # -> [n_test_systems x n_test_traces x context_length]
         rnn_l = loss(padded_rnn_output)[:, :, rnn_indices]

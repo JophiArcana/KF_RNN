@@ -1,17 +1,17 @@
-from argparse import Namespace
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.discrete_are import solve_discrete_are
+import ecliseutils as eu
+from ecliseutils.are import solve_discrete_are
 from kf_rnn.system.module_group import ModuleGroup
+from kf_rnn.infrastructure.config.schema import ProblemShape, SystemSettings, controller_dims
 
 
 class EnvironmentGroup(ModuleGroup):
-    def __init__(self, problem_shape: Namespace, group_shape: tuple[int, ...]):
+    def __init__(self, problem_shape: ProblemShape, group_shape: tuple[int, ...]):
         ModuleGroup.__init__(self, group_shape)
         self.problem_shape = problem_shape
 
@@ -30,7 +30,7 @@ class EnvironmentGroup(ModuleGroup):
 
 
 class LTIEnvironment(EnvironmentGroup):
-    def __init__(self, problem_shape: Namespace, params: TensorDict, initial_state_scale: float, settings: Namespace,):
+    def __init__(self, problem_shape: ProblemShape, params: TensorDict, initial_state_scale: float, settings: SystemSettings,):
         EnvironmentGroup.__init__(self, problem_shape, params.shape)
 
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V",):
@@ -41,7 +41,7 @@ class LTIEnvironment(EnvironmentGroup):
 
         self.B = nn.ParameterDict({
             k: params["B", k]
-            for k in vars(self.problem_shape.controller)
+            for k in controller_dims(self.problem_shape)
         })
 
         # if not torch.all(torch.linalg.eigvals(self.F).abs() < 1 + 1e-5):
@@ -69,7 +69,7 @@ class LTIEnvironment(EnvironmentGroup):
             # rather than forming an explicit inverse for numerical stability.
             PHt = S_state_inf_intermediate @ self.H.mT                                                                  # [N... x S_D x O_D]
             self.register_buffer("K", torch.linalg.solve(self.S_prediction_err_inf, PHt.mT).mT)                        # [N... x S_D x O_D]
-            self.register_buffer("irreducible_loss", utils.batch_trace(self.S_prediction_err_inf))                      # [N...]
+            self.register_buffer("irreducible_loss", eu.batch_trace(self.S_prediction_err_inf))                      # [N...]
 
         self.initial_state_scale = initial_state_scale
 
@@ -80,7 +80,7 @@ class LTIEnvironment(EnvironmentGroup):
         w = torch.randn((*self.group_shape, batch_size, self.S_D)) @ self.sqrt_S_W.mT                               # [N... x B x S_D]
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
-        x = self.initial_state_scale * torch.randn((*self.group_shape, batch_size, self.S_D), requires_grad=True) @ utils.sqrtm(self.S_state_inf).mT    # [N... x B x S_D]
+        x = self.initial_state_scale * torch.randn((*self.group_shape, batch_size, self.S_D), requires_grad=True) @ eu.sqrtm(self.S_state_inf).mT    # [N... x B x S_D]
         y = x @ self.H.mT + v
         noiseless_y = torch.zeros_like(y)
 
@@ -111,7 +111,7 @@ class LTIEnvironment(EnvironmentGroup):
         v = torch.randn((*self.group_shape, batch_size, self.O_D)) @ self.sqrt_S_V.mT                               # [N... x B x O_D]
 
         x_ = state["state"]                                                                                         # [C... x N... x B x S_D]
-        u = sum(action[ac_name] @ self.B[ac_name].mT for ac_name in vars(self.problem_shape.controller))            # [C... x N... x B x S_D]
+        u = sum(action[ac_name] @ self.B[ac_name].mT for ac_name in controller_dims(self.problem_shape))            # [C... x N... x B x S_D]
 
         x = x_ @ self.F.mT + u + w
         y = x @ self.H.mT + v
@@ -139,7 +139,7 @@ class LTIEnvironment(EnvironmentGroup):
 
 
 class LTIZeroNoiseEnvironment(LTIEnvironment):
-    def __init__(self, problem_shape: Namespace, params: TensorDict, initial_state_scale: float, settings: Namespace,):
+    def __init__(self, problem_shape: ProblemShape, params: TensorDict, initial_state_scale: float, settings: SystemSettings,):
         nn.Module.__init__(self)
         for param_name in ("F", "H", "sqrt_S_W", "sqrt_S_V",):
             if isinstance(param := params[param_name], nn.Parameter):

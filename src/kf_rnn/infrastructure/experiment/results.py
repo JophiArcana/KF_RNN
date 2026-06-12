@@ -13,8 +13,8 @@ from typing import Any
 
 import numpy as np
 
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.labeled_array import LabeledArray
+import ecliseutils as eu
+from ecliseutils.labeled_array import LabeledArray
 from kf_rnn.infrastructure.static import INFO_FIELDS, RESULT_FIELDS
 
 
@@ -92,7 +92,7 @@ class InfoGrid:
 
     def take(self, index: "OrderedDict[str, int]") -> "InfoGrid":
         return InfoGrid(**{
-            name: utils.take_from_dim_array(getattr(self, name), index)
+            name: eu.take_from_dim_array(getattr(self, name), index)
             for name in INFO_FIELDS
         })
 

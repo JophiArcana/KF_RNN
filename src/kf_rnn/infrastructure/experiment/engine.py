@@ -1,7 +1,8 @@
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config.schema import shape_leaves
 from kf_rnn.infrastructure.static import ModelPair
 from kf_rnn.model.base import Predictor
 from kf_rnn.model.copy_predictor import CopyPredictor
@@ -23,10 +24,10 @@ def error(
         if isinstance(sg, SystemGroup):
             problem_shape = sg.environment.problem_shape
             def map_fn(k: str) -> torch.Tensor:
-                return utils.rgetattr(sg.irreducible_loss, k) if hasattr(sg, "irreducible_loss") else torch.zeros(sg.group_shape)
+                return eu.rgetattr(sg.irreducible_loss, k) if hasattr(sg, "irreducible_loss") else torch.zeros(sg.group_shape)
             return TensorDict({
                 (*k.split("."),): map_fn(k)
-                for k in utils.nested_vars(problem_shape).keys()
+                for k in shape_leaves(problem_shape)
             }, batch_size=sg.group_shape)
         else:
             output_key = ("environment", "target_observation_estimation",)
@@ -41,11 +42,11 @@ def error(
     elif isinstance(model_pair, str):
         match model_pair:
             case "zero_predictor":
-                model_arr = utils.array_of(ZeroPredictor(None))
-                model_pair = utils.stack_module_arr(model_arr)
+                model_arr = eu.array_of(ZeroPredictor(None))
+                model_pair = eu.stack_module_arr(model_arr)
             case "copy_predictor":
-                model_arr = utils.array_of(CopyPredictor(None))
-                model_pair = utils.stack_module_arr(model_arr)
+                model_arr = eu.array_of(CopyPredictor(None))
+                model_pair = eu.stack_module_arr(model_arr)
             case _:
                 raise ValueError(model_pair)
 

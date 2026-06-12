@@ -1,4 +1,4 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -8,13 +8,16 @@ from kf_rnn.model.transformer.base import TransformerPredictor
 
 
 class Dinov2InContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        dinov2: Dinov2Config = None
+    def __init__(self, modelArgs: "Dinov2InContextPredictor.Config"):
         self.config: Dinov2Config = modelArgs.dinov2
         TransformerPredictor.__init__(self, modelArgs, Dinov2Model(self.config), self.config.hidden_size)
 
 
 class Dinov2AssociativeInContextPredictor(Dinov2InContextPredictor):
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "Dinov2AssociativeInContextPredictor.Config"):
         Dinov2InContextPredictor.__init__(self, modelArgs)
 
         self.cls_token = nn.Parameter(torch.randn((self.config.hidden_size,)) / (self.config.hidden_size ** 0.5))

@@ -1,16 +1,16 @@
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import Sequence
 
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.model.base import Predictor
 from kf_rnn.model.convolutional import ConvolutionalPredictor
 
 
 class CopyPredictor(Predictor):
-    def __init__(self, modelArgs: Namespace = None):
+    def __init__(self, modelArgs: "CopyPredictor.Config" = None):
         # Used as an analytical baseline (instantiated with ``None`` in engine.error),
         # where no problem shape is available; only initialize the shape-bearing base
         # when real model args are supplied.
@@ -23,8 +23,8 @@ class CopyPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
-        K = utils.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
+        K = eu.complex(systems["environment", "K"])                                                  # [B... x S_D x O_D]
         S_D, O_D = K.shape[-2:]
 
         shape = systems.shape if kfs is None else kfs.shape

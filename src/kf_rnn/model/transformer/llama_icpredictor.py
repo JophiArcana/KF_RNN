@@ -1,4 +1,4 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -8,13 +8,16 @@ from kf_rnn.model.transformer.base import TransformerPredictor
 
 
 class LlamaInContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        llama: LlamaConfig = None
+    def __init__(self, modelArgs: "LlamaInContextPredictor.Config"):
         self.config: LlamaConfig = modelArgs.llama
         TransformerPredictor.__init__(self, modelArgs, LlamaForCausalLM(self.config), self.config.hidden_size)
 
 
 class LlamaAssociativeInContextPredictor(LlamaInContextPredictor):
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "LlamaAssociativeInContextPredictor.Config"):
         LlamaInContextPredictor.__init__(self, modelArgs)
 
         self.cls_token = nn.Parameter(torch.randn((self.config.hidden_size,)) / (self.config.hidden_size ** 0.5))

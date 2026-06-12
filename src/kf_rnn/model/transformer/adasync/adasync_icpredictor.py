@@ -1,4 +1,4 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 
@@ -7,7 +7,10 @@ from .modeling_adasync import AdaSyncSSMConfig, AdaSyncSSMModel
 
 
 class AdaSyncSSMInContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        adasync: AdaSyncSSMConfig = None
+    def __init__(self, modelArgs: "AdaSyncSSMInContextPredictor.Config"):
         self.config: AdaSyncSSMConfig = modelArgs.adasync
         TransformerPredictor.__init__(self, modelArgs, AdaSyncSSMModel(self.config), self.config.hidden_size)
 

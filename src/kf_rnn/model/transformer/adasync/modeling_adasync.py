@@ -35,8 +35,8 @@ from transformers.utils import (
 )
 
 from .configuration_adasync import AdaSyncSSMConfig
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.fast_conv_scan import conv_scan
+import ecliseutils as eu
+from ecliseutils.fast_conv_scan import conv_scan
 
 
 logger = logging.get_logger(__name__)
@@ -485,7 +485,7 @@ class AdaSyncSSMModel(AdaSyncSSMPreTrainedModel):
         else:
             cache_params = None
 
-        hidden_states = utils.complex(inputs_embeds)
+        hidden_states = eu.complex(inputs_embeds)
         all_hidden_states = () if output_hidden_states else None
         for mixer_block in self.layers:
             hidden_states = mixer_block(

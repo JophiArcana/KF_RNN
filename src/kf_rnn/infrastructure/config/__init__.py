@@ -1,57 +1,60 @@
 """Typed configuration layer for KF_RNN experiments.
 
-This package introduces dataclass-backed (OmegaConf-compatible) schemas that
-describe the experiment hyperparameter tree, plus a bridge to/from the
-``argparse.Namespace`` representation that the rest of the experiment stack
-still consumes. The schemas give type-checking, validation, and serialization
-(via OmegaConf) while the bridge keeps the existing pipeline runnable.
-
-Key entry points:
-    - ``ExperimentConfig`` and friends in ``schema``: the typed config tree.
-    - ``config_to_namespace`` in ``bridge``.
-    - ``register_configs`` in ``store``: registers schemas with Hydra's
-      ConfigStore for ``_target_`` instantiation and CLI composition.
+A single dataclass representation (``ExperimentConfig``) flows from authoring
+(scripts construct it in Python) through sweeping (the engine copies and
+overrides it per cell) to serialization (``config_to_jsonable``). Per-model
+hyperparameters live on each Predictor's own nested ``Config`` dataclass (see
+``kf_rnn.model.base.Observer``), so the schema here stays model-agnostic.
 """
 from kf_rnn.infrastructure.config.schema import (
+    SPLIT_NAMES,
+    Split,
     EnvironmentShape,
     ProblemShape,
-    SplitConfig,
+    SystemAuxiliary,
+    SystemSettings,
+    SystemConfig,
     DataConfig,
     SamplingConfig,
     OptimizerConfig,
     SchedulerConfig,
     TrainConfig,
-    EvalConfig,
+    MetricsConfig,
     RuntimeConfig,
-    SystemConfig,
-    ModelConfig,
     ExperimentConfig,
+    controller_dims,
+    shape_leaves,
+    propagate_problem_shape,
+    copy_config,
+    resolve_splits,
+    config_leaves,
+    config_to_jsonable,
+    validate_sweep_targets,
 )
-from kf_rnn.infrastructure.config.bridge import (
-    config_to_namespace,
-    split_for,
-)
-from kf_rnn.infrastructure.config.store import register_configs, instantiate_target
-from kf_rnn.infrastructure.config.omega import validate_sweep_targets
 
 
 __all__ = [
+    "SPLIT_NAMES",
+    "Split",
     "EnvironmentShape",
     "ProblemShape",
-    "SplitConfig",
+    "SystemAuxiliary",
+    "SystemSettings",
+    "SystemConfig",
     "DataConfig",
     "SamplingConfig",
     "OptimizerConfig",
     "SchedulerConfig",
     "TrainConfig",
-    "EvalConfig",
+    "MetricsConfig",
     "RuntimeConfig",
-    "SystemConfig",
-    "ModelConfig",
     "ExperimentConfig",
-    "config_to_namespace",
-    "split_for",
-    "register_configs",
-    "instantiate_target",
+    "controller_dims",
+    "shape_leaves",
+    "propagate_problem_shape",
+    "copy_config",
+    "resolve_splits",
+    "config_leaves",
+    "config_to_jsonable",
     "validate_sweep_targets",
 ]

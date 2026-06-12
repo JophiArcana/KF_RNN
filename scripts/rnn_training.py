@@ -3,14 +3,18 @@ import itertools
 import os
 import shutil
 import sys
-from argparse import Namespace
 
 import tensordict.utils
 import torch
 from matplotlib import pyplot as plt
 
-from kf_rnn.infrastructure import loader, utils
-from kf_rnn.infrastructure.labeled_array import LabeledArray
+from kf_rnn.infrastructure import loader
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import (
+    EnvironmentShape, ExperimentConfig, MetricsConfig, OptimizerConfig,
+    ProblemShape, SamplingConfig, SchedulerConfig, SystemConfig, copy_config,
+)
+from ecliseutils.labeled_array import LabeledArray
 from kf_rnn.infrastructure.settings import DEVICE, OUTPUT_PATH
 from kf_rnn.infrastructure.static import *
 from kf_rnn.infrastructure.experiment import *
@@ -32,12 +36,12 @@ if __name__ == "__main__":
     rnn_increment = 1
 
     S_D, O_D = 10, 5
-    SHP = Namespace(S_D=S_D, problem_shape=Namespace(
-        environment=Namespace(observation=O_D),
-        controller=Namespace()
-    ))
+    problem_shape = ProblemShape(
+        environment=EnvironmentShape(observation=O_D),
+        controller={},
+    )
     exp_name_exemplar = "CDCReconstruction_rnn"
-    result_exemplar, systems, _ = utils.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_exemplar}/testing/result.pt")
+    result_exemplar, systems, _ = eu.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_exemplar}/testing/result.pt")
 
 
     """ Chaining experiment setup """
@@ -51,36 +55,37 @@ if __name__ == "__main__":
             )
 
     # SECTION: Experiment hyperparameters
-    ARGS_CHAIN_INITIALIZATION = loader.generate_args(SHP)
-    ARGS_CHAIN_INITIALIZATION.model.model = RnnPredictor
-    ARGS_CHAIN_INITIALIZATION.model.S_D = S_D
+    ARGS_CHAIN_INITIALIZATION = ExperimentConfig(
+        problem=problem_shape,
+        system=SystemConfig(S_D=S_D),
+        model=RnnPredictor.Config(S_D=S_D),
+    )
 
     ARGS_CHAIN_INITIALIZATION.dataset.n_systems.reset(train=1)
     ARGS_CHAIN_INITIALIZATION.dataset.n_traces.reset(train=1)
     ARGS_CHAIN_INITIALIZATION.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
 
-    ARGS_CHAIN_INITIALIZATION.training.sampling = Namespace(method="full")
-    ARGS_CHAIN_INITIALIZATION.training.optimizer = Namespace(
+    ARGS_CHAIN_INITIALIZATION.training.sampling = SamplingConfig(method="full", batch_size=None, subsequence_length=None)
+    ARGS_CHAIN_INITIALIZATION.training.optimizer = OptimizerConfig(
         type="SGD",
         # min_lr=0.0,
         weight_decay=0.0, momentum=0.9
     )
-    ARGS_CHAIN_INITIALIZATION.training.scheduler = Namespace(
+    ARGS_CHAIN_INITIALIZATION.training.scheduler = SchedulerConfig(
         # type="reduce_on_plateau",
         # factor=0.5, patience=10, warmup_duration=0,
         type="exponential",
         lr_decay=0.98, warmup_duration=0,
         epochs=200, gradient_cutoff=1e-6,
     )
-    ARGS_CHAIN_INITIALIZATION.training.iterations_per_epoch = 200
 
     ARGS_CHAIN_INITIALIZATION.experiment.n_experiments = n_test_systems
     ARGS_CHAIN_INITIALIZATION.experiment.ensemble_size = n_test_traces
-    ARGS_CHAIN_INITIALIZATION.experiment.metrics = Namespace(training={"validation_analytical"})
+    ARGS_CHAIN_INITIALIZATION.experiment.metrics = MetricsConfig(training={"validation_analytical"})
     ARGS_CHAIN_INITIALIZATION.experiment.exp_name = exp_name_chain_initialization
     ARGS_CHAIN_INITIALIZATION.experiment.backup_frequency = 50
 
-    # al_exemplar = get_metric_namespace_from_result(result_exemplar).al.reshape(utils.ceildiv(context_length, rnn_increment), n_test_systems, n_test_traces, -1)
+    # al_exemplar = get_metric_namespace_from_result(result_exemplar).al.reshape(eu.ceildiv(context_length, rnn_increment), n_test_systems, n_test_traces, -1)
     # plt.plot(al_exemplar.mean(dim=-1).median(dim=-1).values.mean(dim=-1).cpu(), label="median")
     # plt.plot(al_exemplar.mean(dim=[-3, -2, -1]).cpu(), label="mean")
     # plt.legend()
@@ -94,28 +99,28 @@ if __name__ == "__main__":
     output_fname_formatter = "result_{0}"
 
     s = 1.0
-    min_eqs = int(s * utils.ceildiv(S_D * (S_D + 2 * O_D), O_D))
+    min_eqs = int(s * eu.ceildiv(S_D * (S_D + 2 * O_D), O_D))
     # Slice the exemplar result grid along its leading sweep dim into per-context-length
     # sub-grids (positional 0-indexing): include both the zero-predictor and the minimum
     # number of observations to fully constrain the RNN parameters.
     _lead_dim = result_exemplar.dims[0]
     results_chain_initialization = [
         ResultGrid(**{
-            f: utils.take_from_dim_array(getattr(result_exemplar, f), {_lead_dim: i})
+            f: eu.take_from_dim_array(getattr(result_exemplar, f), {_lead_dim: i})
             for f in RESULT_FIELDS
         })
-        for i in range(utils.ceildiv(min_eqs, rnn_increment))
+        for i in range(eu.ceildiv(min_eqs, rnn_increment))
     ]
 
     scaling_lr, scaling_lr_decay = 1e-5, 0.97
-    running_context_length = rnn_increment * (utils.ceildiv(min_eqs, rnn_increment) + 1)
+    running_context_length = rnn_increment * (eu.ceildiv(min_eqs, rnn_increment) + 1)
     while running_context_length < context_length:
         print(f"Sequence length {running_context_length} target: {al_exemplar[running_context_length - 1].item()} -> {al_exemplar[running_context_length].item()} " + "-" * 120)
-        args = utils.deepcopy_namespace(ARGS_CHAIN_INITIALIZATION)
+        args = copy_config(ARGS_CHAIN_INITIALIZATION)
         args.dataset.total_sequence_length.train = running_context_length
         args.training.optimizer.max_lr = args.training.optimizer.min_lr = scaling_lr
 
-        initialization = utils.multi_map(
+        initialization = eu.multi_map(
             lambda pair: pair[1], LabeledArray(
                 get_result_attr(results_chain_initialization[-1], "learned_kfs"),
                 results_chain_initialization[-1].dims
@@ -137,13 +142,13 @@ if __name__ == "__main__":
 
     """ Result processing """
     print("Result processing" + "\n" + "-" * 120)
-    systems = LTISystem(SHP.problem_shape, systems.values[()].td().squeeze(0))
+    systems = LTISystem(ARGS_CHAIN_INITIALIZATION.system, systems.values[()].td().squeeze(0))
     dataset = dataset.values[()].squeeze(1).squeeze(0)
 
     output_name = "output.environment.observation"
-    analytical_initialization_output = utils.rgetattr(get_metric_namespace_from_result(result_analytical_initialization), output_name)
+    analytical_initialization_output = eu.rgetattr(get_metric_namespace_from_result(result_analytical_initialization), output_name)
     chain_initialization_output = torch.stack([
-        utils.rgetattr(get_metric_namespace_from_result(r), output_name)
+        eu.rgetattr(get_metric_namespace_from_result(r), output_name)
         for r in results_chain_initialization
     ], dim=0)
 
@@ -159,9 +164,9 @@ if __name__ == "__main__":
         return (dataset["environment", "observation"] - observation_estimation).norm(dim=-1) ** 2
 
     with torch.set_grad_enabled(False):
-        zero_predictor_al = utils.batch_trace(systems.S_observation_inf)
+        zero_predictor_al = eu.batch_trace(systems.S_observation_inf)
         zero_predictor_l = loss(torch.zeros_like(dataset["environment", "observation"]))
-        il = utils.batch_trace(systems.S_prediction_err_inf)
+        il = eu.batch_trace(systems.S_prediction_err_inf)
         eil = loss(dataset["target"])
 
 
@@ -198,7 +203,7 @@ if __name__ == "__main__":
 
 
         rnn_indices = torch.tensor(rnn_sequence_lengths)
-        padded_rnn_output = torch.zeros((n_test_systems, n_test_traces, context_length, SHP.O_D))
+        padded_rnn_output = torch.zeros((n_test_systems, n_test_traces, context_length, O_D))
         padded_rnn_output[:, :, rnn_indices] = rnn_output
         # -> [n_test_systems x n_test_traces x context_length]
         rnn_l = loss(padded_rnn_output)[:, :, rnn_indices]

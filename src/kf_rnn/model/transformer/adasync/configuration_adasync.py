@@ -18,7 +18,7 @@ import torch
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 
 
 logger = logging.get_logger(__name__)
@@ -151,7 +151,7 @@ class AdaSyncSSMConfig(PretrainedConfig):
         self.chunk_size = chunk_size
         self.tie_word_embeddings = tie_word_embeddings
 
-        self.cdtype = utils.complex(torch.zeros(())).dtype
+        self.cdtype = eu.complex(torch.zeros(())).dtype
 
         super().__init__(
             bos_token_id=bos_token_id,

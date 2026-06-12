@@ -1,6 +1,5 @@
 import itertools
 import os
-from argparse import Namespace
 from collections import OrderedDict
 from typing import Any, Callable, Iterable, Sequence
 
@@ -8,16 +7,17 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import schema
+from kf_rnn.infrastructure.config.schema import ExperimentConfig
 from kf_rnn.infrastructure.experiment.results import InfoGrid
 from kf_rnn.infrastructure.experiment.sweep import (
-    is_dataset_param_of_type,
     is_system_param_of_type,
     is_system_nonauxiliary_param_of_type,
     support_param_targets_type,
     support_param_is_nonauxiliary_of_type,
 )
-from kf_rnn.infrastructure.labeled_array import LabeledArray, LabeledDataset
+from ecliseutils.labeled_array import LabeledArray, LabeledDataset
 from kf_rnn.infrastructure.settings import DEVICE
 from kf_rnn.infrastructure.static import (
     DATASET_SUPPORT_PARAMS,
@@ -28,39 +28,47 @@ from kf_rnn.infrastructure.static import (
 from kf_rnn.system.base import SystemGroup
 
 
-def _supports_dataset_condition(HP: Namespace, ds_type: str) -> Callable[[str], bool]:
-    train_support_names = [f"dataset.{TRAINING_DATASET_TYPES[0]}.{p}" for p in DATASET_SUPPORT_PARAMS]
-    ds_support_names = [f"dataset.{ds_type}.{p}" for p in DATASET_SUPPORT_PARAMS]
-
+def _supports_dataset_condition(HP: ExperimentConfig, ds_type: str) -> Callable[[str], bool]:
+    """Forbid sweeping over parameters that determine the shape of the ``ds_type``
+    dataset. Sweeping the *train* counterpart is allowed only when the ``ds_type``
+    split is explicitly pinned (so the swept train value never leaks into it)."""
     def condition(n: str) -> bool:
-        if n in ds_support_names:
-            return False
-        else:
-            for tsn, dsn in zip(train_support_names, ds_support_names):
-                if n == tsn:
-                    return utils.rhasattr(HP, dsn)
+        segs = n.split(".")
+        if segs[0] != "dataset" or ".".join(segs[1:-1]) not in DATASET_SUPPORT_PARAMS:
             return True
+        if segs[-1] == ds_type:
+            return False
+        if segs[-1] == TRAINING_DATASET_TYPES[0]:
+            split_cfg: schema.Split = eu.rgetattr(HP, ".".join(segs[:-1]))
+            return getattr(split_cfg, ds_type) is not None
+        return True
     return condition
 
 def _construct_dependency_dict_and_params_dataset(
-        HP: Namespace,
+        HP: ExperimentConfig,
         iterparams: list[tuple[str, dict[str, Any]]],
         assertion_conditions: Iterable[tuple[Callable[[str], bool], str]] = ()
 ) -> tuple[OrderedDict[str, tuple[int, list[str]]], LabeledDataset]:
-
-    HP.experiment.model_shape = (HP.experiment.n_experiments, HP.experiment.ensemble_size)
 
     # SECTION: Set up the hyperparameters in data structures that make if convenient to perform the iteration
     # DONE: Set up 0d NumPy arrays to preserve objects before adding iterated hyperparameters
     dependency_dict, dataset = OrderedDict(), OrderedDict()
     for param_group, params in iterparams:
-        params = utils.flatten_nested_dict(params)
+        params = eu.flatten_nested_dict(params)
         for n, v in params.items():
             for condition, message in assertion_conditions:
                 assert condition(n), message
 
             if n != "name":
-                utils.rsetattr(HP, n, v)
+                # Register the swept path on the base config so split leaves like
+                # ``distribution.test`` become visible to ``config_leaves``-based
+                # support classification (which keys off path presence, not value).
+                # Graft a single representative value rather than the whole value
+                # list: whole-branch overrides (e.g. the polymorphic ``model``
+                # config) must keep their structural type so deeper dotted paths
+                # like ``model.ir_length`` can still be registered on top of them.
+                representative = v[0] if isinstance(v, (list, tuple)) and len(v) else v
+                eu.rsetattr(HP, n, schema.copy_config(representative))
 
         # DONE: Need to pre-broadcast at some point before constructing Dataset structures or else they will do something stupid
         vs = (*map(np.array, params.values()),)
@@ -88,22 +96,43 @@ def _filter_dimensions_if_any_satisfy_condition(
     ])
 
 def _iterate_HP_with_params(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, int],
         params_dataset: LabeledDataset,
-) -> Iterable[tuple[OrderedDict[str, int], Namespace]]:
+) -> Iterable[tuple[OrderedDict[str, int], ExperimentConfig]]:
+    """Yield a fresh per-cell ``ExperimentConfig`` for each sweep index.
+
+    Each cell config is a structural copy of the base config with the swept
+    values applied functionally — no shared mutable tree. Whole-branch
+    overrides (e.g. swapping the entire ``model`` config) are applied before
+    deeper dotted overrides so the latter land on the swapped-in branch.
+    """
     for idx in itertools.product(*map(range, dimensions.values())):
         dict_idx = OrderedDict([*zip(dimensions.keys(), idx)])
-        sub_HP = utils.deepcopy_namespace(HP)
-        for n, v in params_dataset.take(indices=dict_idx).items():
-            utils.rsetattr(sub_HP, n, v.values[()])
+        sub_HP = schema.copy_config(HP)
+        overrides = sorted(
+            params_dataset.take(indices=dict_idx).items(),
+            key=lambda kv: kv[0].count("."),
+        )
+        for n, v in overrides:
+            # Only apply overrides that ``take`` reduced to a scalar for this
+            # cell: when iterating a subset of the sweep dimensions, params over
+            # un-iterated dims stay as arrays and must keep their base value
+            # (grafting an array would clobber whole-branch configs like
+            # ``model`` and break deeper paths like ``model.ir_length``).
+            if v.values.ndim != 0:
+                continue
+            # Copy applied values too: sweep-axis values (e.g. model configs)
+            # are shared across cells and must never be mutated in place.
+            eu.rsetattr(sub_HP, n, schema.copy_config(v.values[()]))
+        schema.propagate_problem_shape(sub_HP)
         yield dict_idx, sub_HP
 
 def _map_HP_with_params(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, int],
         params_dataset: LabeledDataset,
-        func: Callable[[OrderedDict[str, int], Namespace], Any],
+        func: Callable[[OrderedDict[str, int], ExperimentConfig], Any],
         dtype: type
 ) -> LabeledArray:
     result_arr = LabeledArray(np.empty([*dimensions.values()], dtype=dtype), [*dimensions.keys()])
@@ -111,20 +140,21 @@ def _map_HP_with_params(
         result_arr.put(dict_idx, func(dict_idx, sub_HP))
     return result_arr
 
-def _get_param_dimarr(
-        HP: Namespace,
+def _get_split_param_dimarr(
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: LabeledDataset,
-        param: str, dtype: type
+        param: str, ds_type: str, dtype: type
 ):
-    filter_dimensions = _filter_dimensions_if_any_satisfy_condition(dimensions, param.__eq__)
+    """Per-sweep-cell values of ``<param>.for_split(ds_type)`` (train-fallback)."""
+    filter_dimensions = _filter_dimensions_if_any_satisfy_condition(dimensions, f"{param}.{ds_type}".__eq__)
     return _map_HP_with_params(
         HP, filter_dimensions, params_dataset,
-        lambda _, sub_HP: utils.rgetattr(sub_HP, param), dtype=dtype
+        lambda _, sub_HP: eu.rgetattr(sub_HP, param).for_split(ds_type), dtype=dtype
     )
 
 def _resolve_system_params(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: LabeledDataset,
         info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
@@ -144,14 +174,14 @@ def _resolve_system_params(
         print(f"System matrices found for dataset type {ds_type}")
         return save_dict["system_params"][ds_type]
 
-    system_support_hyperparameters = utils.nested_vars(HP.system).keys()
+    system_support_hyperparameters = schema.config_leaves(HP.system).keys()
     if any(support_param_is_nonauxiliary_of_type(param, ds_type) for param in system_support_hyperparameters):
-        n_systems_arr = _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_systems.{ds_type}", dtype=int)
+        n_systems_arr = _get_split_param_dimarr(HP, dimensions, params_dataset, "dataset.n_systems", ds_type, dtype=int)
         max_n_systems = n_systems_arr.max()
 
-        def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: Namespace) -> TensorDict:
-            return utils.rgetattr(sub_HP, f"system.distribution.{ds_type}").sample_parameters(
-                utils.index_defaulting_with_attr(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
+        def sample_system_parameters_with_sub_hyperparameters(_, sub_HP: ExperimentConfig) -> TensorDict:
+            return sub_HP.system.distribution.for_split(ds_type).sample_parameters(
+                schema.resolve_splits(sub_HP.system), (HP.experiment.n_experiments, max_n_systems)
             )
 
         print(f"Sampling new system matrices for dataset type {ds_type}")
@@ -164,7 +194,7 @@ def _resolve_system_params(
         return info_dict[TRAINING_DATASET_TYPES[0]]["system_params"]
 
 def _construct_systems(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: LabeledDataset,
         ds_type: str,
@@ -177,12 +207,12 @@ def _construct_systems(
         dimensions, lambda param: is_system_param_of_type(param, ds_type)
     ))
 
-    def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: Namespace) -> SystemGroup:
-        dist = utils.rgetattr(sub_HP, f"system.distribution.{ds_type}")
-        system_params = utils.take_from_dim_array(system_params_arr, dict_idx).values[()]
+    def construct_system_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], sub_HP: ExperimentConfig) -> SystemGroup:
+        dist = sub_HP.system.distribution.for_split(ds_type)
+        system_params = eu.take_from_dim_array(system_params_arr, dict_idx).values[()]
 
-        sub_HP = utils.index_defaulting_with_attr(sub_HP, ds_type)
-        return dist.system_type(sub_HP.system, system_params)
+        system_cfg = schema.resolve_splits(sub_HP.system, ds_type)
+        return dist.system_type(system_cfg, system_params)
 
     return _map_HP_with_params(
         HP, system_dimensions, params_dataset,
@@ -190,7 +220,7 @@ def _construct_systems(
     )
 
 def _resolve_dataset(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: LabeledDataset,
         info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
@@ -209,7 +239,7 @@ def _resolve_dataset(
         print(f"Dataset found for dataset type {ds_type}")
         return save_dict["dataset"][ds_type]
 
-    dataset_support_hyperparameters = utils.nested_vars(HP.dataset).keys()
+    dataset_support_hyperparameters = schema.config_leaves(HP.dataset).keys()
     if not any(support_param_targets_type(param, ds_type) for param in (
         *system_support_hyperparameters,
         *dataset_support_hyperparameters,
@@ -220,18 +250,18 @@ def _resolve_dataset(
     print(f"Generating new dataset for dataset type {ds_type}")
     dataset_dimensions = OrderedDict([*zip(systems_arr.dims, systems_arr.shape)])
 
-    n_traces_arr, total_sequence_length_arr = utils.broadcast_dim_arrays(
-        _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.n_traces.{ds_type}", dtype=int),
-        _get_param_dimarr(HP, dimensions, params_dataset, f"dataset.total_sequence_length.{ds_type}", dtype=int)
+    n_traces_arr, total_sequence_length_arr = eu.broadcast_dim_arrays(
+        _get_split_param_dimarr(HP, dimensions, params_dataset, "dataset.n_traces", ds_type, dtype=int),
+        _get_split_param_dimarr(HP, dimensions, params_dataset, "dataset.total_sequence_length", ds_type, dtype=int)
     )
-    sequence_length_arr = utils.ceildiv(total_sequence_length_arr, n_traces_arr)
+    sequence_length_arr = eu.ceildiv(total_sequence_length_arr, n_traces_arr)
 
     max_n_traces = n_traces_arr.max()
     max_sequence_length = sequence_length_arr.max()
     max_batch_size = (HP.experiment.ensemble_size if ds_type == TRAINING_DATASET_TYPES[0] else 1) * max_n_traces
 
     def sample_dataset_with_sub_hyperparameters(dict_idx: OrderedDict[str, int], _) -> TensorDict:
-        sg = utils.take_from_dim_array(systems_arr, dict_idx).values[()]
+        sg = eu.take_from_dim_array(systems_arr, dict_idx).values[()]
         dataset = sg.generate_dataset(max_batch_size, max_sequence_length).detach()
 
         if ds_type == TRAINING_DATASET_TYPES[0]:
@@ -251,7 +281,7 @@ def _resolve_dataset(
     )
 
 def _construct_info_dict(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: LabeledDataset,
         info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
@@ -272,7 +302,7 @@ def _construct_info_dict(
     if "systems" in save_dict:
         systems = save_dict["systems"]
 
-    system_support_hyperparameters = utils.nested_vars(HP.system).keys()
+    system_support_hyperparameters = schema.config_leaves(HP.system).keys()
     system_param_dimensions = _filter_dimensions_if_any_satisfy_condition(
         dimensions, lambda param: is_system_nonauxiliary_param_of_type(param, ds_type)
     )
@@ -310,7 +340,7 @@ def _construct_info_dict(
     return result
 
 def _construct_info_dict_from_dataset_types(
-        HP: Namespace,
+        HP: ExperimentConfig,
         dimensions: OrderedDict[str, tuple[int, list[str]]],
         params_dataset: LabeledDataset,
         info_dict: OrderedDict[str, OrderedDict[str, LabeledArray]],
@@ -326,7 +356,7 @@ def _construct_info_dict_from_dataset_types(
     save_dict = {}
     if output_dir is not None:
         for attr, fname in saved_fname_dict.items():
-            save_dict[attr] = utils.torch_load(fname)
+            save_dict[attr] = eu.torch_load(fname)
             print(f"Loaded {fname} from disk.")
 
     for ds_type in dataset_types:
@@ -341,16 +371,6 @@ def _construct_info_dict_from_dataset_types(
 def _process_info_dict(ds_info: OrderedDict[str, LabeledArray]) -> InfoGrid:
     fields = OrderedDict(filter(
         lambda p: p[0] in INFO_FIELDS,
-        zip(ds_info.keys(), utils.broadcast_dim_arrays(*ds_info.values()))
+        zip(ds_info.keys(), eu.broadcast_dim_arrays(*ds_info.values()))
     ))
     return InfoGrid.from_fields(fields)
-
-def _populate_values(HP: Namespace) -> None:
-    total_sequence_length = HP.dataset.total_sequence_length.train
-    n_traces = HP.dataset.n_traces.train
-    HP.dataset.sequence_length = utils.DefaultingParameter(train=utils.ceildiv(total_sequence_length, n_traces))
-
-
-
-
-

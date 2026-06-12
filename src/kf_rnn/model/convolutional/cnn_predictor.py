@@ -1,6 +1,7 @@
 import itertools
-from argparse import Namespace
 from collections import OrderedDict
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Sequence
 
 import einops
@@ -10,26 +11,31 @@ import torch.nn as nn
 import torch.optim as optim
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.infrastructure.static import ModelPair
 from kf_rnn.model.convolutional.base import ConvolutionalPredictor
 from kf_rnn.model.least_squares_predictor import LeastSquaresPredictor
+from kf_rnn.infrastructure.config.schema import TrainConfig, controller_dims
 
 
 class CnnPredictor(ConvolutionalPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(ConvolutionalPredictor.Config):
+        ir_length: int = 1
+
+    def __init__(self, modelArgs: "CnnPredictor.Config"):
         ConvolutionalPredictor.__init__(self, modelArgs)
         self.ir_length = modelArgs.ir_length
 
         self.input_IR = nn.ParameterDict({
             k: nn.Parameter(torch.zeros((v, self.ir_length, self.O_D)))                         # [? x R x O_D]
-            for k, v in vars(self.problem_shape.controller).items()
+            for k, v in controller_dims(self.problem_shape).items()
         })
         self.observation_IR = nn.Parameter(torch.zeros((self.O_D, self.ir_length, self.O_D)))   # [O_D x R x O_D]
 
 
 class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "CnnLeastSquaresPredictor.Config"):
         CnnPredictor.__init__(self, modelArgs)
         LeastSquaresPredictor.__init__(self, modelArgs)
 
@@ -39,10 +45,10 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
     @classmethod
     def terminate_least_squares_online(
             cls,
-            THP: Namespace,
-            exclusive: Namespace,
+            THP: TrainConfig,
+            exclusive: SimpleNamespace,
             model_pair: ModelPair,
-            cache: Namespace,
+            cache: SimpleNamespace,
     ) -> bool:
         # cache.index / cache.L are created by the first train_least_squares_online call,
         # so do not terminate before that bootstrap has run.
@@ -52,10 +58,10 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
 
     def train_least_squares_online(
             self,
-            THP: Namespace,
-            exclusive: Namespace,
+            THP: TrainConfig,
+            exclusive: SimpleNamespace,
             model_pair: ModelPair,
-            cache: Namespace,
+            cache: SimpleNamespace,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         # SECTION: Setup the index dataloader, optimizer, and scheduler before running iterative training
         if not hasattr(cache, "index"):
@@ -81,7 +87,7 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
                 *map(padded_actions.__getitem__, cache.ac_names),
                 cache.padded_observations,
             ], dim=-1)                                                                          # float: [NE... x B x L x F]
-            cache.cum_lengths = [0] + np.cumsum([*map(vars(self.problem_shape.controller).__getitem__, cache.ac_names), self.O_D]).tolist()
+            cache.cum_lengths = [0] + np.cumsum([*map(controller_dims(self.problem_shape).__getitem__, cache.ac_names), self.O_D]).tolist()
 
             cache.rf = self.ir_length * cache.cum_lengths[-1]
             cache.X = torch.zeros((*cache.bsz, 0, cache.rf,))                                   # float: [NE... x 0 x RF]
@@ -107,7 +113,7 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         try:
             XTX_lI_inv = torch.inverse(cache.XTX + self.ridge * torch.eye(cache.rf))            # float: [NE... x RF x RF]
             flattened_w = XTX_lI_inv @ cache.XTy                                                # float: [NE... x RF x O_D]
-            error = utils.batch_trace(
+            error = eu.batch_trace(
                 cache.yTy + cache.XTy.mT @ (XTX_lI_inv @ cache.XTX @ XTX_lI_inv - 2 * XTX_lI_inv) @ cache.XTy
             ) / (cache.B * cache.L)                                                             # float: [NE...]
         except torch.linalg.LinAlgError:
@@ -122,7 +128,7 @@ class CnnLeastSquaresPredictor(CnnPredictor, LeastSquaresPredictor):
         weights = [w[..., lo:hi, :, :] for lo, hi in itertools.pairwise(cache.cum_lengths)]
         weights_dict = {"input_IR": dict(zip(cache.ac_names, weights[:-1])), "observation_IR": weights[-1],}
         for k, v in model_pair[1].items(include_nested=True, leaves_only=True):
-            model_pair[1][k] = utils.rgetitem(weights_dict, k if isinstance(k, str) else ".".join(k)).expand_as(v)
+            model_pair[1][k] = eu.rgetitem(weights_dict, k if isinstance(k, str) else ".".join(k)).expand_as(v)
 
         return error[None], {}
 
@@ -133,9 +139,9 @@ class CnnLeastSquaresPretrainPredictor(CnnLeastSquaresPredictor):
 
 
 class CnnAnalyticalPredictor(CnnPredictor):
-    def analytical_initialization(self, exclusive: Namespace) -> tuple[dict[str, dict[str, torch.Tensor]], torch.Tensor]:
+    def analytical_initialization(self, exclusive: SimpleNamespace) -> tuple[dict[str, dict[str, torch.Tensor]], torch.Tensor]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
-        return utils.multi_vmap(
+        return eu.multi_vmap(
             self._analytical_initialization, 2,
             randomness="different",
         )(exclusive.train_info.systems.td().to_dict())
@@ -148,22 +154,22 @@ class CnnAnalyticalPredictor(CnnPredictor):
         B = system_state_dict["environment"].get("B", {})
         S_D = F.shape[0]
 
-        powers = utils.pow_series(F @ (torch.eye(S_D) - K @ H), self.ir_length)                 # [R x S_D x S_D]
+        powers = eu.pow_series(F @ (torch.eye(S_D) - K @ H), self.ir_length)                 # [R x S_D x S_D]
         return {
             "input_IR": {
                 k: (H @ powers @ B[k]).permute(2, 0, 1)                                         # [I_D x R x O_D]
-                for k in vars(self.problem_shape.controller)
+                for k in controller_dims(self.problem_shape)
             },
             "observation_IR": (H @ powers @ (F @ K)).permute(2, 0, 1)                           # [O_D x R x O_D]
         }, torch.full((), torch.nan)
 
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "CnnAnalyticalPredictor.Config"):
         CnnPredictor.__init__(self, modelArgs)
         self._initialization_error: torch.Tensor = None
 
 
 class CnnAnalyticalLeastSquaresPredictor(CnnPredictor):
-    def newton_initialization(self, stacked_modules: TensorDict, exclusive: Namespace) -> tuple[dict[str, dict[str, torch.Tensor]], torch.Tensor]:
+    def newton_initialization(self, stacked_modules: TensorDict, exclusive: SimpleNamespace) -> tuple[dict[str, dict[str, torch.Tensor]], torch.Tensor]:
         assert exclusive.n_train_systems == 1, f"This model cannot be initialized when the number of training systems is greater than 1."
 
         # Remove parameters that do not require gradients before flattening

@@ -1,7 +1,7 @@
 #%%
 import os
 import sys
-from argparse import Namespace
+from types import SimpleNamespace
 from typing import *
 
 import numpy as np
@@ -10,8 +10,11 @@ import torch
 from matplotlib import colors
 from matplotlib import pyplot as plt
 
-from kf_rnn.infrastructure import loader
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import (
+    EnvironmentShape, ExperimentConfig, MetricsConfig, OptimizerConfig,
+    ProblemShape, SamplingConfig, SchedulerConfig, SystemConfig, copy_config,
+)
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.infrastructure.settings import DEVICE, OUTPUT_PATH
 from kf_rnn.model.convolutional import CnnLeastSquaresPredictor
@@ -24,12 +27,10 @@ if __name__ == "__main__":
     output_fname = "result"
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    SHP = Namespace(
-        distribution=dist, S_D=10,
-        problem_shape=Namespace(
-            environment=Namespace(observation=5),
-            controller=Namespace()
-        ), auxiliary=Namespace()
+    S_D, O_D = 10, 5
+    problem_shape = ProblemShape(
+        environment=EnvironmentShape(observation=O_D),
+        controller={},
     )
     
     train_context_length = 250
@@ -80,7 +81,7 @@ if __name__ == "__main__":
 
     save_file = f"{OUTPUT_PATH}/{output_dir}/cdc_reconstruction_save.pt"
     if os.path.exists(save_file):
-        save = utils.torch_load(save_file)
+        save = eu.torch_load(save_file)
 
         systems = save.systems
         dataset = save.dataset
@@ -91,7 +92,10 @@ if __name__ == "__main__":
         """ Transformer experiment """
         exp_name_transformer = "CDCReconstruction_transformer"
     
-        ARGS_TRANSFORMER = loader.generate_args(SHP)
+        ARGS_TRANSFORMER = ExperimentConfig(
+            problem=problem_shape,
+            system=SystemConfig(S_D=S_D),
+        )
     
         # SECTION: Transformer architecture hyperparameters
         d_embed = 256
@@ -99,40 +103,32 @@ if __name__ == "__main__":
         n_head = 8
         d_inner = 4 * d_embed
 
-        # from transformers import LlamaConfig
-        # from model.transformer import LlamaInContextPredictor
-        # ARGS_TRANSFORMER.model.model = LlamaInContextPredictor
-        # ARGS_TRANSFORMER.model.llama = LlamaConfig(
-        #     hidden_size=d_embed,
-        #     intermediate_size=d_inner,
-        #     num_hidden_layers=n_layer,
-        #     num_attention_heads=n_head,
-        #     max_position_embeddings=4096,
-        # )
-        
         from transformers import GPTNeoXConfig
         from kf_rnn.model.transformer import GPTNeoXInContextPredictor
-        # ARGS_TRANSFORMER.model.model = GPTNeoXInContextPredictor
-        ARGS_TRANSFORMER.model.gptneox = GPTNeoXConfig(
-            hidden_size=d_embed,
-            intermediate_size=d_inner,
-            num_hidden_layers=n_layer,
-            num_attention_heads=n_head,
-            max_position_embeddings=4096,
+        gptneox_model_config = GPTNeoXInContextPredictor.Config(
+            bias=False,
+            gptneox=GPTNeoXConfig(
+                hidden_size=d_embed,
+                intermediate_size=d_inner,
+                num_hidden_layers=n_layer,
+                num_attention_heads=n_head,
+                max_position_embeddings=4096,
+            ),
         )
         
         from transformers import XLNetConfig
         from kf_rnn.model.transformer import XLNetInContextPredictor
-        # ARGS_TRANSFORMER.model.model = XLNetInContextPredictor
-        ARGS_TRANSFORMER.model.xlnet = XLNetConfig(
-            d_model=d_embed,
-            d_embed=d_embed,
-            n_layer=n_layer,
-            n_head=n_head,
-            d_head=d_embed // n_head,
-            d_inner=d_inner,
+        xlnet_model_config = XLNetInContextPredictor.Config(
+            bias=False,
+            xlnet=XLNetConfig(
+                d_model=d_embed,
+                d_embed=d_embed,
+                n_layer=n_layer,
+                n_head=n_head,
+                d_head=d_embed // n_head,
+                d_inner=d_inner,
+            ),
         )
-        ARGS_TRANSFORMER.model.bias = False
     
         # SECTION: Dataset hyperparameters
         ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
@@ -146,31 +142,30 @@ if __name__ == "__main__":
         )
 
         # SECTION: Training hyperparameters
-        ARGS_TRANSFORMER.training.sampling = Namespace(
+        ARGS_TRANSFORMER.training.sampling = SamplingConfig(
             method="subsequence_unpadded",
             subsequence_length=train_context_length,
             batch_size=32
         )
-        ARGS_TRANSFORMER.training.optimizer = Namespace(
+        ARGS_TRANSFORMER.training.optimizer = OptimizerConfig(
             type="AdamW",
             max_lr=3e-4, min_lr=1e-6,
             weight_decay=1e-2, momentum=0.9
         )
-        ARGS_TRANSFORMER.training.scheduler = Namespace(
+        ARGS_TRANSFORMER.training.scheduler = SchedulerConfig(
             type="exponential",
             epochs=2000, lr_decay=1.0,
         )
-        ARGS_TRANSFORMER.training.iterations_per_epoch = 50
 
     
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-        ARGS_TRANSFORMER.experiment.metrics = Namespace(training={"noiseless_validation"}) # {"validation"}
+        ARGS_TRANSFORMER.experiment.metrics = MetricsConfig(training={"noiseless_validation"}) # {"validation"}
 
         configurations_transformer = [
             ("model", {
-                "model.model": [GPTNeoXInContextPredictor, XLNetInContextPredictor],
+                "model": [gptneox_model_config, xlnet_model_config],
             }),
             ("sampling", {
                 "training.sampling.method": ["subsequence_padded", "subsequence_unpadded"]
@@ -198,8 +193,8 @@ if __name__ == "__main__":
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/training/systems.pt",
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/testing/systems.pt"
             ))):
-                baseline_systems = utils.multi_map(
-                    lambda lsg: LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().permute(1, 0)),
+                baseline_systems = eu.multi_map(
+                    lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
                     systems, dtype=LTISystem
                 )
                 torch.save({
@@ -214,7 +209,7 @@ if __name__ == "__main__":
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
                 f"{OUTPUT_PATH}/{output_dir}/{_exp_name_baseline}/testing/dataset.pt"
             ))):
-                baseline_dataset = utils.multi_map(lambda dataset_: dataset_.permute(2, 3, 0, 1, 4), dataset, dtype=object)
+                baseline_dataset = eu.multi_map(lambda dataset_: dataset_.permute(2, 3, 0, 1, 4), dataset, dtype=object)
                 torch.save({
                     "train": baseline_dataset,
                     "valid": baseline_dataset
@@ -226,7 +221,10 @@ if __name__ == "__main__":
     
     
         """ CNN Experiment """
-        ARGS_BASELINE_CNN = loader.generate_args(SHP)
+        ARGS_BASELINE_CNN = ExperimentConfig(
+            problem=problem_shape,
+            system=SystemConfig(S_D=S_D, distribution=dist),
+        )
 
         ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
         ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
@@ -234,13 +232,12 @@ if __name__ == "__main__":
 
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
         ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
-        ARGS_BASELINE_CNN.experiment.metrics = Namespace(training={"validation_analytical"})
+        ARGS_BASELINE_CNN.experiment.metrics = MetricsConfig(training={"validation_analytical"})
     
         # SECTION: Make a copy for RNN args after setting shared parameters
-        ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
+        ARGS_BASELINE_RNN = copy_config(ARGS_BASELINE_CNN)
     
         # SECTION: Set CNN exclusive hyperparameters
-        ARGS_BASELINE_CNN.model.ridge = 1.0
         ARGS_BASELINE_CNN.experiment.exp_name = exp_name_cnn
         ARGS_BASELINE_CNN.experiment.backup_frequency = 500
 
@@ -249,7 +246,7 @@ if __name__ == "__main__":
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
             ("total_trace_length", {
-                "model.model": [ZeroPredictor] + [CnnLeastSquaresPredictor] * (test_context_length - 1),
+                "model": [ZeroPredictor.Config()] + [CnnLeastSquaresPredictor.Config(ridge=1.0)] * (test_context_length - 1),
                 "dataset.total_sequence_length.train": [*range(test_context_length),]
             })
         ]
@@ -287,7 +284,7 @@ if __name__ == "__main__":
         #
         # configurations_rnn = [
         #     ("total_trace_length", {
-        #         "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * (utils.ceildiv(test_context_length, rnn_increment) - 1),
+        #         "model.model": [ZeroPredictor] + [RnnPredictorPretrainAnalytical] * (eu.ceildiv(test_context_length, rnn_increment) - 1),
         #         "dataset.total_sequence_length.train": [*range(0, test_context_length, rnn_increment),]
         #     })
         # ]
@@ -300,7 +297,7 @@ if __name__ == "__main__":
         # )
     
         # SECTION: Save the collected experiment results
-        save = Namespace(
+        save = SimpleNamespace(
             systems=systems,
             dataset=dataset,
             result_transformer=result_transformer,
@@ -319,13 +316,13 @@ if __name__ == "__main__":
     """ Result processing """
     print("Result processing" + "\n" + "-" * 120)
     lsg = systems.values[()]
-    systems = LTISystem(SHP.problem_shape, lsg.auxiliary, lsg.td().squeeze(0))
+    systems = LTISystem(lsg.hyperparameters, lsg.td().squeeze(0))
     dataset = dataset.values[()][0, 0]
     
     def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
         env = systems.environment
         reducible_error = (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
-        irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
+        irreducible_error = eu.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
         return reducible_error + irreducible_error
     
     with torch.set_grad_enabled(False):

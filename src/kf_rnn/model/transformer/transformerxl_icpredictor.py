@@ -1,4 +1,4 @@
-from argparse import Namespace
+from dataclasses import dataclass
 
 import torch
 from transformers import TransfoXLConfig, TransfoXLModel
@@ -7,7 +7,10 @@ from kf_rnn.model.transformer.base import TransformerPredictor, TransformerContr
 
 
 class TransformerXLInContextPredictor(TransformerPredictor):
-    def __init__(self, modelArgs: Namespace):
+    @dataclass
+    class Config(TransformerPredictor.Config):
+        transformerxl: TransfoXLConfig = None
+    def __init__(self, modelArgs: "TransformerXLInContextPredictor.Config"):
         self.config: TransfoXLConfig = modelArgs.transformerxl
         TransformerPredictor.__init__(self, modelArgs, TransfoXLModel(self.config), self.config.d_model)
 

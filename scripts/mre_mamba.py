@@ -6,7 +6,6 @@ from kf_rnn.model.transformer import ObservableMambaConfig, ObservableMambaModel
 from transformers.models.mamba.modeling_mamba import MambaMixer
 from transformers.models.mamba2.modeling_mamba2 import Mamba2Mixer, Mamba2Config, Mamba2Model
 
-from kf_rnn.infrastructure import utils
 from kf_rnn.infrastructure.settings import *
 from kf_rnn.model.transformer.mamba.modeling_testmamba2 import TestMamba2Model, TestMamba2Mixer, TestMamba2Config
 

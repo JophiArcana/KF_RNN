@@ -1,9 +1,16 @@
+"""Project-local runtime settings for KF_RNN.
+
+Holds the KF_RNN-specific choices (device/dtype/precision, repo paths) and
+delegates the actual torch/numpy/pandas global configuration to
+``ecliseutils.configure`` (the shared utilities package). Keeping the path
+anchors and named constants here preserves the existing
+``from kf_rnn.infrastructure.settings import DEVICE, DATA_PATH, ...`` imports.
+"""
+
 import os
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import torch
+import ecliseutils
 
 
 __all__ = [
@@ -15,6 +22,7 @@ __all__ = [
     "DATA_PATH",
     "OUTPUT_PATH",
     "DEBUG",
+    "set_debug",
 ]
 
 
@@ -23,14 +31,11 @@ __all__ = [
 # anomaly detection. Off by default so normal training is not slowed down.
 DEBUG: bool = os.environ.get("KF_RNN_DEBUG", "").lower() in ("1", "true", "yes")
 
+import torch
 
 PRECISION: int = 8
-np.set_printoptions(precision=PRECISION,)
-pd.set_option("display.precision", PRECISION,)
-torch.set_printoptions(precision=PRECISION, sci_mode=False, linewidth=400,)
-
 _CUDA_NUM: int = 0
-DEVICE: str = "cpu" # f"cuda:{_CUDA_NUM}"
+DEVICE: str = "cpu"  # f"cuda:{_CUDA_NUM}"
 DTYPE: torch.dtype = torch.float64
 PROJECT_NAME: str = "KF_RNN"
 # Resolve the repo root from this file's location
@@ -41,35 +46,15 @@ PROJECT_PATH: str = str(Path(__file__).resolve().parents[3])
 DATA_PATH: str = os.path.join(PROJECT_PATH, "data")
 OUTPUT_PATH: str = os.path.join(PROJECT_PATH, "output")
 
-# Only constrain the visible CUDA devices when actually targeting a GPU.
-if DEVICE.startswith("cuda"):
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(_CUDA_NUM)
-torch.set_default_device(DEVICE)
-torch.set_default_dtype(DTYPE)
-
-# Anomaly detection is expensive; only enable it in debug mode.
-torch.autograd.set_detect_anomaly(DEBUG)
+# Apply the shared runtime configuration (sets torch default device/dtype, print
+# options, autograd anomaly, numpy safe globals). This also syncs
+# ``ecliseutils.settings.DEVICE`` so utilities like ``torch_load`` /
+# ``stack_module_arr`` resolve the correct device.
+ecliseutils.configure(device=DEVICE, dtype=DTYPE, precision=PRECISION, debug=DEBUG)
 
 
 def set_debug(flag: bool) -> None:
-    """Toggle debug-only global side effects (e.g. autograd anomaly detection).
-
-    Lets a parsed RuntimeConfig.debug drive behavior even though this module is
-    imported before any config is available.
-    """
+    """Toggle debug-only global side effects (e.g. autograd anomaly detection)."""
     global DEBUG
     DEBUG = bool(flag)
-    torch.autograd.set_detect_anomaly(DEBUG)
-
-
-# SECTION: Add safe globals for torch.load
-import numpy
-torch.serialization.add_safe_globals([
-    numpy.core.multiarray._reconstruct,
-    numpy.dtype,
-    numpy.ndarray,
-])
-
-
-
-
+    ecliseutils.set_debug(DEBUG)

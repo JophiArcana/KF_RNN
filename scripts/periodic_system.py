@@ -1,5 +1,4 @@
 #%%
-from argparse import Namespace
 from typing import *
 
 import einops
@@ -19,8 +18,11 @@ from transformers import (
     Mamba2Config,
 )
 
-from kf_rnn.infrastructure import loader
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import (
+    EnvironmentShape, ExperimentConfig, MetricsConfig, OptimizerConfig,
+    ProblemShape, SamplingConfig, SchedulerConfig, SystemConfig, SystemSettings,
+)
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.infrastructure.settings import DEVICE
 from kf_rnn.model.convolutional import CnnLeastSquaresPredictor
@@ -59,12 +61,9 @@ if __name__ == "__main__":
 
     n = 1
     S_D, O_D = 2 * n, n
-    SHP = Namespace(
-        distribution=dist, S_D=S_D,
-        problem_shape=Namespace(
-            environment=Namespace(observation=O_D,),
-            controller=Namespace(),
-        ), auxiliary=Namespace(),
+    problem_shape = ProblemShape(
+        environment=EnvironmentShape(observation=O_D),
+        controller={},
     )
 
     context_length = 1000 # 250
@@ -83,13 +82,14 @@ if __name__ == "__main__":
     """ Transformer experiment """
     exp_name_transformer = "transformer"
 
-    ARGS_TRANSFORMER = loader.generate_args(SHP)
+    ARGS_TRANSFORMER = ExperimentConfig(
+        problem=problem_shape,
+        system=SystemConfig(S_D=S_D),
+    )
 
     # SECTION: Transformer architecture hyperparameters
     hidden_size, num_heads, expand = 8, 8, 1, # 256, 8, 2,
     state_size = 256 // hidden_size
-    ARGS_TRANSFORMER.model.bias = False
-    ARGS_TRANSFORMER.model.adapter = True
 
     # SUBSECTION: GPT2 Config
     gpt2_config = GPT2Config(
@@ -133,7 +133,9 @@ if __name__ == "__main__":
         use_fast_conv_scan=True,
         chunk_size=16,
     )
-    ARGS_TRANSFORMER.model.model, ARGS_TRANSFORMER.model.config = TestMamba2InContextPredictor, test_mamba2_config
+    ARGS_TRANSFORMER.model = TestMamba2InContextPredictor.Config(
+        adapter=True, bias=False, config=test_mamba2_config,
+    )
 
     # SUBSECTION: Adasync Config
     adasync_config = AdaSyncSSMConfig(
@@ -149,7 +151,7 @@ if __name__ == "__main__":
 
     # SECTION: Dataset hyperparameters
     ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=test_dist, test=test_dist)
-    ARGS_TRANSFORMER.system.settings = Namespace(include_analytical=False)
+    ARGS_TRANSFORMER.system.settings = SystemSettings(include_analytical=False)
 
     ARGS_TRANSFORMER.dataset.n_systems.update(train=n_train_systems, valid=n_test_systems, test=n_test_systems)
     ARGS_TRANSFORMER.dataset.n_traces.update(train=1, valid=n_valid_traces, test=n_test_traces)
@@ -158,17 +160,17 @@ if __name__ == "__main__":
     # SECTION: Training hyperparameters
     ARGS_TRANSFORMER.training.loss = "mse"
     ARGS_TRANSFORMER.training.ignore_initial = True
-    ARGS_TRANSFORMER.training.sampling = Namespace(
+    ARGS_TRANSFORMER.training.sampling = SamplingConfig(
         method=None, # "subsequence_padded",
         subsequence_length=None, # context_length,
         batch_size=128,
     )
-    ARGS_TRANSFORMER.training.optimizer = Namespace(
+    ARGS_TRANSFORMER.training.optimizer = OptimizerConfig(
         type="AdamW",
         max_lr=1e-2, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9,
     )
-    ARGS_TRANSFORMER.training.scheduler = Namespace(
+    ARGS_TRANSFORMER.training.scheduler = SchedulerConfig(
         type="reduce_on_plateau", factor=0.8, patience=3, warmup_duration=0,
         # type="exponential", lr_decay=0.982, warmup_duration=0,
         epochs=30,
@@ -177,7 +179,7 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.experiment.n_experiments = 1
     ARGS_TRANSFORMER.experiment.ensemble_size = 1
     ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-    ARGS_TRANSFORMER.experiment.metrics = Namespace(training={
+    ARGS_TRANSFORMER.experiment.metrics = MetricsConfig(training={
         # "overfit",
         # "validation",
         "noiseless_overfit",
@@ -189,9 +191,10 @@ if __name__ == "__main__":
     # configurations_transformer = []
     configurations_transformer = [
         ("model", {
-            "model.model": [TestMamba2InContextPredictor, Mamba2InContextPredictor,],
-            "model.config": [test_mamba2_config, mamba2_config,],
-            # "model.model": [GPT2InContextPredictor, Mamba2InContextPredictor,],
+            "model": [
+                TestMamba2InContextPredictor.Config(adapter=True, bias=False, config=test_mamba2_config),
+                Mamba2InContextPredictor.Config(adapter=True, bias=False, config=mamba2_config),
+            ],
         })
     ]
     result_transformer, info_dict = run_experiments(
@@ -216,7 +219,7 @@ if __name__ == "__main__":
     #         f"output/{output_dir}/{_exp_name_baseline}/training/systems.pt",
     #         f"output/{output_dir}/{_exp_name_baseline}/testing/systems.pt",
     #     ))):
-    #         baseline_systems = utils.multi_map(
+    #         baseline_systems = eu.multi_map(
     #             lambda lsg: LTISystem(lsg.hyperparameters, lsg.td().permute(1, 0)),
     #             systems, dtype=LTISystem,
     #         )
@@ -231,7 +234,7 @@ if __name__ == "__main__":
     #         f"output/{output_dir}/{_exp_name_baseline}/training/dataset.pt",
     #         f"output/{output_dir}/{_exp_name_baseline}/testing/dataset.pt",
     #     ))):
-    #         baseline_dataset = utils.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
+    #         baseline_dataset = eu.multi_map(lambda dataset_: PTR(dataset_.obj.permute(2, 3, 0, 1, 4)), dataset, dtype=PTR)
     #         torch.save({
     #             "train": baseline_dataset,
     #             "valid": baseline_dataset,
@@ -261,7 +264,7 @@ if __name__ == "__main__":
     # ARGS_BASELINE_CNN.experiment.print_frequency = 1
 
     # # SECTION: Make a copy for RNN args after setting shared parameters
-    # ARGS_BASELINE_RNN = utils.deepcopy_namespace(ARGS_BASELINE_CNN)
+    # ARGS_BASELINE_RNN = eu.deepcopy_namespace(ARGS_BASELINE_CNN)
 
     # # SECTION: Set CNN exclusive hyperparameters
     # ARGS_BASELINE_CNN.model.ridge = 1.0
@@ -311,8 +314,8 @@ if __name__ == "__main__":
 
     # configurations_rnn = [
     #     ("total_trace_length", {
-    #         "model.model": [ZeroPredictor] + [RnnComplexDiagonalPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
-    #         # "model.model": [ZeroPredictor] + [RnnAnalyticalPretrainPredictor] * (utils.ceildiv(context_length, rnn_increment) - 1),
+    #         "model.model": [ZeroPredictor] + [RnnComplexDiagonalPredictor] * (eu.ceildiv(context_length, rnn_increment) - 1),
+    #         # "model.model": [ZeroPredictor] + [RnnAnalyticalPretrainPredictor] * (eu.ceildiv(context_length, rnn_increment) - 1),
     #         "dataset.total_sequence_length.train": [*range(0, context_length, rnn_increment),]
     #     })
     # ]
@@ -337,8 +340,8 @@ if __name__ == "__main__":
     Plot training loss
     """
     # print(M_transformer.output.environment.observation.shape)
-    training_log = utils.stack_tensor_arr(utils.multi_map(
-        utils.identity, get_result_attr(result_transformer, "output"),
+    training_log = eu.stack_tensor_arr(eu.multi_map(
+        eu.identity, get_result_attr(result_transformer, "output"),
         dtype=TensorDict,
     ))[:, 0, 0]
     # training_log: TensorDict = result_transformer.values[()].output.obj[0, 0]
@@ -384,8 +387,8 @@ if __name__ == "__main__":
     plt.show()
     plt.rcdefaults()
 
-    metrics = utils.stack_tensor_arr(utils.multi_map(
-        utils.identity, get_result_attr(result_transformer, "metrics"),
+    metrics = eu.stack_tensor_arr(eu.multi_map(
+        eu.identity, get_result_attr(result_transformer, "metrics"),
         dtype=TensorDict,
     ))
     dataset = info_dict["test"]["dataset"].values[()]
@@ -455,7 +458,7 @@ if __name__ == "__main__":
     # def loss(observation_estimation: torch.Tensor) -> torch.Tensor:
     #     env = systems.environment
     #     reducible_error = (dataset["environment", "noiseless_observation"] - observation_estimation).norm(dim=-1) ** 2
-    #     irreducible_error = utils.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
+    #     irreducible_error = eu.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)[:, None, None]
     #     return reducible_error + irreducible_error
 
     # with torch.set_grad_enabled(False):

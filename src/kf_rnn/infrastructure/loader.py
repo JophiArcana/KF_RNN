@@ -1,49 +1,29 @@
-import copy
-from argparse import Namespace
+import os
 
 import numpy as np
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure.labeled_array import LabeledArray
-
-import os
-
-from kf_rnn.infrastructure import utils
-from kf_rnn.infrastructure.config import schema
-from kf_rnn.infrastructure.config.bridge import config_to_namespace
+import ecliseutils as eu
+from kf_rnn.infrastructure.config.schema import (
+    EnvironmentShape,
+    ExperimentConfig,
+    ProblemShape,
+    Split,
+    SystemConfig,
+)
+from ecliseutils.labeled_array import LabeledArray
 from kf_rnn.infrastructure.settings import DEVICE, DATA_PATH
 from kf_rnn.system.linear_time_invariant import LTISystem
 
 
-"""
-Loading and generating args
+def load_system_and_args(folder: str) -> tuple[dict[str, LabeledArray], ExperimentConfig]:
+    """Load a saved LTI system (A/B/C + noise block) and a matching typed config.
 
-The base argument Namespaces below are derived from a single default
-``ExperimentConfig`` via the same ``config_to_namespace`` bridge the runtime uses,
-so the typed schema in ``infrastructure.config.schema`` remains the single source
-of truth for defaults while the pipeline keeps consuming Namespaces.
-"""
-_BASE_ARGS = config_to_namespace(schema.ExperimentConfig())
-
-BaseDatasetArgs = _BASE_ARGS.dataset
-BaseTrainingArgs = _BASE_ARGS.training
-BaseExperimentArgs = _BASE_ARGS.experiment
-# The historical base omitted ``exp_name`` (callers set it per experiment); drop
-# the schema default so the shape matches and a missing override surfaces loudly.
-if hasattr(BaseExperimentArgs, "exp_name"):
-    delattr(BaseExperimentArgs, "exp_name")
-
-def args_from(HP: Namespace):
-    HP.system = utils.process_defaulting_roots(HP.system)
-    HP.dataset = utils.process_defaulting_roots(HP.dataset)
-    return HP
-
-def args_from_config(cfg: schema.ExperimentConfig) -> Namespace:
-    """Build a runtime Namespace HP from a typed ``ExperimentConfig``."""
-    return args_from(config_to_namespace(cfg))
-
-def load_system_and_args(folder: str):
+    Returns ``(systems, cfg)`` where ``systems`` plugs into ``run_experiments``'s
+    ``systems=`` argument and ``cfg`` is an ``ExperimentConfig`` whose problem
+    shape matches the loaded system. The model branch is left for the caller.
+    """
     # Resolve relative dataset folders under the repo-root ``data/`` directory so
     # loads are cwd-independent; absolute paths pass through unchanged.
     if not os.path.isabs(folder):
@@ -61,47 +41,19 @@ def load_system_and_args(folder: str):
     W = noise_block[:S_D, :S_D]
     V = noise_block[S_D:, S_D:]
 
-    sqrt_W, sqrt_V = utils.sqrtm(W), utils.sqrtm(V)
+    sqrt_W, sqrt_V = eu.sqrtm(W), eu.sqrtm(V)
 
-    problem_shape = Namespace(
-        environment=Namespace(observation=O_D),
-        controller=Namespace(input=I_D) if input_enabled else Namespace(),
-    )
-    auxiliary = Namespace()
-    settings = Namespace(include_analytical=True,)
-    args = utils.deepcopy_namespace(Namespace(
-        system=Namespace(
-            S_D=S_D,
-            problem_shape=problem_shape,
-            auxiliary=auxiliary,
-            settings=settings,
+    cfg = ExperimentConfig(
+        problem=ProblemShape(
+            environment=EnvironmentShape(observation=O_D),
+            controller={"input": I_D} if input_enabled else {},
         ),
-        dataset=BaseDatasetArgs,
-        model=Namespace(problem_shape=problem_shape),
-        training=BaseTrainingArgs,
-        experiment=BaseExperimentArgs
-    ))
-    args.dataset.n_systems.train = 1
-    args.experiment.n_experiments = 1
+        system=SystemConfig(S_D=S_D),
+    )
+    cfg.dataset.n_systems = Split(train=1)
+    cfg.experiment.n_experiments = 1
 
-    system_group = LTISystem(args.system, TensorDict.from_dict({"environment": {
+    system_group = LTISystem(cfg.system, TensorDict.from_dict({"environment": {
         "F": A, "B": TensorDict({"input": B}, batch_size=()), "H": C, "sqrt_S_W": sqrt_W, "sqrt_S_V": sqrt_V
-    }}, batch_size=()).expand(args.dataset.n_systems.train, args.experiment.n_experiments))
-    return {"train": LabeledArray(utils.array_of(system_group), ())}, args_from(copy.deepcopy(args))
-
-
-def generate_args(shp: Namespace) -> Namespace:
-    for k in ("auxiliary", "settings",):
-        if not hasattr(shp, k):
-            setattr(shp, k, Namespace())
-    return args_from(utils.deepcopy_namespace(Namespace(
-        system=shp,
-        dataset=BaseDatasetArgs,
-        model=Namespace(problem_shape=shp.problem_shape),
-        training=BaseTrainingArgs,
-        experiment=BaseExperimentArgs,
-    )))
-
-
-
-
+    }}, batch_size=()).expand(cfg.dataset.n_systems.train, cfg.experiment.n_experiments))
+    return {"train": LabeledArray(eu.array_of(system_group), ())}, cfg

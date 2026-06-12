@@ -1,5 +1,6 @@
 import math
-from argparse import Namespace
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Sequence
 
 import einops
@@ -7,11 +8,17 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from kf_rnn.infrastructure import utils
+import ecliseutils as eu
 from kf_rnn.model.base import Predictor, Controller
+from kf_rnn.infrastructure.config.schema import controller_dims
 
 
 class SequentialPredictor(Predictor):
+    @dataclass
+    class Config(Predictor.Config):
+        S_D: int = None
+        initial_state_scale: float = 1.0
+
     eps: float = 1e-6
 
     @classmethod
@@ -26,17 +33,17 @@ class SequentialPredictor(Predictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
         # Shared augmented-plant modal decomposition (see Predictor helper).
         b = Predictor._augmented_plant_modal_decomposition(kfs, systems)
         controller_keys = b.controller_keys
         shape = b.shape
         default_td = b.default_td
 
-        Fh = utils.complex(kfs["F"])                                                                    # [B... x S_Dh x S_Dh]
-        Hh = utils.complex(kfs["H"])                                                                    # [B... x O_D x S_Dh]
-        Kh = utils.complex(kfs["K"])                                                                    # [B... x S_Dh x O_D]
-        Bh = utils.complex(kfs["B"]) if len(controller_keys) > 0 else default_td                        # [B... x S_Dh x I_D?]
+        Fh = eu.complex(kfs["F"])                                                                    # [B... x S_Dh x S_Dh]
+        Hh = eu.complex(kfs["H"])                                                                    # [B... x O_D x S_Dh]
+        Kh = eu.complex(kfs["K"])                                                                    # [B... x S_Dh x O_D]
+        Bh = eu.complex(kfs["B"]) if len(controller_keys) > 0 else default_td                        # [B... x S_Dh x I_D?]
 
         K = b.K                                                                                         # [B... x S_D x O_D]
         L = b.L                                                                                         # [B... x I_D? x S_D]
@@ -62,7 +69,7 @@ class SequentialPredictor(Predictor):
         # for the eigendecomposition above. The geometric series being summed is
         #   sum_t D_i^t D_j^t = 1 / (1 - D_i D_j),
         # i.e. a *bilinear* (transpose) form, which is exactly the no-conjugate convention baked
-        # into utils.hadamard_conjugation* (coeff 1/(1 - alpha*beta), operands not conjugated).
+        # into eu.hadamard_conjugation* (coeff 1/(1 - alpha*beta), operands not conjugated).
         # Hence every quadratic form below uses .mT (transpose), NOT .mH (conjugate transpose),
         # and the imaginary parts cancel so a single torch.real(...) is taken at the end.
         # (An older Hermitian formulation used .mH with a .real on each intermediate term.)
@@ -78,33 +85,33 @@ class SequentialPredictor(Predictor):
         VhinvFhKhHas_BhLas = Vhinv @ (Fh @ Kh @ Has - sum(Bh[k] @ Las[k] for k in controller_keys))     # [B... x S_Dh x 2S_D]
 
         inf_geometric = (
-            utils.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
-            - 2 * utils.hadamard_conjugation_diff_order1(HhstHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
-            + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, HhstHhs)
+            eu.hadamard_conjugation(Has, Has, Dj, Dj, torch.eye(O_D))
+            - 2 * eu.hadamard_conjugation_diff_order1(HhstHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
+            + eu.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, HhstHhs)
         )
 
         # State evolution noise error
         # Highlight
-        ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)                  # [B...]
+        ws_geometric_err = eu.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)                  # [B...]
 
         # Observation noise error
         # Highlight
         v_current_err = torch.norm(sqrt_S_V, dim=[-2, -1]) ** 2                                         # [B...]
 
         # Highlight
-        v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
+        v_geometric_err = eu.batch_trace(sqrt_S_V.mT @ (
             Vinv_BL_F_BLK.mT @ inf_geometric @ Vinv_BL_F_BLK
             - 2 * VhinvFhKh_BhLK.mT @ (
-                utils.hadamard_conjugation(Hhs, Has, Dhj, Dj, torch.eye(O_D))
-                - utils.hadamard_conjugation_diff_order1(HhstHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
+                eu.hadamard_conjugation(Hhs, Has, Dhj, Dj, torch.eye(O_D))
+                - eu.hadamard_conjugation_diff_order1(HhstHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
             ) @ Vinv_BL_F_BLK
             + VhinvFhKh_BhLK.mT @ (
-                utils.hadamard_conjugation(Hhs, Hhs, Dhj, Dhj, torch.eye(O_D))
+                eu.hadamard_conjugation(Hhs, Hhs, Dhj, Dhj, torch.eye(O_D))
             ) @ VhinvFhKh_BhLK
         ) @ sqrt_S_V)
 
         err = torch.real(ws_geometric_err + v_current_err + v_geometric_err)                            # [B...]
-        cache = Namespace(
+        cache = SimpleNamespace(
             controller_keys=controller_keys,
             shape=shape, default_td=default_td,
             S_Dh=S_Dh,
@@ -118,7 +125,7 @@ class SequentialPredictor(Predictor):
         )
         return TensorDict.from_dict({"environment": {"observation": err}}, batch_size=shape), cache
 
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "SequentialPredictor.Config"):
         Predictor.__init__(self, modelArgs)
         self.S_D: int = modelArgs.S_D
         self.initial_state_scale = getattr(modelArgs, "initial_state_scale", 1.0)
@@ -218,7 +225,7 @@ class SequentialPredictor(Predictor):
 
         subL = L if mode == "form" else hsqrtL                                                                                          # Length of vectorized subsequence
         # Compute the weights efficiently as repeated powers of (I - KH)F
-        state_weights = utils.pow_series(M, subL + 1)                                                                                   # [(subL + 1) x S_D x S_D]
+        state_weights = eu.pow_series(M, subL + 1)                                                                                   # [(subL + 1) x S_D x S_D]
         observation_weights = (self.H @ self.F) @ state_weights                                                                         # [(subL + 1) x O_D x S_D]
 
         # Compute the biases efficiently using the state weights
@@ -274,7 +281,7 @@ class SequentialController(Controller, SequentialPredictor):
     def _analytical_error_and_cache(cls,
                                     kfs: TensorDict,         # [B... x ...]
                                     systems: TensorDict,     # [B... x ...]
-    ) -> tuple[TensorDict, Namespace]:                       # [B...]
+    ) -> tuple[TensorDict, SimpleNamespace]:                       # [B...]
         result, cache = SequentialPredictor._analytical_error_and_cache(kfs, systems)
 
         # Variable definition
@@ -283,7 +290,7 @@ class SequentialController(Controller, SequentialPredictor):
 
         S_Dh = cache.S_Dh
 
-        Kh, Lh_dict = cache.Kh, utils.complex(kfs.get("L", cache.default_td))                           # [B... x S_Dh x O_D], [B... x I_D? x S_Dh]
+        Kh, Lh_dict = cache.Kh, eu.complex(kfs.get("L", cache.default_td))                           # [B... x S_Dh x O_D], [B... x I_D? x S_Dh]
         K, L_dict = cache.K, cache.L                                                                    # [B... x S_D x O_D], [B... x I_D? x S_D]
         sqrt_S_V = cache.sqrt_S_V                                                                       # [B... x O_D x O_D]
 
@@ -309,28 +316,28 @@ class SequentialController(Controller, SequentialPredictor):
             Las_LhKhHas = Las - Lh @ Kh @ Has                                                           # [B... x I_D x 2S_D]
 
             inf_geometric = (
-                utils.hadamard_conjugation(Las_LhKhHas, Las_LhKhHas, Dj, Dj, torch.eye(I_D))
-                - 2 * utils.hadamard_conjugation_diff_order1(LhVh_KhHhs.mT @ Las_LhKhHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
-                + utils.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, LhVh_KhHhstLhVh_KhHhs)
+                eu.hadamard_conjugation(Las_LhKhHas, Las_LhKhHas, Dj, Dj, torch.eye(I_D))
+                - 2 * eu.hadamard_conjugation_diff_order1(LhVh_KhHhs.mT @ Las_LhKhHas, VhinvFhKhHas_BhLas, Dj, Dhi, Dj, torch.eye(S_Dh))
+                + eu.hadamard_conjugation_diff_order2(VhinvFhKhHas_BhLas, Dhi, Dj, LhVh_KhHhstLhVh_KhHhs)
             )
 
             # State evolution noise error
             # Highlight
-            ws_geometric_err = utils.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)              # [B...]
+            ws_geometric_err = eu.batch_trace(sqrt_S_Ws.mT @ inf_geometric @ sqrt_S_Ws)              # [B...]
 
             # Observation noise error
             # Highlight
             v_current_err = torch.norm((L @ K - Lh @ Kh) @ sqrt_S_V, dim=[-1, -2]) ** 2                 # [B...]
 
             # Highlight
-            v_geometric_err = utils.batch_trace(sqrt_S_V.mT @ (
+            v_geometric_err = eu.batch_trace(sqrt_S_V.mT @ (
                 Vinv_BL_F_BLK.mT @ inf_geometric @ Vinv_BL_F_BLK
                 - 2 * VhinvFhKh_BhLK.mT @ (
-                    utils.hadamard_conjugation(LhVh_KhHhs, Las_LhKhHas, Dhj, Dj, torch.eye(I_D))
-                    - utils.hadamard_conjugation_diff_order1(LhVh_KhHhstLhVh_KhHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
+                    eu.hadamard_conjugation(LhVh_KhHhs, Las_LhKhHas, Dhj, Dj, torch.eye(I_D))
+                    - eu.hadamard_conjugation_diff_order1(LhVh_KhHhstLhVh_KhHhs, VhinvFhKhHas_BhLas, Dhj, Dhi, Dj, torch.eye(S_Dh))
                 ) @ Vinv_BL_F_BLK
                 + VhinvFhKh_BhLK.mT @ (
-                    utils.hadamard_conjugation(LhVh_KhHhs, LhVh_KhHhs, Dhj, Dhj, torch.eye(I_D))
+                    eu.hadamard_conjugation(LhVh_KhHhs, LhVh_KhHhs, Dhj, Dhj, torch.eye(I_D))
                 ) @ VhinvFhKh_BhLK
             ) @ sqrt_S_V)
 
@@ -339,7 +346,7 @@ class SequentialController(Controller, SequentialPredictor):
         result["controller"] = TensorDict.from_dict(r, batch_size=shape)
         return result, cache
 
-    def __init__(self, modelArgs: Namespace):
+    def __init__(self, modelArgs: "SequentialController.Config"):
         SequentialPredictor.__init__(self, modelArgs)
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], mode: str = None) -> dict[str, dict[str, torch.Tensor]]:
@@ -355,7 +362,7 @@ class SequentialController(Controller, SequentialPredictor):
         ], dim=1)
         result["controller"] = {
             k: state_estimation_history @ -self.L[k].mT
-            for k in vars(self.problem_shape.controller)
+            for k in controller_dims(self.problem_shape)
         }
         return result
 

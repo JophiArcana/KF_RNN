@@ -1,12 +1,15 @@
 import os
 import sys
-from argparse import Namespace
 
 import torch
 from matplotlib import pyplot as plt
 from transformers import GPT2Config, TransfoXLConfig
 
-from kf_rnn.infrastructure import loader, utils
+import ecliseutils as eu
+from kf_rnn.infrastructure.config import (
+    EnvironmentShape, ExperimentConfig, MetricsConfig, OptimizerConfig,
+    ProblemShape, SamplingConfig, SchedulerConfig, SystemConfig,
+)
 from kf_rnn.infrastructure.settings import DEVICE, OUTPUT_PATH
 from kf_rnn.infrastructure.experiment import *
 from kf_rnn.system.linear_time_invariant import MOPDistribution, LTISystem
@@ -19,13 +22,6 @@ if __name__ == "__main__":
     output_fname = "result"
 
     dist = MOPDistribution("gaussian", "gaussian", 0.1, 0.1)
-    SHP = Namespace(
-        distribution=dist, S_D=10,
-        problem_shape=Namespace(
-            environment=Namespace(observation=5),
-            controller=Namespace()
-        ), auxiliary=Namespace()
-    )
     
     context_length = 250
     n_train_systems = 40000
@@ -40,7 +36,10 @@ if __name__ == "__main__":
     """ Transformer experiment """
     exp_name_transformer = "CDCReconstruction_transformer"
 
-    ARGS_TRANSFORMER = loader.generate_args(SHP)
+    ARGS_TRANSFORMER = ExperimentConfig(
+        problem=ProblemShape(environment=EnvironmentShape(observation=5), controller={}),
+        system=SystemConfig(S_D=10),
+    )
 
     # SECTION: Transformer architecture hyperparameters
     d_embed = 256
@@ -48,7 +47,7 @@ if __name__ == "__main__":
     n_head = 8
     d_inner = 4 * d_embed
 
-    ARGS_TRANSFORMER.model.gpt2 = GPT2Config(
+    gpt2_config = GPT2Config(
         n_positions=context_length,
         n_embd=d_embed,
         n_layer=n_layer,
@@ -56,7 +55,7 @@ if __name__ == "__main__":
         n_inner=d_inner,
         resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
     )
-    ARGS_TRANSFORMER.model.transformerxl = TransfoXLConfig(
+    transformerxl_config = TransfoXLConfig(
         d_model=d_embed,
         d_embed=d_embed,
         n_layer=n_layer,
@@ -74,51 +73,54 @@ if __name__ == "__main__":
     ARGS_TRANSFORMER.dataset.total_sequence_length.update(train=context_length, valid=n_valid_traces * context_length, test=n_test_traces * context_length)
 
     # SECTION: Training hyperparameters
-    ARGS_TRANSFORMER.training.sampling = Namespace(
+    ARGS_TRANSFORMER.training.sampling = SamplingConfig(
         method="subsequence_padded",
         subsequence_length=context_length,
         batch_size=32
     )
-    ARGS_TRANSFORMER.training.optimizer = Namespace(
+    ARGS_TRANSFORMER.training.optimizer = OptimizerConfig(
         type="AdamW",
         max_lr=3e-4, min_lr=1e-6,
         weight_decay=1e-2, momentum=0.9
     )
-    ARGS_TRANSFORMER.training.scheduler = Namespace(
+    ARGS_TRANSFORMER.training.scheduler = SchedulerConfig(
         type="exponential",
         epochs=2000, lr_decay=1.0,
     )
-    ARGS_TRANSFORMER.training.iterations_per_epoch = 50
+    iterations_per_epoch = 50
 
 
     ARGS_TRANSFORMER.experiment.n_experiments = 1
     ARGS_TRANSFORMER.experiment.ensemble_size = 1
     ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
-    ARGS_TRANSFORMER.experiment.metrics = Namespace(training={"noiseless_validation"}) # {"validation"}
+    ARGS_TRANSFORMER.experiment.metrics = MetricsConfig(training={"noiseless_validation"}) # {"validation"}
 
     configurations_transformer = [
         ("model", {
             "name": ["gpt2", "transformerxl"],
-            "model.model": [GPT2InContextPredictor, TransformerXLInContextPredictor],
+            "model": [
+                GPT2InContextPredictor.Config(gpt2=gpt2_config),
+                TransformerXLInContextPredictor.Config(transformerxl=transformerxl_config),
+            ],
         })
     ]
 
-    result_transformer = utils.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_transformer}/testing/result.pt")
+    result_transformer = eu.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_transformer}/testing/result.pt")
 
     output = get_result_attr(result_transformer, "output")
     time = get_result_attr(result_transformer, "time")
 
-    valid_systems = utils.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_transformer}/training/systems.pt")["valid"].values[()]
-    valid_systems = LTISystem(valid_systems.problem_shape, valid_systems.auxiliary, valid_systems.td().squeeze(0))
+    valid_systems = eu.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_transformer}/training/systems.pt")["valid"].values[()]
+    valid_systems = LTISystem(valid_systems.hyperparameters, valid_systems.td().squeeze(0))
     valid_env = valid_systems.environment
 
-    valid_dataset = utils.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_transformer}/training/dataset.pt")["valid"].values[()]
+    valid_dataset = eu.torch_load(f"{OUTPUT_PATH}/{output_dir}/{exp_name_transformer}/training/dataset.pt")["valid"].values[()]
     valid_dataset = valid_dataset.reshape(*valid_dataset.shape[2:])
 
     noiseless_empirical_irreducible_loss = Predictor.evaluate_run(
         valid_dataset["environment", "target_observation_estimation"],
         valid_dataset, ("environment", "noiseless_observation")
-    ) + utils.batch_trace(valid_env.H @ valid_env.S_W @ valid_env.H.mT + valid_env.S_V)
+    ) + eu.batch_trace(valid_env.H @ valid_env.S_W @ valid_env.H.mT + valid_env.S_V)
 
     expected_zero_predictor_loss = valid_systems.zero_predictor_loss.environment.observation
     expected_irreducible_loss = valid_systems.irreducible_loss.environment.observation
@@ -129,7 +131,7 @@ if __name__ == "__main__":
 
 
     # SECTION: Plot over gradient descent steps
-    x = ARGS_TRANSFORMER.training.iterations_per_epoch * torch.arange(ARGS_TRANSFORMER.training.scheduler.epochs) + 1
+    x = iterations_per_epoch * torch.arange(ARGS_TRANSFORMER.training.scheduler.epochs) + 1
     clip = x >= 1000
     for model_name, output in zip(
             configurations_transformer[0][1]["name"],
