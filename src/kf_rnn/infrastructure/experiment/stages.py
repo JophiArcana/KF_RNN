@@ -139,9 +139,15 @@ class InitializationStage(TrainingStage):
         stacked_modules = ctx.model_pair[1]
         if not hasattr(self._state, "initialization_error"):
             initialization, error_ = self.initialization(ctx)
+            # The initialization may legitimately be a superset of the model's
+            # parameters (e.g. ``RnnKalmanPredictor`` returns the full system td,
+            # which carries ``sqrt_S_W`` / ``sqrt_S_V`` that the RNN has no
+            # parameter for). Only write keys that are actual model parameters.
+            param_keys = set(stacked_modules.keys(include_nested=True, leaves_only=True))
             for k, v in eu.flatten_nested_dict(initialization).items():
                 tdk = (*k.split("."),)
-                stacked_modules[tdk] = v.expand_as(stacked_modules[tdk])
+                if tdk in param_keys:
+                    stacked_modules[tdk] = v.expand_as(stacked_modules[tdk])
             self._state.initialization_error = error_.expand(stacked_modules.shape)
             error = Predictor.evaluate_run(
                 0, ctx.train_info.dataset, ("environment", "observation")

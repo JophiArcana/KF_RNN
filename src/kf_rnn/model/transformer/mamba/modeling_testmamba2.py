@@ -31,8 +31,10 @@ from transformers.utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    logging, auto_docstring,
+    logging,
 )
+
+from kf_rnn.model.transformer._compat import auto_docstring
 from transformers.utils.import_utils import is_causal_conv1d_available, is_mamba_2_ssm_available
 from transformers.models.mamba2.modeling_mamba2 import MambaRMSNormGated, Mamba2RMSNorm
 
@@ -353,6 +355,7 @@ class TestMamba2PreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _is_stateful = True
 
+    @torch.no_grad()
     def _init_weights(self, module):
         """Initialize the weights."""
         std = self.config.initializer_range

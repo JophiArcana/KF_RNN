@@ -26,13 +26,13 @@ import torch.utils.checkpoint
 
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     ModelOutput,
-    auto_docstring,
     logging,
 )
+
+from kf_rnn.model.transformer._compat import GradientCheckpointingLayer, auto_docstring
 
 from .configuration_adasync import AdaSyncSSMConfig
 import ecliseutils as eu
@@ -314,6 +314,7 @@ class AdaSyncSSMPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _is_stateful = True
 
+    @torch.no_grad()
     def _init_weights(self, module):
         """Initialize the weights."""
         std = self.config.initializer_range

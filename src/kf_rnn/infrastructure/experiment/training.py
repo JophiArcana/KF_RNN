@@ -414,9 +414,12 @@ def _run_training(
             eu.empty_cache()
     
     r = evaluate_metrics()
-    for k, v in results[0].items(include_nested=True, leaves_only=True):
-        if k not in r:
-            r[k] = torch.full_like(v, torch.nan)
+    # Models with an empty training recipe (e.g. ``ZeroPredictor``) run no stages,
+    # so ``results`` can be empty; only backfill train-only keys when present.
+    if results:
+        for k, v in results[0].items(include_nested=True, leaves_only=True):
+            if k not in r:
+                r[k] = torch.full_like(v, torch.nan)
     results.append(r)
     print_losses(r, "Final", metrics)
 
@@ -471,9 +474,10 @@ def _print_baseline_errors(info: SimpleNamespace) -> None:
                     loss_arr_dict.setdefault(k, np.full((len(evaluation_targets), len(loss_types), *shape,), None, dtype=object))[idx] = eu.multi_map(
                         lambda td: td[k].mean().item(), err_dict_arr, dtype=float,
                     )
-            except (RuntimeError, ValueError, KeyError, TypeError):
+            except (RuntimeError, ValueError, KeyError, TypeError, AssertionError):
                 # Baseline-error printing is best-effort diagnostics; skip targets
-                # that a given loss type does not support.
+                # that a given loss type does not support (e.g. an empty / zero-length
+                # train dataset, which the ensemble reshape rejects).
                 pass
 
         df_dict = {}

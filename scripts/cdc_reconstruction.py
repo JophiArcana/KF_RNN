@@ -9,11 +9,12 @@ import tensordict.utils
 import torch
 from matplotlib import colors
 from matplotlib import pyplot as plt
+from tensordict import TensorDict
 from transformers import (
     GPT2Config,
-    TransfoXLConfig,
-    Dinov2Config,
-    Mamba2Config,
+    # TransfoXLConfig,
+    # Dinov2Config,
+    # Mamba2Config,
 )
 
 import ecliseutils as eu
@@ -22,6 +23,7 @@ from kf_rnn.infrastructure.config import (
     ProblemShape, SamplingConfig, SchedulerConfig, SystemConfig, copy_config,
 )
 from kf_rnn.infrastructure.experiment import *
+from kf_rnn.infrastructure.experiment.engine import error as analytical_baseline_error
 from kf_rnn.infrastructure.settings import DEVICE, OUTPUT_PATH
 from kf_rnn.model.convolutional import CnnLeastSquaresPredictor
 from kf_rnn.model.sequential import RnnKalmanInitializedPredictor
@@ -29,8 +31,8 @@ from kf_rnn.model.transformer import (
     GPT2InContextPredictor,
     # GPT2AssociativeInContextPredictor,
     # TransformerXLInContextPredictor,
-    Dinov2AssociativeInContextPredictor,
-    Mamba2InContextPredictor,
+    # Dinov2AssociativeInContextPredictor,
+    # Mamba2InContextPredictor,
 )
 from kf_rnn.model.zero_predictor import ZeroPredictor
 from kf_rnn.system.linear_time_invariant import LTISystem, MOPDistribution
@@ -91,30 +93,30 @@ if __name__ == "__main__":
             n_inner=d_inner,
             resid_pdrop=0.0, embd_pdrop=0.0, attn_pdrop=0.0, use_cache=False,
         )
-        transformerxl_config = TransfoXLConfig(
-            d_model=d_embed,
-            d_embed=d_embed,
-            n_layer=n_layer,
-            n_head=n_head,
-            d_head=d_embed // n_head,
-            d_inner=d_inner,
-            dropout=0.0,
-        )
-        dinov2_config = Dinov2Config(
-            hidden_size=d_embed,
-            num_hidden_layers=n_layer,
-            num_attention_heads=n_head,
-            mlp_ratio=mlp_ratio,
-        )
-        mamba_hidden_size, n_mamba_head, mamba_expand = O_D, O_D, 1
-        mamba_config = Mamba2Config(
-            state_size=512,
-            hidden_size=mamba_hidden_size,
-            num_hidden_layers=n_layer,
-            num_heads=n_mamba_head,
-            head_dim=int(mamba_expand * mamba_hidden_size / n_mamba_head),
-            expand=mamba_expand,
-        )
+        # transformerxl_config = TransfoXLConfig(
+        #     d_model=d_embed,
+        #     d_embed=d_embed,
+        #     n_layer=n_layer,
+        #     n_head=n_head,
+        #     d_head=d_embed // n_head,
+        #     d_inner=d_inner,
+        #     dropout=0.0,
+        # )
+        # dinov2_config = Dinov2Config(
+        #     hidden_size=d_embed,
+        #     num_hidden_layers=n_layer,
+        #     num_attention_heads=n_head,
+        #     mlp_ratio=mlp_ratio,
+        # )
+        # mamba_hidden_size, n_mamba_head, mamba_expand = O_D, O_D, 1
+        # mamba_config = Mamba2Config(
+        #     state_size=512,
+        #     hidden_size=mamba_hidden_size,
+        #     num_hidden_layers=n_layer,
+        #     num_heads=n_mamba_head,
+        #     head_dim=int(mamba_expand * mamba_hidden_size / n_mamba_head),
+        #     expand=mamba_expand,
+        # )
     
         # SECTION: Dataset hyperparameters
         ARGS_TRANSFORMER.system.distribution.update(train=dist, valid=dist, test=dist)
@@ -146,28 +148,38 @@ if __name__ == "__main__":
             # "noiseless_overfit",
             "noiseless_validation",
         }) # {"validation"}
+        # GPT2 has no closed-form analytical error, so skip the "al" testing metric
+        # (the engine would warn-and-skip it anyway).
+        ARGS_TRANSFORMER.experiment.ignore_metrics = MetricsConfig(testing={"al"})
     
         configurations_transformer = [
             ("model", {
                 "model": [
                     GPT2InContextPredictor.Config(gpt2=gpt2_config, adapter=True, bias=False),
-                    Mamba2InContextPredictor.Config(config=mamba_config, adapter=True, bias=False),
+                    # Mamba2InContextPredictor.Config(config=mamba_config, adapter=True, bias=False),
                 ],
                 "training": {
+                    # Per-model sweep values; add one entry per model above when
+                    # comparing multiple transformers (e.g. GPT2 vs Mamba2).
                     # "sampling.batch_size": [32, 32,],
-                    "optimizer.max_lr": [3e-4, 3e-4,],
-                    "scheduler.lr_decay": [0.98, 0.98,],
+                    "optimizer.max_lr": [3e-4,],
+                    "scheduler.lr_decay": [0.98,],
                     # "scheduler.epochs": [100, 100,],
                 },
             })
         ]
 
-        result_transformer, systems, dataset = run_experiments(
+        result_transformer, info_dict = run_experiments(
             ARGS_TRANSFORMER, configurations_transformer, {
                 "dir": output_dir,
                 "fname": output_fname
             }, save_experiment=True,
         )
+        # The engine now returns dataset metadata in ``info_dict`` keyed by split
+        # (replaces the old ``(result, systems, dataset)`` return). The baselines
+        # and result processing reuse the transformer's *test* systems / dataset.
+        systems = info_dict["test"]["systems"]
+        dataset = info_dict["test"]["dataset"]
 
 
 
@@ -210,16 +222,24 @@ if __name__ == "__main__":
     
     
         """ CNN Experiment """
+        # Online least-squares CNN: a single FIR filter per ``ir_length`` is fit
+        # online over the full sequence (``batch_size`` timesteps at a time),
+        # logging the intermediate analytical evaluation at every step. This yields
+        # the whole loss-vs-context curve in one training run and replaces the old
+        # per-subsequence-length sweep (which trained one CNN per prefix length).
         ARGS_BASELINE_CNN = ExperimentConfig(
             problem=problem_shape,
             system=SystemConfig(S_D=S_D, distribution=dist),
+            model=CnnLeastSquaresPredictor.Config(ridge=1.0),
         )
 
         ARGS_BASELINE_CNN.dataset.n_systems.reset(train=1)
         ARGS_BASELINE_CNN.dataset.n_traces.reset(train=1)
-        ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(valid=context_length, test=context_length)
+        ARGS_BASELINE_CNN.dataset.total_sequence_length.reset(train=context_length, valid=context_length, test=context_length)
 
-        ARGS_BASELINE_CNN.training.sampling.batch_size = 4096
+        # One online step per timestep, so each step logs the evaluation after
+        # observing one more element of the context.
+        ARGS_BASELINE_CNN.training.sampling.batch_size = 1
 
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
         ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
@@ -235,13 +255,9 @@ if __name__ == "__main__":
             ("model", {
                 "model.ir_length": [*range(1, n_firs + 1)],
             }),
-            ("total_trace_length", {
-                "model": [ZeroPredictor.Config()] + [CnnLeastSquaresPredictor.Config(ridge=1.0)] * (context_length - 1),
-                "dataset.total_sequence_length.train": [*range(context_length),],
-            })
         ]
     
-        result_cnn, _, _ = run_experiments(
+        result_cnn, _ = run_experiments(
             ARGS_BASELINE_CNN, configurations_cnn, {
                 "dir": output_dir,
                 "fname": output_fname,
@@ -281,7 +297,7 @@ if __name__ == "__main__":
             })
         ]
 
-        result_rnn, _, _ = run_experiments(
+        result_rnn, _ = run_experiments(
             ARGS_BASELINE_RNN, configurations_rnn, {
                 "dir": output_dir,
                 "fname": output_fname
@@ -318,29 +334,35 @@ if __name__ == "__main__":
         return reducible_error + irreducible_error
     
     with torch.set_grad_enabled(False):
-        zero_predictor_al = systems.zero_predictor_loss.environment.observation
+        # ``zero_predictor_loss`` is no longer a precomputed system attribute; the
+        # analytical zero-predictor error is obtained from the engine baseline.
+        zero_predictor_al = analytical_baseline_error("zero_predictor", systems)["environment", "observation"]
         zero_predictor_l = loss(torch.zeros_like(dataset["environment", "observation"]))
         il = systems.irreducible_loss.environment.observation
         eil = loss(dataset["environment", "target_observation_estimation"])
 
 
-        # [n_experiments x ensemble_size x n_test_systems x n_test_traces x context_length x O_D]
+        # [model_sweep(=1) x n_experiments x ensemble_size x n_test_systems x n_test_traces x context_length x O_D]
         # -> [n_test_systems x n_test_traces x context_length x O_D]
-        gpt2_output, transfoxl_output = einops.rearrange(M_transformer.output.environment.observation, "n 1 1 b l d -> n b l d",)
+        gpt2_output = einops.rearrange(M_transformer.output.environment.observation, "1 1 1 b t l d -> b t l d",)
         # -> [n_test_systems x n_test_traces x context_length]
-        gpt2_l, transfoxl_l = loss(gpt2_output), loss(transfoxl_output)
+        gpt2_l = loss(gpt2_output)
+        # For a multi-model transformer sweep (model_sweep = n_models), split along
+        # the leading axis instead, e.g. for GPT2 vs TransfoXL:
+        # gpt2_output, transfoxl_output = einops.rearrange(M_transformer.output.environment.observation, "n 1 1 b t l d -> n b t l d",)
+        # gpt2_l, transfoxl_l = loss(gpt2_output), loss(transfoxl_output)
 
 
-        # [n_firs x train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size x context_length x O_D]
-        # -> [n_firs x train.sequence_length x n_test_systems x n_test_traces x context_length x O_D]
-        # -> [n_firs x n_test_systems x n_test_traces x O_D x context_length]
-        # -> [n_firs x n_test_systems x n_test_traces x context_length x O_D]
-        cnn_output = torch.diagonal(M_cnn.output.environment.observation.squeeze(5).squeeze(4), dim1=1, dim2=4).transpose(3, 4)
+        # Online CNN: the per-step analytical evaluation is logged in the training
+        # output (one entry per timestep seen, plus a final re-evaluation). Stack
+        # over the ir_length sweep and align entries 1..context_length with the
+        # context position (entry i = filter after observing i timesteps).
+        # [n_firs x n_test_systems x n_test_traces x (context_length + 1) x 1]
+        cnn_output_log = eu.stack_tensor_arr(eu.multi_map(
+            eu.identity, get_result_attr(result_cnn, "output"), dtype=TensorDict,
+        ))
         # -> [n_firs x n_test_systems x n_test_traces x context_length]
-        cnn_l = loss(cnn_output)
-        # [n_firs x context_length x n_test_systems x n_test_traces x n_experiments x ensemble_size]
-        # -> [n_firs x n_test_systems x n_test_traces x context_length]
-        cnn_al = einops.rearrange(M_cnn.al, "r l s b 1 1 -> r s b l")
+        cnn_al = cnn_output_log["validation_analytical"][..., 0][..., 1:context_length + 1]
 
 
         # [train.sequence_length x n_test_systems x n_test_traces x n_experiments x ensemble_size x context_length x O_D]
@@ -465,12 +487,11 @@ if __name__ == "__main__":
         plot_empirical(eil, "kalman_filter", "black")
         plot_analytical(il[:, None].expand(n_test_systems, context_length), "black")
     
-        # SECTION: Plot CNN baseline
+        # SECTION: Plot CNN baseline (online least-squares analytical curve)
         c_list = plt.rcParams["axes.prop_cycle"].by_key()["color"]
         c_list[2] = "aquamarine"
-        for fir_length in range(3):
-            plot_empirical(cnn_l[fir_length], f"fir_length{fir_length + 1}", c_list[fir_length])
-            plot_analytical(cnn_al[fir_length], c_list[fir_length])
+        for fir_length in range(min(3, n_firs)):
+            plot_analytical(cnn_al[fir_length], c_list[fir_length], label=f"fir_length{fir_length + 1}")
     
         # SECTION: Plot RNN baseline
         plot_empirical(rnn_l, "iir", "crimson", indices=rnn_indices)
@@ -478,7 +499,7 @@ if __name__ == "__main__":
     
         # SECTION: Plot transformers
         plot_empirical(gpt2_l, "gpt2", "gold", error_bars=False, zorder=2)
-        plot_empirical(transfoxl_l, "transfoxl", "purple", error_bars=False, zorder=2)
+        # plot_empirical(transfoxl_l, "transfoxl", "purple", error_bars=False, zorder=2)
     
         plt.title(f"InContext-GaussianA0.95/GaussianC: System {system_idx}")
         plt.xscale("log")
