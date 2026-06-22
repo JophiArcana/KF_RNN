@@ -1,0 +1,495 @@
+Suppose I have an LTI system with state matrix F, observation matrix H, evolution noise covariance Q, and measurement noise covariance R. I also have a filter that is randomly initialized with \hat{F} and \hat{K} whose state is given by \hat{x}_{t + 1} = \hat{F}\hat{x}_t + \hat{K}y_t. Now suppose I run some sort of self-distillation such that I train \hat{F}\hat{x}_t = \hat{x}_{t + 1}. What happens to \hat{F}? 
+
+
+
+
+
+This is a fascinating theoretical question at the intersection of control theory and self-supervised learning. The fate of your state matrix  
+F
+^
+  depends entirely on how you compute the gradients during this self-distillation process.
+
+Because the filter's recurrent state is defined as  
+x
+^
+  
+t+1
+​
+ = 
+F
+^
+  
+x
+^
+  
+t
+​
+ + 
+K
+^
+ y 
+t
+​
+ , training the network to satisfy  
+F
+^
+  
+x
+^
+  
+t
+​
+ = 
+x
+^
+  
+t+1
+​
+  leads to two vastly different outcomes depending on whether you use end-to-end autodifferentiation or detached targets (stop-gradients).
+
+Here is exactly what happens in both scenarios.
+
+Scenario 1: End-to-End Autodifferentiation (No Stop-Gradients)
+If you simply pass this system into a standard optimizer using a Mean Squared Error loss without detaching the targets, absolutely nothing happens to  
+F
+^
+ . It remains at its random initialization.
+
+Here is the mathematical proof. Your loss function is:
+
+L=∣∣ 
+x
+^
+  
+t+1
+​
+ − 
+F
+^
+  
+x
+^
+  
+t
+​
+ ∣∣ 
+2
+ 
+Substitute your explicit state definition ( 
+x
+^
+  
+t+1
+​
+ = 
+F
+^
+  
+x
+^
+  
+t
+​
+ + 
+K
+^
+ y 
+t
+​
+ ) into the loss:
+
+L=∣∣( 
+F
+^
+  
+x
+^
+  
+t
+​
+ + 
+K
+^
+ y 
+t
+​
+ )− 
+F
+^
+  
+x
+^
+  
+t
+​
+ ∣∣ 
+2
+ 
+L=∣∣ 
+K
+^
+ y 
+t
+​
+ ∣∣ 
+2
+ 
+Because  
+K
+^
+  is fixed (randomly initialized) and the observation sequence y 
+t
+​
+  is driven externally by the true LTI system (F,H,Q,R), the loss evaluates to a value that is entirely independent of  
+F
+^
+ . Consequently, the gradient ∇ 
+F
+^
+ 
+​
+ L is exactly zero.
+
+Scenario 2: Predictive Learning (With Detached Targets)
+In standard self-distillation (e.g., Teacher-Student architectures like BYOL or DINO), the target state  
+x
+^
+  
+t+1
+​
+  and the input state  
+x
+^
+  
+t
+​
+  are treated as fixed ("detached") with respect to the matrix being updated.
+
+If you update  
+F
+^
+  to minimize the prediction error over these detached states, the system undergoes a form of representation collapse, and the eigenvalues of  
+F
+^
+  will be driven to the unit circle.
+
+The Mechanics of the Collapse
+When treating the states as fixed, updating  
+F
+^
+  is equivalent to solving an Ordinary Least Squares (OLS) problem at each iteration:
+
+F
+^
+  
+new
+​
+ =Σ 
+x
+^
+  
+t+1
+​
+  
+x
+^
+  
+t
+​
+ 
+​
+ Σ 
+x
+^
+  
+t
+​
+  
+x
+^
+  
+t
+​
+ 
+−1
+​
+ 
+Substituting your state equation into the cross-covariance term gives the iterative update rule:
+
+F
+^
+  
+new
+​
+ = 
+F
+^
+  
+old
+​
+ + 
+K
+^
+ Σ 
+y 
+t
+​
+  
+x
+^
+  
+t
+​
+ 
+​
+ Σ 
+x
+^
+  
+t
+​
+  
+x
+^
+  
+t
+​
+ 
+−1
+​
+ 
+To see why this collapses, consider a simplified 1D case where the filter parameters are scalars (f and k), and the observation sequence y 
+t
+​
+  is an AR(1) process with an autocorrelation coefficient of ρ. Evaluating the steady-state covariances simplifies the update rule beautifully to a fixed-point iteration:
+
+f 
+new
+​
+ = 
+1+f 
+old
+​
+ ρ
+f 
+old
+​
+ +ρ
+​
+ 
+Setting f 
+new
+​
+ =f 
+old
+​
+  reveals that the stable fixed points for this map are exactly 1 (if ρ>0) and -1 (if ρ<0).
+
+What this means physically for your LTI setup
+In the multi-dimensional case, this dynamic pushes the eigenvalues (λ) of your matrix  
+F
+^
+  outward until they hit the unit circle (∣λ∣→1).
+
+Your filter learns to become a marginally stable integrator or oscillator. By pushing its eigenvalues to the edge of instability, the variance of the internal state  
+x
+^
+  
+t
+​
+  grows infinitely large. It does this because inflating its own state is the only way to drown out the unpredictable, exogenous noise injection ( 
+K
+^
+ y 
+t
+​
+ ). By making  
+F
+^
+  
+x
+^
+  
+t
+​
+  massive, the relative contribution of  
+K
+^
+ y 
+t
+​
+  vanishes, artificially driving the relative prediction error to zero and satisfying your self-distillation objective.
+
+
+
+
+
+
+Does the converged \hat{F} have any correlation with the underlying system?
+
+
+
+
+
+
+
+Yes, it absolutely does. While the self-distillation objective destroys the damping information of the true system (by pushing the eigenvalues of  
+F
+^
+  to the unit circle), it perfectly extracts the spectral skeleton of the underlying LTI system.
+
+Even though  
+F
+^
+  becomes a marginally stable oscillator, the frequencies at which it oscillates—represented by the angles of its eigenvalues—are directly correlated with the dominant eigenvalues of the true system matrix F.
+
+Here is the mechanical breakdown of why and how this correlation emerges.
+
+1. The Color of the Noise
+In your filter, the only link to the external world is the innovation term  
+K
+^
+ y 
+t
+​
+ .
+
+If y 
+t
+​
+  were perfectly white noise,  
+F
+^
+  would push its eigenvalues to the unit circle at entirely arbitrary angles, dependent only on its random initialization. However, y 
+t
+​
+  is generated by your underlying LTI system (F,H,Q,R). Therefore, y 
+t
+​
+  is colored noise.
+
+The power spectral density (PSD) of y 
+t
+​
+  contains distinct peaks corresponding to the resonant frequencies of the true state matrix F. Specifically, the complex eigenvalues of F (the poles of the true system) dictate where y 
+t
+​
+  carries the most energy.
+
+2. Resonance Alignment via Cross-Covariance
+Recall the update rule from the predictive least-squares collapse:
+
+F
+^
+  
+new
+​
+ = 
+F
+^
+  
+old
+​
+ + 
+K
+^
+ Σ 
+y 
+t
+​
+  
+x
+^
+  
+t
+​
+ 
+​
+ Σ 
+x
+^
+  
+t
+​
+  
+x
+^
+  
+t
+​
+ 
+−1
+​
+ 
+The term that drives the update is the cross-covariance Σ 
+y 
+t
+​
+  
+x
+^
+  
+t
+​
+ 
+​
+ . For this term to be maximized (which drives the least-squares error down), the internal state  
+x
+^
+  
+t
+​
+  must correlate as strongly as possible with the incoming observation y 
+t
+​
+ .
+
+Because y 
+t
+​
+  has dominant frequencies dictated by F, the most efficient way for the filter to minimize the prediction error is to align its own internal resonances with the strongest periodic components of y 
+t
+​
+ .
+
+3. The Converged State of  
+F
+^
+ 
+As the predictive loss drives the eigenvalues (λ 
+F
+^
+ 
+​
+ ) of  
+F
+^
+  outward to a magnitude of 1, their angular positions (phases) migrate to match the angles of the most observable, least-damped eigenvalues (λ 
+F
+​
+ ) of the true system F.
+
+If you plot the eigenvalues on the complex plane after convergence:
+
+True System (F): Eigenvalues are strictly inside the unit circle (assuming a stable LTI system).
+
+Converged Filter ( 
+F
+^
+ ): Eigenvalues are sitting exactly on the unit circle (∣λ 
+F
+^
+ 
+​
+ ∣≈1).
+
+The Correlation: The radial angles (phases) of the eigenvalues of  
+F
+^
+  will perfectly shadow the radial angles of the dominant eigenvalues of F.
+
+The Bottom Line
+The converged  
+F
+^
+  is essentially an undamped, stripped-down clone of F. It has lost all information about how quickly the true system's transients decay (because the self-distillation objective forced it to artificially inflate its state variance), but it has successfully learned exactly how the true system oscillates.

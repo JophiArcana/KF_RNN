@@ -31,7 +31,7 @@ hydra-core>=1.3
 omegaconf>=2.3
 
 # Shared research utilities (single source of truth across projects), on PyPI.
-ecliseutils==0.1.0
+ecliseutils==0.1.2
 
 
 

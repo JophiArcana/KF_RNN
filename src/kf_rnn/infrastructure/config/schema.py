@@ -165,7 +165,7 @@ class OptimizerConfig:
 @dataclass
 class SchedulerConfig:
     type: str = "exponential"            # {"exponential", "cosine", "reduce_on_plateau"}
-    warmup_duration: int = 100
+    warmup_duration: int = 0
     epochs: Optional[int] = 2500
     lr_decay: float = 0.995              # exponential
     T_0: int = 10                        # cosine

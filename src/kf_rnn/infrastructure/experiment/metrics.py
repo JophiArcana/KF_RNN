@@ -55,6 +55,34 @@ def add_to_metrics(M: Metric, names: tuple[str, ...]):
 def _unsqueeze_if(t: torch.Tensor, b: bool) -> torch.Tensor:
     return t[..., None] if b else t
 
+def _broadcast_group_shaped(group_tensor: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Reshape a system-``group_shape``-shaped tensor (e.g. the per-system
+    irreducible error) so it broadcasts against ``target`` (the per-element
+    reducible error).
+
+    The standard datasets are laid out ``[..., N, B(, L)]`` (systems
+    second-to-last) while the permuted CNN/RNN baseline datasets are laid out
+    ``[N, B, ...]`` (systems first), so a plain right-aligned broadcast is not
+    always correct. Locate the alignment offset whose non-singleton group dims
+    exactly match ``target`` (rather than merely broadcasting against size-1
+    axes), and pad the remaining axes with singletons.
+    """
+    g_shape = tuple(group_tensor.shape)
+    best_offset, best_exact = None, -1
+    for offset in range(target.ndim - group_tensor.ndim + 1):
+        window = target.shape[offset:offset + group_tensor.ndim]
+        if all((g == w) or g == 1 or w == 1 for g, w in zip(g_shape, window)):
+            exact = sum(1 for g, w in zip(g_shape, window) if g != 1 and g == w)
+            if exact > best_exact:
+                best_offset, best_exact = offset, exact
+    if best_offset is None:
+        raise RuntimeError(
+            f"Cannot align group-shaped tensor {g_shape} with target shape {tuple(target.shape)}."
+        )
+    return group_tensor.reshape(
+        (1,) * best_offset + g_shape + (1,) * (target.ndim - group_tensor.ndim - best_offset)
+    )
+
 
 
 
@@ -94,9 +122,7 @@ def _get_metric_with_loss_fn_and_dataset_type(ds_type: str, loss_fn: LossFn, kwa
             if noiseless:
                 env = sg.environment
                 irreducible_error = eu.batch_trace(env.H @ env.S_W @ env.H.mT + env.S_V)
-                if with_batch_dim:
-                    irreducible_error = irreducible_error[..., None]
-                return reducible_error + irreducible_error
+                return reducible_error + _broadcast_group_shaped(irreducible_error, reducible_error)
             else:
                 return reducible_error
 

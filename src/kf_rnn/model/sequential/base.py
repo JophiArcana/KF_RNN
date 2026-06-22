@@ -1,10 +1,6 @@
-import math
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Sequence
 
-import einops
-import numpy as np
 import torch
 from tensordict import TensorDict
 
@@ -20,14 +16,6 @@ class SequentialPredictor(Predictor):
         initial_state_scale: float = 1.0
 
     eps: float = 1e-6
-
-    @classmethod
-    def _evaluate_form(cls,
-                       state: torch.Tensor,         # [B x S_D]
-                       form: Sequence[torch.Tensor] # [T x D x S_D], [B x T x D]
-    ) -> torch.Tensor:                              # [B x T x D]
-        weights, biases = form
-        return torch.einsum("tds, bs -> btd", weights, state) + biases
 
     @classmethod
     def _analytical_error_and_cache(cls,
@@ -146,42 +134,37 @@ class SequentialPredictor(Predictor):
         return self.forward_with_initial(state_estimation, actions, observations, mode)
 
     def forward_with_initial(self,
-                             state_estimation: torch.Tensor,
-                             actions: TensorDict,
-                             observations: torch.Tensor,
-                             mode: str,
+                             state_estimation: torch.Tensor,   # [B... x S_D]
+                             actions: TensorDict,               # [B... x L x I_D?]
+                             observations: torch.Tensor,        # [B... x L x O_D]
+                             mode: str = None,                  # accepted for backwards compatibility; unused
     ) -> dict[str, dict[str, torch.Tensor]]:
-        L = observations.shape[1]
+        # The Kalman sweep is the linear recurrence ``s[t] = M s[t-1] + b[t]`` with
+        #   M = (I - K H) F,   b[t] = (I - K H) (B u[t]) + K y[t].
+        # Solve it in one shot with the diagonalized parallel scan (see
+        # ``eu.dense_linear_scan``), which handles arbitrary leading batch dims and
+        # whose explicit adjoint backward never differentiates through ``eig``.
+        E = torch.eye(self.S_D) - self.K @ self.H                                       # [S_D x S_D]
+        M = E @ self.F                                                                  # [S_D x S_D]
 
-        if mode is None:
-            mode = ["sequential", "form", "form_sqrt"][np.searchsorted([16, 64], L)]
+        Bu = torch.zeros((*observations.shape[:-1], self.S_D)) + sum(                   # [B... x L x S_D]
+            ac @ self.B[ac_name].mT for ac_name, ac in actions.items()
+        )
+        b = Bu @ E.mT + observations @ self.K.mT                                        # [B... x L x S_D]
 
-        if mode == "sequential":
-            result = []
-            for l in range(L):
-                result.append(r := self._forward(state_estimation, actions[:, l], observations[:, l]))
-                state_estimation = r["environment", "state"]
-            return TensorDict.maybe_dense_stack(result, dim=-1).to_dict()
-        else:
-            state_estimations, observation_estimations = [], []
-            result_generic = self._forward_generic(actions, observations, mode)
+        scan_input = torch.cat([state_estimation[..., None, :], b], dim=-2)             # [B... x (L + 1) x S_D]
+        state_estimations = eu.dense_linear_scan(M, scan_input)                         # [B... x L x S_D]
 
-            state_weights, state_biases_list = result_generic["state_form"]                     # [sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]
-            observation_weights, observation_biases_list = result_generic["observation_form"]   # [sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D]
+        state_priors = torch.cat([state_estimation[..., None, :], state_estimations[..., :-1, :]], dim=-2)   # [B... x L x S_D]
+        observation_estimations = (state_priors @ self.F.mT + Bu) @ self.H.mT           # [B... x L x O_D]
 
-            for state_biases, observation_biases in zip(state_biases_list, observation_biases_list):
-                state_estimations.append(SequentialPredictor._evaluate_form(state_estimation, (state_weights[:state_biases.shape[1]], state_biases)))
-                observation_estimations.append(SequentialPredictor._evaluate_form(state_estimation, (observation_weights[:observation_biases.shape[1]], observation_biases)))
-
-                state_estimation = state_estimations[-1][:, -1]
-
-            return {
-                "environment": {
-                    "state": torch.cat(state_estimations, dim=1),
-                    "observation": torch.cat(observation_estimations, dim=1),
-                },
-                "controller": {},
-            }
+        return {
+            "environment": {
+                "state": state_estimations,
+                "observation": observation_estimations,
+            },
+            "controller": {},
+        }
 
     def _forward(self,
                  state: torch.Tensor,                   # [B x S_D]
@@ -199,81 +182,6 @@ class SequentialPredictor(Predictor):
             },
             "controller": {}
         }, batch_size=state.shape[:-1])
-
-    """ forward
-        :parameter {
-            "input": [B x L x I_D],
-            "observation": [B x L x O_D]
-        }
-        :returns {
-            "state_form": ([sqrtT x S_D x S_D], sqrtT x [B x ≈sqrtT x S_D]),
-            "observation_form": ([sqrtT x O_D x S_D], sqrtT x [B x ≈sqrtT x O_D])
-        }
-    """
-    def _forward_generic(self,
-                         actions: TensorDict,
-                         observations: torch.Tensor,
-                         mode: str
-    ) -> dict[str, tuple[torch.Tensor, Sequence[torch.Tensor]]]:
-        # Precomputation
-        B, L = actions.shape
-        hsqrtL = int(math.ceil(math.sqrt(L)))
-        lsqrtL = int(math.ceil(L / hsqrtL))
-
-        E = torch.eye(self.S_D) - self.K @ self.H
-        M = E @ self.F
-
-        subL = L if mode == "form" else hsqrtL                                                                                          # Length of vectorized subsequence
-        # Compute the weights efficiently as repeated powers of (I - KH)F
-        state_weights = eu.pow_series(M, subL + 1)                                                                                   # [(subL + 1) x S_D x S_D]
-        observation_weights = (self.H @ self.F) @ state_weights                                                                         # [(subL + 1) x O_D x S_D]
-
-        # Compute the biases efficiently using the state weights
-        buffered_state_weights = torch.cat([
-            state_weights,
-            torch.zeros((1, self.S_D, self.S_D)),
-        ], dim=0)                                                                                                                       # [(subL + 2) x S_D x S_D]
-        lower_triangular_indices = (torch.arange(subL)[:, None] - torch.arange(subL)).clamp_min(-1)                                     # [subL x subL]
-
-        blocked_lower_triangular_matrix = buffered_state_weights[lower_triangular_indices]                                              # [subL x subL x S_D x S_D]
-        lower_triangular_matrix = einops.rearrange(blocked_lower_triangular_matrix, "h w dh dw -> (h dh) (w dw)")                       # [(subL x S_D) x (subL x S_D)]
-
-        u = torch.zeros((B, L, self.S_D)) + sum(ac @ self.B[ac_name].mT for ac_name, ac in actions.items())                             # [B x L x S_D]
-        if mode == "form":
-            state_biases = torch.cat([
-                torch.zeros((B, 1, self.S_D)),
-                ((u @ E.mT + observations @ self.K.mT).view(B, -1) @ lower_triangular_matrix.mT).view(B, L, self.S_D),
-            ], dim=1)                                                                                                                   # [B x (L + 1) x S_D]
-            observation_biases = (state_biases[:, :-1] @ self.F.mT + u) @ self.H.mT                                                     # [B x L x O_D]
-
-            state_biases = [state_biases[:, 1:]]                                                                                        # 1 x [B x L x S_D]                                                                                               # sqrtT x [B x ≈sqrtT x S_D]
-            observation_biases = [observation_biases]                                                                                   # 1 x [B x L x O_D]
-
-        else:
-            p = hsqrtL * lsqrtL - L
-
-            reshaped_padded_observations = torch.cat([
-                observations,
-                torch.zeros_like(observations[:, :p]),
-            ], dim=1).reshape(B * lsqrtL, hsqrtL, self.O_D)                                                                             # [BsqrtL x sqrtL x O_D]
-            u = torch.cat([u, torch.zeros_like(u[:, :p])], dim=1).reshape(B * lsqrtL, hsqrtL, self.S_D)                                 # [BsqrtL x sqrtL x S_D]
-
-            reshaped_state_biases = torch.cat([
-                torch.zeros((B * lsqrtL, 1, self.S_D)),
-                ((u @ E.mT + reshaped_padded_observations @ self.K.mT).view(B * lsqrtL, -1) @ lower_triangular_matrix.mT).view(B * lsqrtL, hsqrtL, self.S_D),
-            ], dim=1)                                                                                                                   # [BsqrtT x (sqrtT + 1) x S_D]
-            reshaped_observation_biases = (reshaped_state_biases[:, :-1] @ self.F.mT + u) @ self.H.mT                                   # [BsqrtT x sqrtT x O_D]
-
-            state_biases = list(reshaped_state_biases[:, 1:].view(B, lsqrtL, hsqrtL, self.S_D).transpose(0, 1))                         # sqrtT x [B x sqrtT x S_D]                                                                                               # sqrtT x [B x ≈sqrtT x S_D]
-            observation_biases = list(reshaped_observation_biases.view(B, lsqrtL, hsqrtL, self.O_D).transpose(0, 1))                    # sqrtT x [B x sqrtT x O_D]
-            if p > 0:
-                state_biases[-1] = state_biases[-1][:, :-p]                                                                             # sqrtT x [B x ≈sqrtT x S_D]
-                observation_biases[-1] = observation_biases[-1][:, :-p]                                                                 # sqrtT x [B x ≈sqrtT x O_D]
-
-        return {
-            "state_form": (state_weights[1:], state_biases),
-            "observation_form": (observation_weights[:-1], observation_biases),
-        }
 
 
 class SequentialController(Controller, SequentialPredictor):

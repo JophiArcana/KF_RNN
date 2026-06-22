@@ -68,9 +68,10 @@ class Predictor(Observer):
             dataset: TensorDict,
             kwargs: dict[str, Any] = MappingProxyType(dict()),
             split_size: int = EnsembleModule.DEFAULT_SPLIT_SIZE,
+            method: str = "forward",
     ) -> TensorDict:
         # Thin shim: the ensemble reshape/chunk/vmap plumbing lives in EnsembleModule.
-        return EnsembleModule.from_pair(model_pair).run(dataset, kwargs, split_size)
+        return EnsembleModule.from_pair(model_pair).run(dataset, kwargs, split_size, method=method)
 
     @classmethod
     def gradient(cls,
@@ -78,8 +79,9 @@ class Predictor(Observer):
                  dataset: TensorDict,
                  kwargs: dict[str, Any] = MappingProxyType(dict()),
                  split_size: int = EnsembleModule.DEFAULT_SPLIT_SIZE,
+                 method: str = "forward",
     ) -> TensorDict:
-        return EnsembleModule.from_pair(model_pair).gradient(dataset, kwargs, split_size)
+        return EnsembleModule.from_pair(model_pair).gradient(dataset, kwargs, split_size, method=method)
 
     @classmethod
     def evaluate_run(cls,

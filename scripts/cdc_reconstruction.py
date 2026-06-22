@@ -138,12 +138,15 @@ if __name__ == "__main__":
         )
         ARGS_TRANSFORMER.training.scheduler = SchedulerConfig(
             type="exponential",
+            warmup_duration=20,
             epochs=100, lr_decay=1.0,
         )
 
         ARGS_TRANSFORMER.experiment.n_experiments = 1
         ARGS_TRANSFORMER.experiment.ensemble_size = 1
         ARGS_TRANSFORMER.experiment.exp_name = exp_name_transformer
+        ARGS_TRANSFORMER.experiment.print_frequency = 1
+        ARGS_TRANSFORMER.experiment.checkpoint_frequency = 10
         ARGS_TRANSFORMER.experiment.metrics = MetricsConfig(training={
             # "noiseless_overfit",
             "noiseless_validation",
@@ -243,6 +246,7 @@ if __name__ == "__main__":
 
         ARGS_BASELINE_CNN.experiment.n_experiments = n_test_systems
         ARGS_BASELINE_CNN.experiment.ensemble_size = n_test_traces
+        ARGS_BASELINE_CNN.experiment.print_frequency = 100
         ARGS_BASELINE_CNN.experiment.metrics = MetricsConfig(training={"validation_analytical"})
     
         # SECTION: Make a copy for RNN args after setting shared parameters
@@ -283,10 +287,11 @@ if __name__ == "__main__":
             # factor=0.5, patience=10, warmup_duration=0,
             type="exponential",
             lr_decay=0.95, warmup_duration=100,
-            epochs=2000, gradient_cutoff=1e-6,
+            epochs=1000, gradient_cutoff=1e-6,
         )
 
         ARGS_BASELINE_RNN.experiment.exp_name = exp_name_rnn
+        ARGS_BASELINE_RNN.experiment.checkpoint_frequency = 100
     
         configurations_rnn = [
             ("total_trace_length", {

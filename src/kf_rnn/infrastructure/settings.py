@@ -35,8 +35,8 @@ import torch
 
 PRECISION: int = 8
 _CUDA_NUM: int = 0
-DEVICE: str = "cpu"  # f"cuda:{_CUDA_NUM}"
-DTYPE: torch.dtype = torch.float64
+DEVICE: str = "cuda:0"  # f"cuda:{_CUDA_NUM}"
+DTYPE: torch.dtype = torch.float32
 PROJECT_NAME: str = "KF_RNN"
 # Resolve the repo root from this file's location
 # (``<root>/src/kf_rnn/infrastructure/settings.py`` -> 3 parents up). The editable

@@ -239,7 +239,7 @@ class SGDStage(TrainingStage):
         result = []
         loss_fn: LossFn = get_loss_fn(THP)
 
-        for indices in tqdm(_sample_dataset_indices(exclusive.train_info.dataset, vars(THP.sampling),)):
+        for indices in _sample_dataset_indices(exclusive.train_info.dataset, vars(THP.sampling),):
             dataset_ss = _extract_dataset_from_indices(cache.padded_train_dataset, indices)
 
             model_pair[0].train()

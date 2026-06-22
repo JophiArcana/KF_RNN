@@ -22,7 +22,7 @@ dependencies = [
     "netcdf4==1.7.1",
     "hydra-core>=1.3",
     "omegaconf>=2.3",
-    "ecliseutils==0.1.0",
+    "ecliseutils==0.1.2",
 ]
 
 [tool.setuptools.packages.find]

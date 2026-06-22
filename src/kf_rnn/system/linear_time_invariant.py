@@ -91,9 +91,16 @@ class LTISystem(SystemGroup):
         self.register_module("L_augmented", L_augmented)
 
         # SECTION: Register irreducible loss
+        zero_predictor_loss = ZeroController.analytical_error(None, self.td())
+        self.register_module("zero_predictor_loss", eu.buffer_dict(zero_predictor_loss))
+
+        assert len(self.hyperparameters.problem_shape.controller) == 0
+        copy_predictor_loss = CopyPredictor.analytical_error(None, self.td())
+        self.register_module("copy_predictor_loss", eu.buffer_dict(copy_predictor_loss))
+
         irreducible_loss = TensorDict({
             (*k.split("."),): torch.zeros(self.group_shape)
-            for k in shape_leaves(self.environment.problem_shape)
+            for k in shape_leaves(self.hyperparameters.problem_shape)
         }, batch_size=self.group_shape)
         irreducible_loss["environment", "observation"] = self.environment.irreducible_loss.clone()
         self.register_module("irreducible_loss", eu.buffer_dict(irreducible_loss))
