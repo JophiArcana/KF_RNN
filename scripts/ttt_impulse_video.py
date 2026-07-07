@@ -11,6 +11,7 @@ import os
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/mpl-kf-rnn")
 
+import numpy as np
 import torch
 import matplotlib
 matplotlib.use("Agg")
@@ -25,10 +26,16 @@ except Exception:
     pass
 
 import ecliseutils as eu
+from tensordict import TensorDict
 from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.settings import OUTPUT_PATH
-from kf_rnn.model.sequential import RnnInContextPredictor
+from kf_rnn.model.sequential import RnnSelfDistillPredictor
 from kf_rnn.system.linear_time_invariant import ContinuousDistribution
+
+# Exact analytical filter error (shared with the loss-comparison driver). The
+# scripts dir is on sys.path[0], and the import is side-effect-light (its work is
+# under ``if __name__ == "__main__"``; it does force CPU, which is what we want).
+from self_distillation_losses import filter_analytical_error
 
 
 def kalman_ir(F: torch.Tensor, H: torch.Tensor, K: torch.Tensor, R: int) -> torch.Tensor:
@@ -39,19 +46,21 @@ def kalman_ir(F: torch.Tensor, H: torch.Tensor, K: torch.Tensor, R: int) -> torc
 
 
 @torch.no_grad()
-def adapted_ir_history(model: RnnInContextPredictor,
-                       state0: torch.Tensor,        # [S_D]
-                       observations: torch.Tensor,  # [L x O_D]
-                       R: int,
-) -> torch.Tensor:                                   # [L x R x O_D x O_D]
+def adapted_history(model: RnnSelfDistillPredictor,
+                    state0: torch.Tensor,        # [S_D]
+                    observations: torch.Tensor,  # [L x O_D]
+                    R: int,
+                    lsg_td: TensorDict,
+) -> tuple[torch.Tensor, np.ndarray]:            # [L x R x O_D x O_D], [L]
     """Replay the online loop for one trajectory, returning the learned filter's
-    IR snapshot after each step. Mirrors ``RnnInContextPredictor.forward``."""
+    IR snapshot *and* its exact analytical observation error after each step.
+    Mirrors ``RnnInContextPredictor.forward``."""
     theta = {k: v.detach().clone() for k, v in eu.td_items(eu.parameter_td(model)).items()}
     s = state0
     w = model.window
     ent_win = s[None].expand(w, *s.shape).clone()
     L = observations.shape[0]
-    irs = []
+    irs, errs = [], np.empty(L)
     for t in range(L):
         out = torch.func.functional_call(model.cell, theta, (s, {}, observations[t]))
         s_post = out["environment", "state"]
@@ -64,7 +73,8 @@ def adapted_ir_history(model: RnnInContextPredictor,
             theta = model._optimizer_step(theta, grads)
         s = s_post
         irs.append(kalman_ir(theta["F"], theta["H"], theta["K"], R))
-    return torch.stack(irs, dim=0)                                               # [L x R x O_D x O_D]
+        errs[t] = filter_analytical_error(theta["F"], theta["H"], theta["K"], lsg_td)
+    return torch.stack(irs, dim=0), errs                                         # [L x R x O_D x O_D], [L]
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,6 +105,21 @@ def parse_args() -> argparse.Namespace:
                          help="scale of the random initial state (only used in --train mode)")
     g_model.add_argument("--train", action="store_true",
                          help="run in training mode (random initial state) instead of eval (zeros)")
+
+    # SECTION: self-distillation method weights (defaults reproduce M4 = full a-priori obs)
+    g_method = p.add_argument_group("method weights (RnnSelfDistillPredictor)")
+    g_method.add_argument("--alpha", type=float, default=0.0,
+                          help="latent self-distillation weight (M1/M2/M3)")
+    g_method.add_argument("--beta0", type=float, default=1.0,
+                          help="a-priori observation-prediction weight (grounding; M4=1)")
+    g_method.add_argument("--beta2", type=float, default=0.0,
+                          help="a-posteriori observation-prediction weight (direct-K; section 6.1)")
+    g_method.add_argument("--adapt-keys", type=str, default="F,H,K",
+                          help="comma-separated fast-weights that receive the online update")
+    g_method.add_argument("--h-init", type=str, default="random", choices=("random", "zero"),
+                          help="decoder init: 'zero' is M1 (innovation == y -> raw K y injection)")
+    g_method.add_argument("--weight-decay", type=float, default=0.0,
+                          help="decoupled radial shrink paired with the a-posteriori term (rate analog)")
 
     # SECTION: continuous system distribution
     g_sys = p.add_argument_group("system")
@@ -131,10 +156,20 @@ if __name__ == "__main__":
     distribution = ContinuousDistribution(args.f_mode, args.h_mode, eps, args.w_std, args.v_std)
     lsg = distribution.sample(system_cfg, ())
 
-    model = RnnInContextPredictor(RnnInContextPredictor.Config(
+    adapt_keys = tuple(k.strip() for k in args.adapt_keys.split(",") if k.strip())
+    model = RnnSelfDistillPredictor(RnnSelfDistillPredictor.Config(
         problem_shape=problem_shape, S_D=S_D, n_steps=args.n_steps, step_size=step_size,
         window=args.window, initial_state_scale=args.initial_state_scale,
+        alpha=args.alpha, beta0=args.beta0, beta2=args.beta2,
+        adapt_keys=adapt_keys, weight_decay=args.weight_decay,
     ))
+    with torch.no_grad():
+        # A frozen K must be a nonzero random gain (default K=0 makes the filter
+        # inert); when K adapts (M4) the K=0 start is fine. Mirrors run_method.
+        if "K" not in adapt_keys:
+            model.K.copy_(torch.randn((S_D, O_D)) / (O_D ** 0.5))
+        if args.h_init == "zero":          # M1: innovation == y -> raw K y injection
+            model.H.zero_()
     if args.train:
         model.train()
     else:
@@ -148,11 +183,27 @@ if __name__ == "__main__":
     F_t, H_t, K_t = lsg.environment.F, lsg.environment.H, lsg.environment.K
     truth_ir = kalman_ir(F_t, H_t, K_t, R).detach().cpu()            # [R x O_D x O_D]
 
-    learned = torch.stack([
-        adapted_ir_history(model, state0[n], observations[n], R) for n in range(N)
-    ], dim=0)                                                        # [N x L x R x O_D x O_D]
+    # Exact analytical baselines (no sampling): irreducible floor + zero-pred ceiling.
+    lsg_td = lsg.td()
+    floor = lsg.irreducible_loss.environment.observation.item()
+    ceiling = lsg.zero_predictor_loss.environment.observation.item()
+
+    ir_list, err_list = [], []
+    for n in range(N):
+        ir_n, err_n = adapted_history(model, state0[n], observations[n], R, lsg_td)
+        ir_list.append(ir_n)
+        err_list.append(err_n)
+    learned = torch.stack(ir_list, dim=0)                           # [N x L x R x O_D x O_D]
     learned_mean = learned.mean(dim=0).cpu()                        # [L x R x O_D x O_D]
     learned_std = learned.std(dim=0).cpu()                          # [L x R x O_D x O_D]
+
+    # Per-step analytical error: median over trajectories (inf -> nan so an
+    # unstable filter leaves a gap rather than poisoning the median).
+    err_mat = np.stack(err_list, axis=0)                            # [N x L]
+    err_mat[~np.isfinite(err_mat)] = np.nan
+    with np.errstate(invalid="ignore"):
+        err_curve = np.nanmedian(err_mat, axis=0)                   # [L]
+    steps_axis = np.arange(1, L + 1)
 
     lags = torch.arange(1, R + 1).cpu().numpy()
 
@@ -162,7 +213,10 @@ if __name__ == "__main__":
     lo = lo.amin(dim=0)                                              # [O_D x O_D]
     hi = hi.amax(dim=0)
 
-    fig, axes = plt.subplots(O_D, O_D, figsize=(4.2 * O_D, 3.4 * O_D), sharex=True, squeeze=False)
+    # IR grid on top (O_D x O_D), exact-analytical-error panel spanning the bottom.
+    fig = plt.figure(figsize=(4.2 * O_D, 3.4 * O_D + 3.2))
+    gs = fig.add_gridspec(O_D + 1, O_D, height_ratios=[*([3.0] * O_D), 2.4])
+    axes = [[fig.add_subplot(gs[o, i]) for i in range(O_D)] for o in range(O_D)]
     artists = {}
     for o in range(O_D):
         for i in range(O_D):
@@ -182,6 +236,24 @@ if __name__ == "__main__":
                 ax.set_ylabel("IR coefficient")
     axes[0][0].legend(fontsize=8, loc="best")
 
+    # Bottom panel: exact analytical observation error vs adaptation step,
+    # revealed up to the current frame, with the irreducible floor / ceiling.
+    ax_err = fig.add_subplot(gs[O_D, :])
+    ax_err.axhline(floor, color="k", ls="--", lw=1.2, label=f"irreducible floor = {floor:.3g}")
+    ax_err.axhline(ceiling, color="0.5", ls=":", lw=1.1, label=f"zero-pred ceiling = {ceiling:.3g}")
+    (err_line,) = ax_err.plot([], [], color="C3", lw=1.8, label="analytical error (median over N)")
+    (err_dot,) = ax_err.plot([], [], color="C3", marker="o", ms=6, zorder=6)
+    ax_err.set_yscale("log")
+    ax_err.set_xlim(1, L)
+    finite_err = err_curve[np.isfinite(err_curve)]
+    emin = float(min(finite_err.min(), floor)) if finite_err.size else floor
+    emax = float(max(finite_err.max(), ceiling)) if finite_err.size else ceiling
+    ax_err.set_ylim(0.7 * emin, 1.4 * emax)
+    ax_err.set_xlabel("online step")
+    ax_err.set_ylabel("analytical obs error")
+    ax_err.set_title("Exact filter error vs the irreducible optimum (revealed over time)")
+    ax_err.legend(fontsize=8, loc="best", ncol=2)
+
     suptitle = fig.suptitle("", fontsize=11)
 
     def update(t: int):
@@ -196,10 +268,22 @@ if __name__ == "__main__":
                 new_band = axes[o][i].fill_between(lags, m - sd, m + sd, color="C0", alpha=0.2)
                 artists[(o, i)] = (line, new_band)
                 changed += [line, new_band]
+        # Reveal the analytical-error curve up to the current step.
+        err_line.set_data(steps_axis[:t + 1], err_curve[:t + 1])
+        if np.isfinite(err_curve[t]):
+            err_dot.set_data([steps_axis[t]], [err_curve[t]])
+            cur = err_curve[t]
+            excess_txt = f"{(cur - floor) / floor * 100:.1f}% over irreducible"
+        else:
+            err_dot.set_data([], [])
+            excess_txt = "filter unstable (no finite analytical error)"
+        changed += [err_line, err_dot]
         suptitle.set_text(
-            f"Impulse response over test-time adaptation  -  step {t + 1}/{L}\n"
-            f"ContinuousDistribution(eps={eps}), window={model.window}, "
-            f"step_size={model.step_size:.3g}, N={N}"
+            f"Impulse response + analytical error over test-time adaptation  -  "
+            f"step {t + 1}/{L}  ({excess_txt})\n"
+            f"alpha={args.alpha}, beta0={args.beta0}, beta2={args.beta2}, "
+            f"adapt={','.join(adapt_keys)}, wd={args.weight_decay}; "
+            f"eps={eps}, window={model.window}, step_size={model.step_size:.3g}, N={N}"
         )
         return changed
 

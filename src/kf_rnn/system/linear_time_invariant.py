@@ -105,6 +105,114 @@ class LTISystem(SystemGroup):
         irreducible_loss["environment", "observation"] = self.environment.irreducible_loss.clone()
         self.register_module("irreducible_loss", eu.buffer_dict(irreducible_loss))
 
+    def generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict:
+        """Fast path for the linear (LQE / optimal-LQR) rollout.
+
+        When the closed loop is a plain linear-Gaussian recursion -- the built-in
+        ``LQGController`` with no exploratory control noise and the analytical
+        Kalman targets available -- the whole trajectory (states, observations and
+        the propagated Kalman targets) is ``z_t = A z_{t-1} + b_t``. We sample it
+        in one batched parallel scan instead of the generic per-step Python loop in
+        :meth:`SystemGroup.generate_dataset`, which is what makes the abstraction
+        slow. Any other controller (e.g. a learned ``NNControllerGroup``) or
+        configuration falls back to the generic loop.
+        """
+        controller = self.controller
+        if (
+            getattr(self.environment, "include_analytical", False)
+            and isinstance(controller, LQGController)
+            and float(getattr(controller, "control_noise_std", 0.0)) == 0.0
+        ):
+            return self._fast_generate_dataset(batch_size, sequence_length)
+        return SystemGroup.generate_dataset(self, batch_size, sequence_length)
+
+    def _fast_generate_dataset(self, batch_size: int, sequence_length: int) -> TensorDict:
+        env = self.environment
+        cdims = controller_dims(self.hyperparameters.problem_shape)
+
+        F, H, K = env.F, env.H, env.K                                              # [N... x S x S], [N... x O x S], [N... x S x O]
+        group_shape = F.shape[:-2]
+        S_D, O_D = env.S_D, env.O_D
+        B, L = batch_size, sequence_length
+        kw = dict(device=F.device, dtype=F.dtype)
+
+        # SECTION: Augmented transition for z = [x; xhat] (true state, Kalman estimate)
+        #   x_t    = F x_{t-1} - BL xhat_{t-1} + w_t
+        #   xhat_t = KHF x_{t-1} + (F - BL - KHF) xhat_{t-1} + (KH w_t + K v_t)
+        KH = K @ H                                                                 # [N... x S x S]
+        BL = torch.zeros_like(F) + sum(
+            env.B[k] @ getattr(self.controller.L, k) for k in cdims
+        )                                                                          # [N... x S x S]
+        FBL = F - BL                                                               # [N... x S x S]
+        KHF = KH @ F                                                               # [N... x S x S]
+        A = torch.cat([
+            torch.cat([F, -BL], dim=-1),
+            torch.cat([KHF, FBL - KHF], dim=-1),
+        ], dim=-2)                                                                 # [N... x 2S x 2S]
+
+        def apply_mat(t: torch.Tensor, M: torch.Tensor) -> torch.Tensor:
+            # Apply ``M`` ([N... x p x q]) to the last axis of ``t`` ([N... x B x T x q]),
+            # broadcasting over the trace (B) axis; returns [N... x B x T x p].
+            return t @ M.reshape(*M.shape[:-2], 1, *M.shape[-2:]).mT
+
+        # SECTION: Initial timestep (t = 0), mirroring LTIEnvironment.sample_initial_state
+        sqrt_S_state_inf = eu.sqrtm(env.S_state_inf)                              # [N... x S x S]
+        x0 = env.initial_state_scale * (torch.randn((*group_shape, B, S_D), **kw) @ sqrt_S_state_inf.mT)
+        v0 = torch.randn((*group_shape, B, O_D), **kw) @ env.sqrt_S_V.mT          # [N... x B x O]
+        y0 = x0 @ H.mT + v0                                                        # [N... x B x O]
+        xhat0 = y0 @ K.mT                                                          # [N... x B x S]
+        z0 = torch.cat([x0, xhat0], dim=-1)                                        # [N... x B x 2S]
+
+        if L > 1:
+            # SECTION: Driving noise for t = 1 .. L-1 and the parallel scan
+            W = apply_mat(torch.randn((*group_shape, B, L - 1, S_D), **kw), env.sqrt_S_W)    # [N... x B x L-1 x S]
+            Vn = apply_mat(torch.randn((*group_shape, B, L - 1, O_D), **kw), env.sqrt_S_V)   # [N... x B x L-1 x O]
+            b = torch.cat([W, apply_mat(W, KH) + apply_mat(Vn, K)], dim=-1)        # [N... x B x L-1 x 2S]
+
+            B_input = torch.cat([z0[..., None, :], b], dim=-2)                     # [N... x B x L x 2S]
+            z_rest = eu.dense_linear_scan(A[..., None, :, :], B_input)             # [N... x B x L-1 x 2S]
+            z = torch.cat([z0[..., None, :], z_rest], dim=-2)                      # [N... x B x L x 2S]
+            v_all = torch.cat([v0[..., None, :], Vn], dim=-2)                      # [N... x B x L x O]
+        else:
+            z = z0[..., None, :]                                                   # [N... x B x 1 x 2S]
+            v_all = v0[..., None, :]                                               # [N... x B x 1 x O]
+
+        x, xhat = z[..., :S_D], z[..., S_D:]                                       # [N... x B x L x S] each
+        observation = apply_mat(x, H) + v_all                                      # [N... x B x L x O]
+
+        # SECTION: Linear readouts that are zero at t = 0 (no prediction precedes it)
+        zeros_O = torch.zeros((*group_shape, B, 1, O_D), **kw)
+        if L > 1:
+            # noiseless_observation_t = H (F x_{t-1} - BL xhat_{t-1}) = H (x_t - w_t)
+            noiseless_observation = torch.cat([zeros_O, apply_mat(x[..., 1:, :] - W, H)], dim=-2)
+            # target_observation_estimation_t = H (F - BL) xhat_{t-1}
+            target_obs_est = torch.cat([zeros_O, apply_mat(apply_mat(xhat[..., :-1, :], FBL), H)], dim=-2)
+        else:
+            noiseless_observation = zeros_O
+            target_obs_est = zeros_O
+
+        batch = (*group_shape, B, L)
+        controller_td = {}
+        for k, I_D in cdims.items():
+            zeros_I = torch.zeros((*group_shape, B, 1, I_D), **kw)
+            if L > 1:
+                # controller action_t = -L_k xhat_{t-1}
+                act = -apply_mat(xhat[..., :-1, :], getattr(self.controller.L, k))
+                controller_td[k] = torch.cat([zeros_I, act], dim=-2)
+            else:
+                controller_td[k] = zeros_I
+
+        return TensorDict({
+            "environment": TensorDict({
+                "state": x,
+                "observation": observation,
+                "noiseless_observation": noiseless_observation,
+                "target_state_estimation": xhat,
+                "target_observation_estimation": target_obs_est,
+            }, batch_size=batch),
+            "controller": TensorDict(controller_td, batch_size=batch),
+        }, batch_size=batch)
+
 
 class LTIZeroNoiseSystem(LTISystem):
     class Distribution(SystemDistribution):

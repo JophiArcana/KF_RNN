@@ -170,185 +170,218 @@ def generate_observations(sys: LTISystem, n_traces: int, length: int) -> torch.T
 
 # SECTION: Online self-distillation passes (single streaming pass through the trace)
 
-def lms_pass(
-        F_hat: torch.Tensor,
-        K_hat: torch.Tensor,
-        y: torch.Tensor,
-        step_size: float,
-        burn_in: int,
-        normalize: bool,
-        weight_decay: float = 0.0,
-        reg_identity: float = 0.0,
-        H_hat: "torch.Tensor | None" = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """One online (test-time-training) (N)LMS pass through the trace.
+_EPS = 1e-12
 
-    Streams t = 0..L-1 over all traces in parallel. At each step the per-step
-    self-distillation loss ``|| sg(x_{t+1}) - F_hat x_t ||^2`` has gradient
-    ``-u_t x_t^T`` where ``u_t`` is the injection / residual, so the update is the
-    rank-correlation step
+
+class _LmsUpdater:
+    """(N)LMS ``F_hat`` update for :func:`_distill_pass`.
+
+    The per-step self-distillation loss ``|| sg(x_{t+1}) - F_hat x_t ||^2`` has
+    gradient ``-u_t x_t^T`` (``u_t`` the injection / residual), so the update is
+    the rank-correlation step
 
         F_hat <- F_hat + lr * mean_n u_t^n (x_t^n)^T
 
-    optionally normalized by the running state energy (NLMS) for stability. State
-    is reset to 0 at the start of the pass.
+    optionally normalized by the running state energy (NLMS) for stability.
+
+    Behavioral flags consumed by the shared loop:
+
+    - ``reg_scale = step_size``: the decoupled ``weight_decay``/``reg_identity``
+      drifts are scaled by the learning rate (they are plain gradient steps).
+    - ``norm_h_anchor = normalize``: the M3 H-anchor step shares the F update's
+      energy normalization so the two steps stay on one scale.
+    - ``advance_with_updated_F = True``: in M1 the state is advanced with the
+      *updated* ``F_hat`` (the autonomous part is re-predicted post-update).
+    - ``diag_before_update = False``: diagnostics are recorded after the update
+      so M1's correction fraction reflects the updated prediction.
+    """
+
+    advance_with_updated_F = True
+    diag_before_update = False
+
+    def __init__(self, step_size: float, normalize: bool):
+        self.step_size = step_size
+        self.normalize = normalize
+        self.reg_scale = step_size
+        self.norm_h_anchor = normalize
+
+    def init(self, S_Dh: int, N: int, dtype: torch.dtype, device) -> None:
+        return None
+
+    def update(self, F_hat: torch.Tensor, x: torch.Tensor, pred: torch.Tensor,
+               u: torch.Tensor, state):
+        N = x.shape[0]
+        S_Dh = F_hat.shape[0]
+        grad = (u.mT @ x) / N                            # mean_n u_n x_n^T  [S_Dh, S_Dh]
+        if self.normalize:
+            denom = (x.pow(2).sum(dim=-1).mean() / S_Dh) + _EPS
+            grad = grad / denom
+        # Diverged state (e.g. an unstable -alpha*I run) makes the gradient blow
+        # up; signal the loop to stop updating so F_hat stays finite and the
+        # (diverged but finite) spectrum can still be reported/plotted.
+        if not torch.isfinite(grad).all():
+            return F_hat, state, False
+        return F_hat + self.step_size * grad, state, True
+
+
+class _RlsUpdater:
+    """Recursive Least Squares (Newton-style) ``F_hat`` update for :func:`_distill_pass`.
+
+    Same streaming self-distillation regression as :class:`_LmsUpdater` (predict
+    ``x_{t+1}`` from ``x_t``), but solved recursively with the inverse state
+    covariance ``P`` as preconditioner, so each step is the exact least-squares
+    update rather than a raw gradient. All ``F_hat`` rows share the regressor,
+    hence a single ``P`` (d x d). The forgetting factor ``lam`` tracks the
+    (slowly moving, as ``F_hat`` co-evolves) fixed point; ``P_0 = I / ridge``.
+    The prediction error driving the update is ``E = x_next - F_hat x_t = u_t``.
+
+    Behavioral flags consumed by the shared loop:
+
+    - ``reg_scale = 1.0``: RLS has no learning rate, so the decoupled
+      ``weight_decay``/``reg_identity`` drifts are applied directly (unscaled),
+      persisting across the recursion.
+    - ``norm_h_anchor = True``: the M3 H-anchor step is a plain gradient step, so
+      it is energy-normalized to stay stable as the state inflates.
+    - ``advance_with_updated_F = False``: the state is advanced with the same
+      prediction ``F_hat x_t`` used to form the injection (current ``F_hat``).
+    - ``diag_before_update = True``: diagnostics are recorded before the update.
+    """
+
+    advance_with_updated_F = False
+    diag_before_update = True
+    reg_scale = 1.0
+    norm_h_anchor = True
+
+    def __init__(self, forgetting: float, ridge: float):
+        self.forgetting = forgetting
+        self.ridge = ridge
+
+    def init(self, S_Dh: int, N: int, dtype: torch.dtype, device):
+        I = torch.eye(S_Dh, dtype=dtype, device=device)
+        I_N = torch.eye(N, dtype=dtype, device=device)
+        P = I / self.ridge
+        return (P, I_N)
+
+    def update(self, F_hat: torch.Tensor, x: torch.Tensor, pred: torch.Tensor,
+               u: torch.Tensor, state):
+        P, I_N = state
+        M = x @ P                                        # Phi P            [N, S_Dh]
+        S = self.forgetting * I_N + M @ x.mT             # lam I + Phi P Phi^T  [N, N]
+        Kg = torch.linalg.solve(S, M).mT                 # P Phi^T S^{-1}   [S_Dh, N]
+        E = (pred + u) - pred                            # prediction error = u  [N, S_Dh]
+        F_new = F_hat + E.mT @ Kg.mT                     # RLS rank update
+        P_new = (P - Kg @ M) / self.forgetting           # covariance recursion
+        if not torch.isfinite(F_new).all() or not torch.isfinite(P_new).all():
+            return F_hat, (P, I_N), False
+        return F_new, (P_new, I_N), True
+
+
+def _diag_row(pred: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+    """One ``[correction fraction, injection RMS]`` diagnostic row.
+
+    ``correction fraction`` ||u||/(||F_hat x|| + ||u||) in [0, 1] is the bounded
+    share of the next-state norm contributed by the injection: ~1 at spin-up
+    (x~0), -> 0 as the state inflates and drowns the injection (the M1 collapse
+    story). ``injection RMS`` is ``sqrt(mean_n ||u_n||^2)``.
+    """
+    frac = u.norm() / (pred.norm() + u.norm() + _EPS)
+    innov_rms = u.pow(2).sum(dim=-1).mean().sqrt()
+    return torch.stack([frac, innov_rms])
+
+
+def _distill_pass(
+        F_hat: torch.Tensor,
+        K_hat: torch.Tensor,
+        y: torch.Tensor,
+        burn_in: int,
+        updater: "_LmsUpdater | _RlsUpdater",
+        weight_decay: float = 0.0,
+        reg_identity: float = 0.0,
+        H_hat: "torch.Tensor | None" = None,
+        h_anchor_lr: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """One online (test-time-training) self-distillation pass through the trace.
+
+    Streams t = 0..L-1 over all traces in parallel, advancing the state with the
+    filter recurrence and updating the shared ``F_hat`` at each step via
+    ``updater`` (the only piece that differs between (N)LMS and RLS). State is
+    reset to 0 at the start of the pass.
 
     The injection ``u_t`` selects the method (see module docstring):
 
     - ``H_hat is None`` (M1, raw injection): ``u_t = K_hat y_t`` -- the residual
-      is the F-independent observation, which never vanishes. The *updated*
-      ``F_hat`` is then used to advance the state.
+      is the F-independent observation, which never vanishes.
     - ``H_hat`` given (M2, error correction): ``u_t = K_hat (y_t - H_hat F_hat x_t)``,
       i.e. the gain applied to the innovation ``e_t = y_t - H_hat F_hat x_t`` where
       ``H_hat F_hat x_t`` decodes the *predicted* next state (Kalman-style); the
       closed loop is then ``x_{t+1} = (I - K_hat H_hat) F_hat x_t + K_hat y_t``.
-      The state is advanced with the same prediction ``F_hat x_t`` used to form the
-      innovation (current ``F_hat``, mirroring RLS). With a fixed random ``H_hat``
-      the self-distillation fixed point decorrelates the residual from the state
-      but does not null ``e_t``.
+      With a fixed random ``H_hat`` the self-distillation fixed point decorrelates
+      the residual from the state but does not null ``e_t``.
 
-    Two optional regularizers (decoupled, applied per update step scaled by the
-    learning rate) shape the converged spectrum:
+    When ``h_anchor_lr`` > 0 (M3 bridge, only with ``H_hat``) a light step on
+    ``H_hat`` from the observation anchor ``0.5||y_t - H_hat F_hat x_t||^2``
+    (``grad_H = -e_obs (F_hat x_t)^T``) is taken each step -- the minimal dose of
+    observation-space signal that pins the latent->observation magnitude
+    (anti-|lambda|-drift) while the self-distillation step still drives ``F_hat``.
 
-    - ``weight_decay`` (alpha): penalizes ``0.5 alpha ||F_hat||_F^2`` -> step
-      ``-lr*alpha*F_hat``, the multiplicative radial map ``lambda -> (1-lr*alpha)lambda``.
-      Phase-preserving radial shrink.
-    - ``reg_identity`` (alpha): penalizes ``alpha*trace(F_hat)`` -> step
-      ``-lr*alpha*I``, the additive translation ``lambda -> lambda - lr*alpha``.
-      NOT weight decay: biases complex eigen-phases toward +-pi and can increase
-      the magnitude of negative-real modes.
+    Two optional decoupled regularizers (scaled by ``updater.reg_scale``) shape
+    the converged spectrum:
+
+    - ``weight_decay`` (alpha): the multiplicative radial map
+      ``lambda -> (1 - reg_scale*alpha) lambda``. Phase-preserving radial shrink.
+    - ``reg_identity`` (alpha): the additive translation
+      ``lambda -> lambda - reg_scale*alpha``. NOT weight decay: biases complex
+      eigen-phases toward +-pi and can increase the magnitude of negative-real
+      modes.
 
     Returns ``(F_hat, eig_history, diag_history)`` where ``eig_history`` is
     ``[L+1, S_Dh]`` (init spectrum followed by one spectrum per streamed timestep)
     and ``diag_history`` is ``[T, 2]`` with columns ``[correction fraction
-    ||u||/(||F_hat x||+||u||) in [0,1], injection RMS sqrt(mean_n ||u_n||^2)]``
-    per streamed step.
+    ||u||/(||F_hat x||+||u||) in [0,1], injection RMS sqrt(mean_n ||u_n||^2)]``.
     """
     N, L, _ = y.shape
     S_Dh = F_hat.shape[0]
-    x = torch.zeros((N, S_Dh), dtype=y.dtype, device=y.device)
+    dtype, device = y.dtype, y.device
+    x = torch.zeros((N, S_Dh), dtype=dtype, device=device)
     Kt = K_hat.mT
-    I = torch.eye(S_Dh, dtype=y.dtype, device=y.device)
-    eps = 1e-12
+    I = torch.eye(S_Dh, dtype=dtype, device=device)
     eig_history = [torch.linalg.eigvals(F_hat)]
     diag_history = []
+    state = updater.init(S_Dh, N, dtype, device)
     for t in range(L):
+        pred = x @ F_hat.mT                              # autonomous part F_hat x_t  [N, S_Dh]
         if H_hat is None:
             u = y[:, t] @ Kt                            # raw injection K_hat y_t  [N, S_Dh]
+            e_obs = None
         else:
-            pred = x @ F_hat.mT                          # predicted next state F_hat x_t  [N, S_Dh]
-            u = (y[:, t] - pred @ H_hat.mT) @ Kt        # K_hat (y_t - H_hat F_hat x_t)  [N, S_Dh]
+            e_obs = y[:, t] - pred @ H_hat.mT           # obs innovation y_t - H_hat F_hat x_t  [N, O_D]
+            u = e_obs @ Kt                              # K_hat (y_t - H_hat F_hat x_t)  [N, S_Dh]
+        if updater.diag_before_update:
+            diag_history.append(_diag_row(pred, u))
         if t >= burn_in:
-            grad = (u.mT @ x) / N                        # mean_n u_n x_n^T  [S_Dh, S_Dh]
-            if normalize:
-                denom = (x.pow(2).sum(dim=-1).mean() / S_Dh) + eps
-                grad = grad / denom
-            # Diverged state (e.g. an unstable -alpha*I run) makes the gradient
-            # blow up; stop updating so F_hat stays finite and the (diverged but
-            # finite) spectrum can still be reported/plotted.
-            if not torch.isfinite(grad).all():
+            F_hat, state, ok = updater.update(F_hat, x, pred, u, state)
+            if not ok:
                 break
-            F_hat = F_hat + step_size * grad
             if weight_decay != 0.0:
-                F_hat = F_hat - step_size * weight_decay * F_hat
+                F_hat = F_hat - updater.reg_scale * weight_decay * F_hat
             if reg_identity != 0.0:
-                F_hat = F_hat - step_size * reg_identity * I
-        # M1 advances with the *updated* F_hat; M2 advances with the same
-        # prediction F_hat x_t used to form the innovation (current F_hat).
-        if H_hat is None:
-            pred = x @ F_hat.mT                          # autonomous part F_hat x_t  [N, S_Dh]
-        # Bounded correction fraction in [0, 1]: the share of the next-state norm
-        # contributed by the injection. ~1 at spin-up (x~0), -> 0 as the state
-        # inflates and drowns the injection (the M1 collapse story).
-        frac = u.norm() / (pred.norm() + u.norm() + eps)
-        innov_rms = u.pow(2).sum(dim=-1).mean().sqrt()  # sqrt(mean_n ||u_n||^2)
-        diag_history.append(torch.stack([frac, innov_rms]))
+                F_hat = F_hat - updater.reg_scale * reg_identity * I
+            if h_anchor_lr != 0.0 and e_obs is not None:
+                gH = (e_obs.mT @ pred) / N               # [O_D, S_Dh]
+                if updater.norm_h_anchor:
+                    gH = gH / ((pred.pow(2).sum(dim=-1).mean() / S_Dh) + _EPS)
+                H_hat = H_hat + h_anchor_lr * gH
+            # M1 advances with the *updated* F_hat (re-predict the autonomous
+            # part); M2/RLS advance with the prediction used to form the injection.
+            if H_hat is None and updater.advance_with_updated_F:
+                pred = x @ F_hat.mT
+        if not updater.diag_before_update:
+            diag_history.append(_diag_row(pred, u))
         x = pred + u                                     # advance
         if not torch.isfinite(x).all():
             break
         eig_history.append(torch.linalg.eigvals(F_hat))
-    diag = torch.stack(diag_history, dim=0) if diag_history else torch.zeros((0, 2), dtype=y.dtype, device=y.device)
-    return F_hat, torch.stack(eig_history, dim=0), diag
-
-
-def rls_pass(
-        F_hat: torch.Tensor,
-        K_hat: torch.Tensor,
-        y: torch.Tensor,
-        burn_in: int,
-        forgetting: float,
-        ridge: float,
-        weight_decay: float = 0.0,
-        reg_identity: float = 0.0,
-        H_hat: "torch.Tensor | None" = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """One online Recursive Least Squares (RLS) pass through the trace.
-
-    Same streaming self-distillation regression as :func:`lms_pass` (predict
-    ``x_{t+1}`` from ``x_t``), but solved recursively with a Newton-style
-    preconditioner: the gain is the inverse state covariance ``P`` so each step
-    is the exact least-squares update rather than a raw gradient. All ``F_hat``
-    rows share the regressor, hence a single ``P`` (d x d). With a forgetting
-    factor ``lam`` it tracks the (slowly moving, as ``F_hat`` co-evolves) fixed
-    point of the detached self-distillation regression; ``P_0 = I / ridge``.
-
-    The injection ``u_t`` selects the method exactly as in :func:`lms_pass`:
-    ``H_hat is None`` gives the raw injection ``K_hat y_t`` (M1); a given
-    ``H_hat`` gives the Kalman-style error-correcting innovation
-    ``K_hat (y_t - H_hat F_hat x_t)`` (M2), where ``H_hat F_hat x_t`` decodes the
-    predicted next state. The prediction error driving the RLS update is
-    ``E = x_next - F_hat x_t = u_t`` either way.
-
-    The two optional regularizers are applied as decoupled per-step drifts so
-    they *persist* across the recursion (RLS has no learning rate, so unlike
-    :func:`lms_pass` they are applied directly, not scaled): ``weight_decay``
-    gives ``lambda -> (1-weight_decay)lambda`` and ``reg_identity`` gives
-    ``lambda -> lambda - reg_identity``.
-
-    Returns ``(F_hat, eig_history, diag_history)`` with ``eig_history`` of shape
-    ``[L+1, S_Dh]`` and ``diag_history`` of shape ``[T, 2]`` (columns ``[correction
-    fraction ||u||/(||F_hat x||+||u||), injection RMS sqrt(mean_n ||u_n||^2)]``).
-    """
-    N, L, _ = y.shape
-    S_Dh = F_hat.shape[0]
-    x = torch.zeros((N, S_Dh), dtype=y.dtype, device=y.device)
-    Kt = K_hat.mT
-    I = torch.eye(S_Dh, dtype=y.dtype, device=y.device)
-    I_N = torch.eye(N, dtype=y.dtype, device=y.device)
-    eps = 1e-12
-    P = I / ridge
-    eig_history = [torch.linalg.eigvals(F_hat)]
-    diag_history = []
-    for t in range(L):
-        pred = x @ F_hat.mT                              # predicted next state F_hat x_t  [N, S_Dh]
-        if H_hat is None:
-            u = y[:, t] @ Kt                            # raw injection K_hat y_t  [N, S_Dh]
-        else:
-            u = (y[:, t] - pred @ H_hat.mT) @ Kt        # K_hat (y_t - H_hat F_hat x_t)  [N, S_Dh]
-        x_next = pred + u                                # advance with current F_hat
-        # Bounded correction fraction in [0, 1] (see lms_pass for rationale).
-        frac = u.norm() / (pred.norm() + u.norm() + eps)
-        innov_rms = u.pow(2).sum(dim=-1).mean().sqrt()  # sqrt(mean_n ||u_n||^2)
-        diag_history.append(torch.stack([frac, innov_rms]))
-        if t >= burn_in:
-            M = x @ P                                    # Phi P            [N, S_Dh]
-            S = forgetting * I_N + M @ x.mT              # lam I + Phi P Phi^T  [N, N]
-            Kg = torch.linalg.solve(S, M).mT            # P Phi^T S^{-1}   [S_Dh, N]
-            E = x_next - pred                            # prediction error = u  [N, S_Dh]
-            F_new = F_hat + E.mT @ Kg.mT                 # RLS rank update
-            P = (P - Kg @ M) / forgetting               # covariance recursion
-            if not torch.isfinite(F_new).all() or not torch.isfinite(P).all():
-                break
-            F_hat = F_new
-            if weight_decay != 0.0:
-                F_hat = F_hat - weight_decay * F_hat
-            if reg_identity != 0.0:
-                F_hat = F_hat - reg_identity * I
-        x = x_next
-        if not torch.isfinite(x).all():
-            break
-        eig_history.append(torch.linalg.eigvals(F_hat))
-    diag = torch.stack(diag_history, dim=0) if diag_history else torch.zeros((0, 2), dtype=y.dtype, device=y.device)
+    diag = torch.stack(diag_history, dim=0) if diag_history else torch.zeros((0, 2), dtype=dtype, device=device)
     return F_hat, torch.stack(eig_history, dim=0), diag
 
 
@@ -365,6 +398,7 @@ def self_distill(
         args: argparse.Namespace,
         generator: torch.Generator,
         error_correction: "bool | None" = None,
+        h_anchor_lr: "float | None" = None,
 ) -> DistillResult:
     """Single streaming self-distillation pass of F_hat over observations ``y``.
 
@@ -373,10 +407,19 @@ def self_distill(
     ``K_hat (y_t - H_hat F_hat x_t)`` (the decoder reads the predicted next state);
     when False (M1) the raw injection ``K_hat y_t`` is used. Defaults to
     ``args.error_correction`` so the paired driver can override it per regime.
+
+    When ``h_anchor_lr`` > 0 (only meaningful with ``error_correction``), ``H_hat``
+    is *lightly trained* by the observation anchor ``0.5||y_t - H_hat F_hat x_t||^2``
+    each step -- this is canvas method M3 (the bridge): the self-distillation step
+    still drives ``F_hat`` while the minimal observation signal pins the
+    latent->observation magnitude and curbs the ``|lambda|`` drift. Defaults to
+    ``args.h_anchor_lr``.
     """
     dtype, device = y.dtype, y.device
     if error_correction is None:
         error_correction = args.error_correction
+    if h_anchor_lr is None:
+        h_anchor_lr = args.h_anchor_lr
 
     K_hat = torch.randn((S_Dh, O_D), generator=generator, dtype=dtype, device=device) / (O_D ** 0.5)
     F_hat = torch.randn((S_Dh, S_Dh), generator=generator, dtype=dtype, device=device)
@@ -390,15 +433,14 @@ def self_distill(
         H_hat *= args.h_init_scale / (S_Dh ** 0.5)
 
     if args.mode == "rls":
-        F_hat, eig_history, diag_history = rls_pass(
-            F_hat, K_hat, y, args.burn_in, args.forgetting, args.rls_ridge,
-            weight_decay=args.weight_decay, reg_identity=args.reg_identity, H_hat=H_hat,
-        )
+        updater = _RlsUpdater(args.forgetting, args.rls_ridge)
     else:
-        F_hat, eig_history, diag_history = lms_pass(
-            F_hat, K_hat, y, args.step_size, args.burn_in, args.normalize,
-            weight_decay=args.weight_decay, reg_identity=args.reg_identity, H_hat=H_hat,
-        )
+        updater = _LmsUpdater(args.step_size, args.normalize)
+    F_hat, eig_history, diag_history = _distill_pass(
+        F_hat, K_hat, y, args.burn_in, updater,
+        weight_decay=args.weight_decay, reg_identity=args.reg_identity, H_hat=H_hat,
+        h_anchor_lr=h_anchor_lr,
+    )
 
     return DistillResult(F_hat=F_hat, eig_history=eig_history, diag_history=diag_history)
 
@@ -655,7 +697,8 @@ def plot_seed_sweep(mean_errs: list[float], min_obs: list[float], out_dir: str,
 # SECTION: Driver
 
 def run_single_regime(sys: LTISystem, label: str, args: argparse.Namespace,
-                      seed: int, error_correction: "bool | None" = None) -> RegimeSummary:
+                      seed: int, error_correction: "bool | None" = None,
+                      h_anchor_lr: "float | None" = None) -> RegimeSummary:
     F_true = system_F(sys)
     H = system_H(sys)
     O_D = H.shape[0]
@@ -663,7 +706,8 @@ def run_single_regime(sys: LTISystem, label: str, args: argparse.Namespace,
 
     gen = torch.Generator(device=_ANALYSIS_DEVICE).manual_seed(seed)
     S_Dh = args.fhat_dim if args.fhat_dim is not None else F_true.shape[0]
-    result = self_distill(y, S_Dh, O_D, args, gen, error_correction=error_correction)
+    result = self_distill(y, S_Dh, O_D, args, gen, error_correction=error_correction,
+                          h_anchor_lr=h_anchor_lr)
     return summarize_regime(label, F_true, H, result, args.active_threshold)
 
 
@@ -684,6 +728,9 @@ def parse_args() -> argparse.Namespace:
                        help="run fully-observed vs partial-observed on the SAME F")
     g_cmp.add_argument("--compare-feedback", action="store_true",
                        help="run raw injection (M1) vs innovation feedback (M2) on the SAME F")
+    g_cmp.add_argument("--compare-bridge", action="store_true",
+                       help="run raw injection (M1) vs error correction (M2) vs the M3 bridge "
+                            "(M2 + a lightly-trained H_hat observation anchor) on the SAME F")
     g_cmp.add_argument("--o-d-full", type=int, default=None,
                        help="observation dim of the fully-observed run (default: S_D)")
     g_cmp.add_argument("--o-d-partial", type=int, default=2,
@@ -724,6 +771,10 @@ def parse_args() -> argparse.Namespace:
     g_filt.add_argument("--h-init-scale", type=float, default=1.0,
                         help="M2: scale of the fixed random decoder H_hat (rows normalized by "
                              "1/sqrt(S_Dh), mirroring K_hat).")
+    g_filt.add_argument("--h-anchor-lr", type=float, default=0.0,
+                        help="M3: learning rate for the light observation-anchor step on H_hat "
+                             "(0.5||y - H_hat F_hat x||^2). >0 turns the M2 fixed-H run into the "
+                             "M3 bridge (requires --error-correction or --compare-bridge).")
 
     g_run = p.add_argument_group("run")
     g_run.add_argument("--seed", type=int, default=0, help="base random seed")
@@ -786,6 +837,22 @@ def main() -> None:
                               error_correction=True),
         ]
         tag = f"feedback_sd{args.s_d}_od{args.o_d}"
+    elif args.compare_bridge:
+        # Same F: M1 raw injection vs M2 error correction vs M3 bridge (M2 + a
+        # lightly-trained H_hat observation anchor). Isolates what the minimal
+        # observation signal buys on top of pure latent self-distillation.
+        torch.manual_seed(args.seed)
+        sys = build_system(args.s_d, args.o_d, args.w_std, args.v_std)
+        anchor_lr = args.h_anchor_lr if args.h_anchor_lr > 0.0 else 0.05
+        summaries = [
+            run_single_regime(sys, f"raw injection M1 (O_D={args.o_d})", args, args.seed,
+                              error_correction=False, h_anchor_lr=0.0),
+            run_single_regime(sys, f"error correction M2 (O_D={args.o_d})", args, args.seed,
+                              error_correction=True, h_anchor_lr=0.0),
+            run_single_regime(sys, f"bridge M3 (anchor lr={anchor_lr:g})", args, args.seed,
+                              error_correction=True, h_anchor_lr=anchor_lr),
+        ]
+        tag = f"bridge_sd{args.s_d}_od{args.o_d}"
     else:
         torch.manual_seed(args.seed)
         sys = build_system(args.s_d, args.o_d, args.w_std, args.v_std)

@@ -38,12 +38,16 @@ class RnnInContextPredictor(RnnPredictor):
         n_steps: int = 1
         step_size: float = 1.0
         window: int = 1
+        step_decay: float = 0.0          # exponent ``a`` in ``eta_t = step_size * (t+1)^(-a)``; 0.0 => constant step
+        polyak_burnin: float = -1.0      # tail-average start as a fraction of L; < 0 => report the raw iterate
 
     def __init__(self, modelArgs: "RnnInContextPredictor.Config", **kwargs: Any):
         RnnPredictor.__init__(self, modelArgs, **kwargs)
         self.n_steps = modelArgs.n_steps
         self.step_size = modelArgs.step_size
         self.window = modelArgs.window
+        self.step_decay = modelArgs.step_decay
+        self.polyak_burnin = modelArgs.polyak_burnin
         # Propagation vehicle: exposes the inherited single-step ``_forward`` as a
         # ``functional_call`` target while sharing this module's own parameters, so
         # the fast-weights substituted per step reach ``_forward`` directly (no
@@ -93,12 +97,21 @@ class RnnInContextPredictor(RnnPredictor):
         """Update direction w.r.t. ``theta``. Override for custom backprop."""
         return torch.func.grad(self._window_loss)(theta, s_start, win_actions, win_obs)
 
+    def _step_size_at(self, t: int) -> float:
+        """Online learning rate at global step ``t``: ``step_size * (t+1)^(-step_decay)``.
+
+        With the default ``step_decay = 0`` this is the constant ``step_size``; a
+        positive exponent ``a in (1/2, 1)`` makes the gain vanish (Robbins-Monro),
+        the prerequisite for sub-constant regret rather than a constant noise ball."""
+        return self.step_size * (t + 1) ** (-self.step_decay)
+
     def _optimizer_step(self,
                         theta: dict[str, torch.Tensor],
                         grads: dict[str, torch.Tensor],
+                        t: int,
     ) -> dict[str, torch.Tensor]:
         """Apply one update. Override for momentum / projected / quantized steps."""
-        return eu.sgd_step(theta, grads, self.step_size)
+        return eu.sgd_step(theta, grads, self._step_size_at(t))
 
     def forward(self, trace: dict[str, dict[str, torch.Tensor]], mode: str = None) -> dict[str, dict[str, torch.Tensor]]:
         trace: TensorDict = self.trace_to_td(trace)
@@ -145,7 +158,7 @@ class RnnInContextPredictor(RnnPredictor):
                 win_obs = observations[w0:t + 1]
                 for _ in range(self.n_steps):
                     grads = self._compute_grads(theta, s_start, win_actions, win_obs)
-                    theta = self._optimizer_step(theta, grads)
+                    theta = self._optimizer_step(theta, grads, t)
 
                 return (theta, s_post, ent_win), (y_hat, s_post)
 
@@ -168,3 +181,148 @@ class RnnInContextPredictor(RnnPredictor):
 
     def training_recipe(self) -> Sequence[str]:
         return []
+
+
+class RnnSelfDistillPredictor(RnnInContextPredictor):
+    """In-context (TTT) filter trained by the three section-6 prediction losses.
+
+    Reuses :class:`RnnInContextPredictor`'s online recurrence verbatim (the
+    Kalman step in :meth:`SequentialPredictor._forward`); only the per-window
+    objective and the parameter update are overridden. Every per-step quantity
+    needed already exists in the step output ``out`` (no second recurrence):
+
+    - prior state    ``s_prior = F x_{t-1}^+``        (recovered below)
+    - a-priori obs    ``y_hat  = H F x_{t-1}^+``        (``out["..","observation"]``)
+    - posterior state ``s_post = x_t^+``                (``out["..","state"]``)
+    - a-posteriori obs ``y_post = H x_t^+``             (decoded with ``theta["H"]``)
+
+    The window-averaged loss is the weighted sum (DEFAULT weights reproduce the
+    a-priori-only M4 objective of the parent, so behaviour is unchanged unless
+    the new weights are set)::
+
+        L =  beta0 * 0.5||y_hat  - y||^2    # a-priori observation prediction (grounding; M4)
+          +  beta2 * 0.5||y_post - y||^2    # a-posteriori observation prediction (direct-K; section 6.1)
+          +  alpha * sum_{k=1}^{n} 0.5||sg(x_t^+) - F^k x_{t-k}^+||^2   # n-step latent self-distillation (section 4.2/6; stop-grad target)
+
+    The stop-gradient on the latent target mirrors
+    ``scripts/self_distillation_eigenphase.py``: the gradient flows only through
+    the autonomous a-priori roll-out ``F^k x_{t-k}^+``, nudging ``F`` to absorb the
+    correction (TD(0) bootstrap of the latent dynamics). ``sd_horizon = n`` sets
+    the ladder depth (``n = 1`` is the original single-step ``F x_{t-1}^+`` term);
+    ``keep_launch`` toggles whether the (non-root) launch state carries gradient.
+
+    Combined with ``adapt_keys`` (which fast-weights receive the online update)
+    the canvas methods are recovered as:
+
+    ===========  =====  =====  =====  ==================  ==================
+    method       alpha  beta0  beta2  adapt_keys          notes
+    ===========  =====  =====  =====  ==================  ==================
+    M1 (raw)     1      0      0      ("F",)              decode H frozen to 0 -> innovation = y -> raw K y injection
+    M2 (fixed H) 1      0      0      ("F",)              H, K frozen random
+    M3 (bridge)  1      ~0.05  0      ("F", "H")          dominant latent + minimal observation anchor
+    M4 (obs)     0      1      0      ("F", "H", "K")     parent default
+    ===========  =====  =====  =====  ==================  ==================
+
+    ``weight_decay`` applies a decoupled per-update radial shrink
+    ``lambda -> (1 - step_size*weight_decay) lambda`` (the linear analog of the
+    ``rate(eps)`` penalty that section 6.1 requires alongside the a-posteriori
+    term), mirroring the same option in the eigenphase script.
+    """
+
+    @dataclass
+    class Config(RnnInContextPredictor.Config):
+        alpha: float = 0.0                                  # latent self-distillation weight
+        beta0: float = 1.0                                  # a-priori observation-prediction weight
+        beta2: float = 0.0                                  # a-posteriori observation-prediction weight
+        adapt_keys: tuple[str, ...] = ("F", "H", "K")       # fast-weights that receive the online update
+        weight_decay: float = 0.0                           # decoupled radial shrink (linear rate-penalty analog)
+        sd_horizon: int = 1                                 # number of autonomous self-prediction steps n (1 == today's single-step SD)
+        keep_launch: bool = True                            # whether non-root launch states carry gradient (root launch is always detached)
+
+    def __init__(self, modelArgs: "RnnSelfDistillPredictor.Config", **kwargs: Any):
+        RnnInContextPredictor.__init__(self, modelArgs, **kwargs)
+        self.alpha = modelArgs.alpha
+        self.beta0 = modelArgs.beta0
+        self.beta2 = modelArgs.beta2
+        self.adapt_keys = tuple(modelArgs.adapt_keys)
+        self.weight_decay = modelArgs.weight_decay
+        self.sd_horizon = modelArgs.sd_horizon
+        self.keep_launch = modelArgs.keep_launch
+
+    def _window_loss(self,
+                     theta: dict[str, torch.Tensor],
+                     s_start: torch.Tensor,                  # [S_D]
+                     win_actions: dict[str, torch.Tensor],   # [w x I_D]
+                     win_obs: torch.Tensor,                  # [w x O_D]
+    ) -> torch.Tensor:                                       # scalar
+        """Window-averaged weighted objective (see class docstring).
+
+        The latent self-distillation term is an n-step ladder over horizons
+        ``k = 1..sd_horizon``: each target ``sg(x_j^+)`` is predicted by launching
+        the a-posteriori state ``k`` steps back, ``x_{j-k}^+``, forward by ``F^k``
+        with no innovation. Launch points come from this same rolled window; a
+        horizon that reaches past the oldest buffered state clamps to the detached
+        root ``s_start`` (so per target only the distinct horizons
+        ``k = 1..min(sd_horizon, j+1)`` contribute). At ``sd_horizon=1,
+        keep_launch=True`` this is exactly the single-step term ``F x_{j-1}^+``.
+        """
+        s = s_start
+        total = win_obs.new_zeros(())
+        w = win_obs.shape[0]
+        H_t, F_t = theta["H"], theta["F"]
+        # Launch buffer for the SD ladder: ``posts[0]`` is the detached root
+        # ``s_start`` (logical launch index -1), ``posts[j + 1]`` is the
+        # a-posteriori state ``x_j^+`` of window step ``j``.
+        posts = [s_start.detach()]
+        for j in range(w):
+            action_j = {k: v[j] for k, v in win_actions.items()}
+            obs_j = win_obs[j]
+            out = torch.func.functional_call(self.cell, theta, (s, action_j, obs_j))
+            y_hat = out["environment", "observation"]               # H F x_{t-1}^+
+            s_post = out["environment", "state"]                    # x_t^+
+            term = win_obs.new_zeros(())
+            if self.beta0 != 0.0:
+                term = term + self.beta0 * 0.5 * (y_hat - obs_j).pow(2).sum(-1)
+            if self.beta2 != 0.0:
+                y_post = s_post @ H_t.mT
+                term = term + self.beta2 * 0.5 * (y_post - obs_j).pow(2).sum(-1)
+            if self.alpha != 0.0:
+                # n-step ladder onto the stop-grad target sg(x_j^+). Horizons past
+                # the buffered root all collapse to the identical root term, so we
+                # iterate only the distinct horizons k = 1..min(sd_horizon, j + 1).
+                target = s_post.detach()
+                for k in range(1, min(self.sd_horizon, j + 1) + 1):
+                    li = j - k                                      # -1 selects the detached root
+                    launch = posts[li + 1]
+                    if li < 0 or not self.keep_launch:
+                        launch = launch.detach()
+                    # F^k x_{j-k}^+ built iteratively (vmap/functorch-safe; avoids
+                    # a matrix_power batching rule). depth == k here.
+                    pred = launch
+                    for _ in range(k):
+                        pred = pred @ F_t.mT
+                    term = term + self.alpha * 0.5 * (target - pred).pow(2).sum(-1)
+            total = total + term
+            posts.append(s_post)
+            s = s_post
+        return total / w
+
+    def _optimizer_step(self,
+                        theta: dict[str, torch.Tensor],
+                        grads: dict[str, torch.Tensor],
+                        t: int,
+    ) -> dict[str, torch.Tensor]:
+        """SGD on the ``adapt_keys`` only (others frozen), with optional decoupled
+        weight decay applied to the updated weights. Uses the (possibly decaying)
+        online rate ``_step_size_at(t)``."""
+        eta_t = self._step_size_at(t)
+        updated: dict[str, torch.Tensor] = {}
+        for k, v in theta.items():
+            if k in self.adapt_keys:
+                step = v - eta_t * grads[k]
+                if self.weight_decay != 0.0:
+                    step = step - eta_t * self.weight_decay * v
+                updated[k] = step
+            else:
+                updated[k] = v
+        return updated

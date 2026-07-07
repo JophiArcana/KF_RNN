@@ -11,6 +11,7 @@ from .rnn_ho_kalman import (
 )
 from .rnn_ttt import (
     RnnInContextPredictor,
+    RnnSelfDistillPredictor,
 )
 
 
