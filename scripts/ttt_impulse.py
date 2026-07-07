@@ -20,21 +20,11 @@ from matplotlib import pyplot as plt
 from tensordict import TensorDict
 
 import ecliseutils as eu
+from kf_rnn.analysis import kalman_ir
 from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.settings import OUTPUT_PATH
 from kf_rnn.model.sequential import RnnInContextPredictor
 from kf_rnn.system.linear_time_invariant import ContinuousDistribution
-
-
-def kalman_ir(F: torch.Tensor, H: torch.Tensor, K: torch.Tensor, R: int) -> torch.Tensor:
-    """Observation->observation impulse response, ``[R x O_D x O_D]`` (lag, out, in).
-
-    Same construction as ``CnnAnalyticalPredictor._analytical_initialization``:
-    tap ``r`` is the linear map from ``y_{t-1-r}`` to ``y_hat_t``.
-    """
-    S_D = F.shape[-1]
-    powers = eu.pow_series(F @ (torch.eye(S_D, device=F.device) - K @ H), R)     # [R x S_D x S_D]
-    return H @ powers @ (F @ K)                                                  # [R x O_D x O_D]
 
 
 @torch.no_grad()

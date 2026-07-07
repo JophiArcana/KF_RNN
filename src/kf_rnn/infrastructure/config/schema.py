@@ -203,6 +203,7 @@ class RuntimeConfig:
     backup_frequency: Optional[int] = None
     checkpoint_frequency: Optional[int] = None
     print_frequency: Optional[int] = None
+    metric_frequency: Optional[int] = None   # evaluate/record metrics only every k stage steps (None => every step)
     debug: bool = False                  # gates global torch anomaly detection
     split_size: int = 1 << 20            # run-chunking threshold (numel)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)

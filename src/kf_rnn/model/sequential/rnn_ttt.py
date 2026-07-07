@@ -326,3 +326,133 @@ class RnnSelfDistillPredictor(RnnInContextPredictor):
             else:
                 updated[k] = v
         return updated
+
+
+class RnnSelfDistillTTTPredictor(RnnPredictor):
+    """Static-forward variant of the self-distillation TTT filter, adapted by the
+    :class:`~kf_rnn.infrastructure.experiment.training.SelfDistillTTTStage`.
+
+    Unlike :class:`RnnSelfDistillPredictor` (which folds the online adaptation into
+    ``forward`` via a fast-weight scan), this model's ``forward`` is the inherited
+    static Kalman/IIR filter (:meth:`SequentialPredictor.forward_with_initial`) run
+    with the model's *current* parameters. The online self-distillation adaptation
+    lives entirely in the training stage: each stage step is one online gradient
+    step on a shadow ``(F, H, K)`` iterate, and the reported parameters here are the
+    Polyak tail-average of that iterate (see the stage). This inverts the control
+    flow so the parameter trajectory, per-step analytical error, and Polyak
+    averaging are all first-class, rather than internals hidden inside ``forward``.
+
+    The weighted section-6 objective and the ``(alpha, beta0, beta2, adapt_keys,
+    weight_decay, sd_horizon, keep_launch)`` semantics are identical to
+    :class:`RnnSelfDistillPredictor`; :meth:`window_loss` is the same math written
+    as plain batched matmuls over the ``[N x E x ...]`` ensemble dims (no
+    ``functional_call``), so a single ``autograd.grad`` yields per-member gradients.
+    Per-method initialization tweaks (M1's ``H = 0``; a random frozen ``K`` when
+    ``K`` is not adapted) are applied in ``__init__`` so a method is fully
+    specified by its Config.
+    """
+
+    @dataclass
+    class Config(RnnPredictor.Config):
+        # Online-adaptation schedule (mirrors RnnInContextPredictor.Config).
+        n_steps: int = 1
+        step_size: float = 1.0
+        window: int = 1
+        step_decay: float = 0.0          # exponent ``a`` in ``eta_t = step_size*(t+1)^(-a)``
+        polyak_burnin: float = -1.0      # tail-average start as a fraction of L; < 0 => raw iterate
+        # Self-distillation objective (mirrors RnnSelfDistillPredictor.Config).
+        alpha: float = 0.0
+        beta0: float = 1.0
+        beta2: float = 0.0
+        adapt_keys: tuple[str, ...] = ("F", "H", "K")
+        weight_decay: float = 0.0
+        sd_horizon: int = 1
+        keep_launch: bool = True
+        # Per-method initialization tweaks.
+        h_init: str = "random"           # "zero" -> H := 0 (M1 raw-injection)
+        frozen_k_random: bool = True     # when "K" not adapted, init K to a random gain
+
+    def __init__(self, modelArgs: "RnnSelfDistillTTTPredictor.Config", **kwargs: Any):
+        RnnPredictor.__init__(self, modelArgs, **kwargs)
+        self.n_steps = modelArgs.n_steps
+        self.step_size = modelArgs.step_size
+        self.window = modelArgs.window
+        self.step_decay = modelArgs.step_decay
+        self.polyak_burnin = modelArgs.polyak_burnin
+        self.alpha = modelArgs.alpha
+        self.beta0 = modelArgs.beta0
+        self.beta2 = modelArgs.beta2
+        self.adapt_keys = tuple(modelArgs.adapt_keys)
+        self.weight_decay = modelArgs.weight_decay
+        self.sd_horizon = modelArgs.sd_horizon
+        self.keep_launch = modelArgs.keep_launch
+
+        with torch.no_grad():
+            if modelArgs.frozen_k_random and "K" not in self.adapt_keys:
+                self.K.copy_(torch.randn((self.S_D, self.O_D)) / (self.O_D ** 0.5))
+            if modelArgs.h_init == "zero":
+                self.H.zero_()
+
+    def step_size_at(self, t: int) -> float:
+        """Online learning rate at global step ``t``: ``step_size * (t+1)^(-step_decay)``."""
+        return self.step_size * (t + 1) ** (-self.step_decay)
+
+    @staticmethod
+    def kalman_posterior(theta: dict[str, torch.Tensor],
+                         s: torch.Tensor,            # [B... x S_D]
+                         obs: torch.Tensor,          # [B... x O_D]
+    ) -> torch.Tensor:                               # [B... x S_D]
+        """One static Kalman step: posterior ``x_t^+`` from the previous posterior
+        ``s`` and the observation, using the (batched) filter tensors in ``theta``."""
+        F, H, K = theta["F"], theta["H"], theta["K"]
+        s_prior = s @ F.mT                                          # x_t^- = F x_{t-1}^+
+        y_hat = s_prior @ H.mT                                      # H F x_{t-1}^+
+        return s_prior + (obs - y_hat) @ K.mT                       # x_t^+
+
+    def window_loss(self,
+                    theta: dict[str, torch.Tensor],
+                    s_start: torch.Tensor,           # [B... x S_D]
+                    win_obs: torch.Tensor,           # [B... x w x O_D]
+    ) -> torch.Tensor:                               # [B...]
+        """Window-averaged weighted section-6 objective (see
+        :meth:`RnnSelfDistillPredictor._window_loss` for the derivation).
+
+        Batched over arbitrary leading dims ``B...`` (the ``[N x E x M]`` ensemble x
+        trace batch). The launch buffer / n-step ladder / ``keep_launch`` semantics
+        are identical to the fast-weight version; only the propagation is the plain
+        static Kalman step :meth:`kalman_posterior` instead of ``functional_call``.
+        """
+        F, H = theta["F"], theta["H"]
+        s = s_start
+        w = win_obs.shape[-2]
+        total = win_obs.new_zeros(s_start.shape[:-1])               # [B...]
+        posts = [s_start.detach()]      # posts[0] is the detached root (launch index -1)
+        for j in range(w):
+            obs_j = win_obs[..., j, :]
+            s_prior = s @ F.mT
+            y_hat = s_prior @ H.mT
+            s_post = s_prior + (obs_j - y_hat) @ theta["K"].mT
+            term = win_obs.new_zeros(s_start.shape[:-1])
+            if self.beta0 != 0.0:
+                term = term + self.beta0 * 0.5 * (y_hat - obs_j).pow(2).sum(-1)
+            if self.beta2 != 0.0:
+                y_post = s_post @ H.mT
+                term = term + self.beta2 * 0.5 * (y_post - obs_j).pow(2).sum(-1)
+            if self.alpha != 0.0:
+                target = s_post.detach()
+                for k in range(1, min(self.sd_horizon, j + 1) + 1):
+                    li = j - k                                      # -1 selects the detached root
+                    launch = posts[li + 1]
+                    if li < 0 or not self.keep_launch:
+                        launch = launch.detach()
+                    pred = launch
+                    for _ in range(k):
+                        pred = pred @ F.mT
+                    term = term + self.alpha * 0.5 * (target - pred).pow(2).sum(-1)
+            total = total + term
+            posts.append(s_post)
+            s = s_post
+        return total / w
+
+    def training_recipe(self) -> Sequence[str]:
+        return ["self_distill_ttt"]

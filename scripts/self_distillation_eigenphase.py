@@ -72,6 +72,11 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 from tensordict import TensorDict
 
+from kf_rnn.analysis import (
+    active_phase_match_error,
+    draw_complex_plane as _draw_complex_plane,
+    spectral_radius as _spectral_radius,
+)
 from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.settings import OUTPUT_PATH
 from kf_rnn.system.linear_time_invariant import LTISystem, MOPDistribution
@@ -88,10 +93,6 @@ _ANALYSIS_DEVICE = "cpu"
 
 
 # SECTION: System / data construction (uses project code)
-
-def _spectral_radius(M: torch.Tensor) -> float:
-    return torch.linalg.eigvals(M).abs().max().item()
-
 
 def build_system(S_D: int, O_D: int, w_std: float, v_std: float) -> LTISystem:
     """Sample a fresh ``LTISystem`` with the given dimensions."""
@@ -447,36 +448,6 @@ def self_distill(
 
 # SECTION: Metrics
 
-def _circular_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    d = a - b
-    return torch.atan2(torch.sin(d), torch.cos(d)).abs()
-
-
-def active_phase_match_error(
-        true_eig: torch.Tensor,
-        est_eig: torch.Tensor,
-        threshold: float,
-) -> tuple[float, float, int]:
-    """Phase error of the *active* filter modes (those near the unit circle).
-
-    The hypothesis concerns eigenvalues that migrate to the unit circle; modes
-    that collapse toward 0 have meaningless phase and are excluded. For each
-    active ``F_hat`` eigenvalue (``|lambda| >= threshold``) we take the circular
-    distance to the nearest *true* eigen-phase (precision: "is each filter
-    resonance a real system frequency?"). Returns ``(mean, max, n_active)`` with
-    angles in radians; ``(nan, nan, 0)`` if no mode is active.
-    """
-    active = est_eig[est_eig.abs() >= threshold]
-    if active.numel() == 0:
-        return float("nan"), float("nan"), 0
-    true_ang = torch.angle(true_eig)
-    errs = []
-    for a in torch.angle(active):
-        errs.append(_circular_distance(a, true_ang).min().item())
-    errs_t = torch.tensor(errs)
-    return errs_t.mean().item(), errs_t.max().item(), int(active.numel())
-
-
 def modal_observability(F_true: torch.Tensor, H: torch.Tensor) -> torch.Tensor:
     """Per-mode observability ||H v_i|| / ||v_i|| for eigenvectors v_i of F."""
     _, V = torch.linalg.eig(F_true)
@@ -558,33 +529,7 @@ def print_summary(s: RegimeSummary) -> None:
         print(f"  final injection RMS sqrt(mean ||u_n||^2): {s.final_innovation_rms:.4f}")
 
 
-# SECTION: Plotting
-
-def _draw_complex_plane(ax, F_true_eig: torch.Tensor, F_hat_eig: torch.Tensor, title: str) -> None:
-    theta = np.linspace(0, 2 * np.pi, 400)
-    ax.plot(np.cos(theta), np.sin(theta), color="0.7", lw=1.0, zorder=0)
-    ax.axhline(0, color="0.85", lw=0.8, zorder=0)
-    ax.axvline(0, color="0.85", lw=0.8, zorder=0)
-    # Radial lines from the origin to each eigenvalue make the phase (angle)
-    # difference between true F and converged F_hat visually obvious.
-    for re, im in zip(F_true_eig.real.tolist(), F_true_eig.imag.tolist()):
-        ax.plot([0.0, re], [0.0, im], color="C0", lw=0.8, alpha=0.5, zorder=1)
-    F_hat_re = F_hat_eig.real.detach()
-    F_hat_im = F_hat_eig.imag.detach()
-    for re, im in zip(F_hat_re.tolist(), F_hat_im.tolist()):
-        ax.plot([0.0, re], [0.0, im], color="C3", lw=0.8, alpha=0.5, zorder=1)
-    ax.scatter(F_true_eig.real, F_true_eig.imag, marker="x", s=80, color="C0",
-               label="true F", zorder=3)
-    ax.scatter(F_hat_re, F_hat_im, marker="o", s=80,
-               facecolors="none", edgecolors="C3", label=r"converged $\hat{F}$", zorder=3)
-    ax.set_aspect("equal")
-    ax.set_xlim(-2.0, 2.0)
-    ax.set_ylim(-2.0, 2.0)
-    ax.set_xlabel("Re")
-    ax.set_ylabel("Im")
-    ax.set_title(title)
-    ax.legend(loc="upper right", fontsize=8)
-
+# SECTION: Plotting  (``_draw_complex_plane`` now imported from kf_rnn.analysis)
 
 def _draw_traces(ax_ang, ax_mag, eig_history: torch.Tensor, F_true_eig: torch.Tensor,
                  title: str, phase_plot_threshold: float = 0.1) -> None:

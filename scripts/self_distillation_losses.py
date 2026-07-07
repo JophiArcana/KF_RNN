@@ -63,16 +63,27 @@ from tensordict import TensorDict
 from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.config.schema import TrainConfig
 from kf_rnn.infrastructure.settings import OUTPUT_PATH
-from kf_rnn.model.sequential import RnnSelfDistillPredictor
-from kf_rnn.model.sequential.base import SequentialPredictor
+from kf_rnn.model.sequential import RnnSelfDistillTTTPredictor
 from kf_rnn.model.convolutional import CnnAnalyticalLeastSquaresPredictor, CnnLeastSquaresPredictor
 from kf_rnn.model.convolutional.base import ConvolutionalPredictor
 from kf_rnn.system.linear_time_invariant import ContinuousDistribution
 
-# Reuse the existing readout helpers (both scripts are import-safe -- their work is
-# guarded by ``if __name__ == "__main__"``); the scripts dir is on sys.path[0].
-from ttt_impulse import kalman_ir
-from self_distillation_eigenphase import active_phase_match_error, _draw_complex_plane
+# The online self-distillation TTT loop is now a first-class training stage in src
+# (``SelfDistillTTTStage`` drives ``RnnSelfDistillTTTPredictor``, whose ``forward`` is
+# the static Kalman/IIR filter). This driver just wires each method's Config into
+# that stage and reads out the spectral / IR / analytical-error diagnostics. The
+# shared numeric helpers (impulse response, guarded filter error, phase match,
+# complex-plane plot) now live in ``kf_rnn.analysis``.
+from kf_rnn.analysis import (
+    kalman_ir,
+    batched_filter_analytical_error,
+    spectral_radius as _spectral_radius,
+    eig_unsafe as _eig_unsafe,
+    active_phase_match_error,
+    draw_complex_plane as _draw_complex_plane,
+)
+from kf_rnn.infrastructure.experiment.stages import TrainingContext
+from kf_rnn.infrastructure.experiment.training import SelfDistillTTTStage, _build_model_ensemble
 
 
 # SECTION: Method catalogue (weights + which fast-weights adapt + decoder init)
@@ -239,241 +250,11 @@ def nstep_methods(max_depth: int = 4, anchor: float = 0.05) -> list[Method]:
     return methods
 
 
-# SECTION: Metrics
+# SECTION: Metrics helpers moved to kf_rnn.analysis (kalman_ir, spectral_radius,
+# eig_unsafe, filter_analytical_error, batched_filter_analytical_error). The
+# hand-rolled online TTT loop (_adapt_and_measure*, _make_sd_grad_fn) is replaced
+# by the SelfDistillTTTStage in src, driven from run_methods below.
 
-# Magnitude above which a matrix is treated as diverged WITHOUT calling an
-# eigensolver: a diverging filter's entries grow geometrically and pass through
-# huge-but-finite values before becoming inf, and LAPACK (MKL) can corrupt memory
-# / hard-abort on such inputs -- which no Python ``try/except`` can catch. A stable
-# filter has O(1) entries, so 1e6 is a safe, generous divergence cutoff.
-_EIG_MAX_ABS = 1e6
-
-
-def _eig_unsafe(M: torch.Tensor) -> bool:
-    """True if ``M`` must not be fed to an eigensolver (non-finite or huge)."""
-    return (not torch.isfinite(M).all()) or (M.abs().max().item() > _EIG_MAX_ABS)
-
-
-def _spectral_radius(M: torch.Tensor) -> float:
-    """Spectral radius, robust to a diverged (non-finite/huge) adapted F (returns inf)."""
-    if _eig_unsafe(M):
-        return float("inf")
-    try:
-        return torch.linalg.eigvals(M).abs().max().item()
-    except RuntimeError:
-        return float("inf")
-
-
-@torch.no_grad()
-def filter_analytical_error(F_hat: torch.Tensor, H_hat: torch.Tensor,
-                            K_hat: torch.Tensor, lsg_td: TensorDict) -> float:
-    """Exact steady-state observation prediction error of the LTI filter
-    ``(F_hat, H_hat, K_hat)`` against the true system (``lsg_td = lsg.td()``).
-
-    This is the project's closed-form analytical error -- an expectation over the
-    process/observation noise, not a finite-sample MSE -- so it has no in-sample
-    bias and no noise-floor sampling jitter.
-
-    Returns ``+inf`` when the filter's closed loop ``F_hat (I - K_hat H_hat)`` is
-    unstable (spectral radius ``>= 1``): the closed-form geometric series only
-    converges for a contractive closed loop, which is exactly the M1/M2 (and the
-    early-adaptation) regime, so an unstable filter has no finite analytical error.
-    """
-    if any(_eig_unsafe(M) for M in (F_hat, H_hat, K_hat)):
-        return float("inf")
-    S = F_hat.shape[-1]
-    eye = torch.eye(S, dtype=F_hat.dtype, device=F_hat.device)
-    closed = F_hat @ (eye - K_hat @ H_hat)                       # filter-side closed loop
-    if _eig_unsafe(closed):
-        return float("inf")
-    try:
-        rho = torch.linalg.eigvals(closed).abs().max().item()
-    except RuntimeError:
-        return float("inf")
-    if not np.isfinite(rho) or rho >= 1.0:
-        return float("inf")
-    kfs = TensorDict({"F": F_hat, "H": H_hat, "K": K_hat}, batch_size=torch.Size([]))
-    err = SequentialPredictor.analytical_error(kfs, lsg_td)["environment", "observation"].item()
-    return err if np.isfinite(err) and err >= 0.0 else float("inf")
-
-
-@torch.no_grad()
-def batched_filter_analytical_error(F: torch.Tensor, H: torch.Tensor, K: torch.Tensor,
-                                    lsg_td: TensorDict) -> np.ndarray:
-    """Vectorized :func:`filter_analytical_error` over a leading ``[N x ...]`` batch
-    of filters; returns an ``[N]`` numpy array (``nan`` for each filter that the
-    scalar version would reject as ``+inf``).
-
-    Same closed-form analytical error and the same divergence/contractivity guard
-    as the scalar path, but computed for all ``N`` trajectories in one shot. The
-    crucial detail is that any non-finite / huge / non-contractive trajectory is
-    replaced by a trivially stable dummy (``F = H = K = 0`` -> closed loop ``0``)
-    *before* any eigensolver runs, so LAPACK/cuSOLVER never sees a diverged matrix
-    (the memory-corruption hazard the scalar guard exists to avoid); those entries
-    are masked back to ``nan`` afterwards. ``nan`` (not ``+inf``) matches what the
-    callers store for an unstable snapshot."""
-    N, S = F.shape[0], F.shape[-1]
-    eye = torch.eye(S, dtype=F.dtype, device=F.device)
-
-    def _safe(M: torch.Tensor) -> torch.Tensor:                     # [N] bool
-        flat = M.reshape(N, -1)
-        return torch.isfinite(flat).all(dim=1) & (flat.abs().amax(dim=1) <= _EIG_MAX_ABS)
-
-    def _gate(M: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
-        return torch.where(keep.reshape(N, *([1] * (M.dim() - 1))), M, torch.zeros_like(M))
-
-    ok = _safe(F) & _safe(H) & _safe(K)
-    Fs, Hs, Ks = _gate(F, ok), _gate(H, ok), _gate(K, ok)
-    closed = Fs @ (eye - Ks @ Hs)                                   # [N x S x S], safe to eig
-    rho = torch.linalg.eigvals(closed).abs().amax(dim=-1)           # [N]
-    stable = ok & torch.isfinite(rho) & (rho < 1.0)
-
-    kfs = TensorDict({"F": _gate(F, stable), "H": _gate(H, stable), "K": _gate(K, stable)},
-                     batch_size=torch.Size([N]))
-    err = SequentialPredictor.analytical_error(kfs, lsg_td)["environment", "observation"].reshape(N)
-    valid = stable & torch.isfinite(err) & (err >= 0.0)
-    out = torch.where(valid, err, torch.full_like(err, float("nan")))
-    return out.numpy(force=True)
-
-
-@torch.no_grad()
-def _adapt_and_measure(model: RnnSelfDistillPredictor, state0: torch.Tensor,
-                       observations: torch.Tensor, lsg_td: TensorDict,
-                       sampled_set: set[int]) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor],
-                                                       dict[int, float], dict[int, float]]:
-    """Replay the online TTT loop for one trajectory (mirrors ``adapted_theta``),
-    snapshot the analytical error at each step in ``sampled_set``, and return the
-    final *reported* fast-weights, the final *raw* iterate, and the per-step
-    analytical error of each (``{step: analytical_error}``).
-
-    When ``model.polyak_burnin >= 0`` the reported filter is the Polyak-Ruppert
-    tail average ``theta_bar = mean_{t >= n0} theta_t`` (``n0 = polyak_burnin * L``)
-    rather than the raw iterate, so the snapshots and the returned filter both see
-    the averaged (asymptotically efficient) estimate. ``polyak_burnin < 0`` keeps
-    the raw iterate (``theta_bar is theta``), i.e. the original behaviour.
-
-    Diagnostic: ``raw_step_errs`` is the analytical error of the *raw* iterate
-    (no averaging) at the same sampled steps. Comparing it to the averaged
-    ``step_errs`` separates two failure modes -- a raw iterate that is itself
-    far/unstable (under-convergence) versus a raw iterate that is stable but whose
-    Polyak average ``theta_bar`` tips over the unit circle (a parameter-space
-    averaging artifact, since stability is not preserved under averaging)."""
-    theta = {k: v.detach().clone() for k, v in eu.td_items(eu.parameter_td(model)).items()}
-    s = state0
-    w = model.window
-    ent_win = s[None].expand(w, *s.shape).clone()
-    L = observations.shape[0]
-    n0 = int(model.polyak_burnin * L) if model.polyak_burnin >= 0.0 else None
-    theta_sum: dict[str, torch.Tensor] | None = None
-    avg_count = 0
-    step_errs: dict[int, float] = {}
-    raw_step_errs: dict[int, float] = {}
-    for t in range(L):
-        out = torch.func.functional_call(model.cell, theta, (s, {}, observations[t]))
-        s_post = out["environment", "state"]
-        ent_win = torch.cat([ent_win[1:], s[None]], dim=0)
-        s_start = ent_win[0].detach()
-        w0 = max(0, t - w + 1)
-        win_obs = observations[w0:t + 1]
-        for _ in range(model.n_steps):
-            grads = model._compute_grads(theta, s_start, {}, win_obs)
-            theta = model._optimizer_step(theta, grads, t)
-        s = s_post
-
-        # Reported filter: raw iterate, or the Polyak tail average once past burn-in.
-        if n0 is not None and t >= n0:
-            if theta_sum is None:
-                theta_sum = {k: v.clone() for k, v in theta.items()}
-            else:
-                for k, v in theta.items():
-                    theta_sum[k] += v
-            avg_count += 1
-            theta_bar = {k: v / avg_count for k, v in theta_sum.items()}
-        else:
-            theta_bar = theta
-
-        if t in sampled_set:
-            step_errs[t] = filter_analytical_error(theta_bar["F"], theta_bar["H"], theta_bar["K"], lsg_td)
-            # Raw-iterate error (no averaging) for the under-convergence vs
-            # averaging-artifact diagnostic. When averaging is disabled
-            # ``theta_bar is theta``, so this simply duplicates ``step_errs``.
-            raw_step_errs[t] = (step_errs[t] if theta_bar is theta
-                                else filter_analytical_error(theta["F"], theta["H"], theta["K"], lsg_td))
-    return theta_bar, theta, step_errs, raw_step_errs
-
-
-@torch.no_grad()
-def _adapt_and_measure_batched(model: RnnSelfDistillPredictor, state0: torch.Tensor,
-                               observations: torch.Tensor, lsg_td: TensorDict,
-                               sampled_steps: list[int],
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], np.ndarray, np.ndarray]:
-    """Vectorized replay of the online TTT loop over ALL ``N`` trajectories at once.
-
-    Semantically identical to running :func:`_adapt_and_measure` for each of the
-    ``N`` trajectories (same prediction, sliding window, gradient step, Polyak
-    tail-averaging, and per-step analytical-error snapshots), but every operation
-    carries a leading ``[N x ...]`` batch and the per-trajectory prediction /
-    gradient are ``torch.vmap``-ed -- so the length-``L`` Python loop launches one
-    set of GPU kernels per step instead of ``N``. All ``N`` trajectories share the
-    same initial fast-weights (the model's parameters), exactly as the per-trace
-    version did (it re-cloned the same ``theta`` each call).
-
-    Returns the final *reported* (Polyak-averaged or raw) and the final *raw*
-    fast-weights as ``[N x ...]`` batches, plus the ``[N x n_sampled]`` analytical
-    error matrices for the reported and raw iterates (``nan`` where unstable).
-    """
-    N, L = observations.shape[0], observations.shape[1]
-    w = model.window
-    theta = {k: v.detach()[None].expand(N, *v.shape).clone()
-             for k, v in eu.td_items(eu.parameter_td(model)).items()}
-    s = state0                                                       # [N x S_D]
-    ent_win = s[:, None].expand(N, w, *s.shape[1:]).clone()          # [N x w x S_D]
-    n0 = int(model.polyak_burnin * L) if model.polyak_burnin >= 0.0 else None
-    theta_sum: dict[str, torch.Tensor] | None = None
-    avg_count = 0
-    sampled_set = set(sampled_steps)
-    idx_of = {t: j for j, t in enumerate(sampled_steps)}
-    err_mat = np.full((N, len(sampled_steps)), np.nan)
-    raw_err_mat = np.full((N, len(sampled_steps)), np.nan)
-
-    # Per-trajectory prediction (only the posterior state is needed downstream)
-    # and gradient, mapped over the batch dim. ``win_actions`` is the empty dict,
-    # so it is the single un-mapped argument of ``_compute_grads``.
-    cell_state = torch.vmap(
-        lambda th, st, ob: torch.func.functional_call(model.cell, th, (st, {}, ob))["environment", "state"])
-    grad_step = torch.vmap(model._compute_grads, in_dims=(0, 0, None, 0))
-
-    for t in range(L):
-        s_post = cell_state(theta, s, observations[:, t])           # [N x S_D]
-        ent_win = torch.cat([ent_win[:, 1:], s[:, None]], dim=1)    # push entering state s
-        s_start = ent_win[:, 0].detach()                            # [N x S_D]
-        w0 = max(0, t - w + 1)
-        win_obs = observations[:, w0:t + 1]                         # [N x w' x O_D]
-        for _ in range(model.n_steps):
-            grads = grad_step(theta, s_start, {}, win_obs)
-            theta = model._optimizer_step(theta, grads, t)
-        s = s_post
-
-        # Reported filter: raw iterate, or the Polyak tail average past burn-in.
-        if n0 is not None and t >= n0:
-            if theta_sum is None:
-                theta_sum = {k: v.clone() for k, v in theta.items()}
-            else:
-                for k, v in theta.items():
-                    theta_sum[k] += v
-            avg_count += 1
-            theta_bar = {k: v / avg_count for k, v in theta_sum.items()}
-        else:
-            theta_bar = theta
-
-        if t in sampled_set:
-            j = idx_of[t]
-            err_mat[:, j] = batched_filter_analytical_error(
-                theta_bar["F"], theta_bar["H"], theta_bar["K"], lsg_td)
-            raw_err_mat[:, j] = (err_mat[:, j] if theta_bar is theta else
-                                 batched_filter_analytical_error(
-                                     theta["F"], theta["H"], theta["K"], lsg_td))
-    return theta_bar, theta, err_mat, raw_err_mat
 
 
 class MethodResult(NamedTuple):
@@ -498,197 +279,6 @@ class MethodResult(NamedTuple):
     raw_rel_ir_err: float = float("inf")
     raw_steady_err: float = float("inf")
     raw_final_excess: float = float("inf")
-
-
-def _build_method_theta(method: Method, args: argparse.Namespace,
-                        problem_shape: ProblemShape, O_D: int,
-) -> tuple[dict[str, torch.Tensor], RnnSelfDistillPredictor, tuple[str, ...]]:
-    """Reproduce ONE method's initial fast-weights exactly as the (former)
-    per-method path did: re-seed to ``args.seed``, build the model (kaiming-normal
-    H draw), then apply the M1 (H=0) / frozen-K (random gain) init tweaks. Returns
-    the initial ``theta`` (a dict of 2-D weights), the model (used only as the
-    shared prediction cell / for window & step hyper-params), and ``adapt_keys``.
-
-    Re-seeding here means every method draws the SAME initialization, so the only
-    inter-method differences are the loss weights / adapt set -- identical to the
-    old ``run_method`` semantics, just factored out so all methods can be stacked
-    into one batched online loop."""
-    torch.manual_seed(args.seed)
-    cfg_kwargs = dict(step_decay=args.step_decay, polyak_burnin=args.polyak_burnin,
-                      sd_horizon=args.sd_horizon, keep_launch=args.keep_launch)
-    cfg_kwargs.update(method.cfg)
-    model = RnnSelfDistillPredictor(RnnSelfDistillPredictor.Config(
-        problem_shape=problem_shape, S_D=args.s_d, n_steps=args.n_steps,
-        step_size=args.step_size, window=args.window,
-        **cfg_kwargs,
-    ))
-    adapt_keys = tuple(method.cfg.get("adapt_keys", ("F", "H", "K")))
-    with torch.no_grad():
-        if "K" not in adapt_keys:
-            model.K.copy_(torch.randn((args.s_d, O_D)) / (O_D ** 0.5))
-        if method.h_init == "zero":
-            model.H.zero_()
-    model.eval()
-    theta0 = {k: v.detach().clone() for k, v in eu.td_items(eu.parameter_td(model)).items()}
-    return theta0, model, adapt_keys
-
-
-def _make_sd_grad_fn(cell, h_max: int, keep_launch: bool):
-    """Build the per-trajectory ``grad(window_loss)`` used by the multi-method
-    batched loop, vmapped over the trajectory dim.
-
-    The window loss is the same weighted section-6 objective as
-    :meth:`RnnSelfDistillPredictor._window_loss`, but the loss weights
-    ``(alpha, beta0, beta2)`` and the SD horizon are passed in as *per-trajectory*
-    scalars so every stacked method shares one loss body. Two batching details
-    keep it numerically identical to running each method on its own:
-
-    - The a-priori / a-posteriori / ladder residuals are gated with ``torch.where``
-      on a *finite* fallback (``0``) so a term a given method does not use (weight
-      ``0``, or a ladder rung ``k`` beyond its horizon) contributes exactly ``0``
-      and ``0`` gradient -- and, crucially, never turns a *diverged* trajectory's
-      ``inf`` residual into a ``0 * inf = nan`` that would pollute the shared step
-      (the old per-method path simply skipped those terms).
-    - The autonomous ladder roll-out ``F^k x_{j-k}^+`` gates the launch state and
-      ``F`` themselves to ``0`` when the rung is inactive, so the matmul chain stays
-      finite in the backward pass for methods that do not use that rung.
-
-    For an *active* term the gates are the identity, so the gradient matches the
-    old single-method computation bit for bit (including its ``inf``/``nan`` on a
-    genuinely diverged trajectory)."""
-
-    def loss(theta, s_start, win_obs, alpha, beta0, beta2, sd_horizon):
-        s = s_start
-        w = win_obs.shape[0]
-        total = win_obs.new_zeros(())
-        H_t, F_t = theta["H"], theta["F"]
-        # Launch buffer: posts[0] is the detached root (logical index -1),
-        # posts[j+1] is the a-posteriori state x_j^+ of window step j.
-        posts = [s_start.detach()]
-        for j in range(w):
-            obs_j = win_obs[j]
-            out = torch.func.functional_call(cell, theta, (s, {}, obs_j))
-            y_hat = out["environment", "observation"]       # H F x_{t-1}^+
-            s_post = out["environment", "state"]            # x_t^+
-            # a-priori observation prediction (beta0)
-            r0 = torch.where(beta0 > 0, y_hat - obs_j, torch.zeros_like(y_hat))
-            term = beta0 * 0.5 * r0.pow(2).sum(-1)
-            # a-posteriori observation prediction (beta2)
-            y_post = s_post @ H_t.mT
-            r2 = torch.where(beta2 > 0, y_post - obs_j, torch.zeros_like(y_post))
-            term = term + beta2 * 0.5 * r2.pow(2).sum(-1)
-            # n-step latent self-distillation ladder (alpha) onto sg(x_j^+)
-            target = s_post.detach()
-            for k in range(1, min(h_max, j + 1) + 1):
-                li = j - k                                  # -1 selects the detached root
-                launch = posts[li + 1]
-                if li < 0 or not keep_launch:
-                    launch = launch.detach()
-                gate = (alpha > 0) & (k <= sd_horizon)
-                # Gate launch + F to a finite dummy on inactive rungs so the
-                # F^k roll-out cannot backprop 0 * inf into the shared step.
-                F_g = torch.where(gate, F_t, torch.zeros_like(F_t))
-                pred = torch.where(gate, launch, torch.zeros_like(launch))
-                for _ in range(k):
-                    pred = pred @ F_g.mT
-                rk = torch.where(gate, target - pred, torch.zeros_like(target))
-                term = term + alpha * 0.5 * rk.pow(2).sum(-1)
-            total = total + term
-            posts.append(s_post)
-            s = s_post
-        return total / w
-
-    return torch.vmap(torch.func.grad(loss, argnums=0), in_dims=(0, 0, 0, 0, 0, 0, 0))
-
-
-@torch.no_grad()
-def _adapt_and_measure_batched_multi(
-        cell, window: int, n_steps: int, step_size: float,
-        theta: dict[str, torch.Tensor], state0: torch.Tensor, observations: torch.Tensor,
-        lsg_td: TensorDict, sampled_steps: list[int],
-        alpha_v: torch.Tensor, beta0_v: torch.Tensor, beta2_v: torch.Tensor,
-        wd_v: torch.Tensor, sd_horizon_v: torch.Tensor, step_decay_v: torch.Tensor,
-        polyak_burnin_v: torch.Tensor, adapt_mask: dict[str, torch.Tensor],
-        h_max: int, keep_launch: bool,
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], np.ndarray, np.ndarray]:
-    """Replay the online TTT loop for ALL stacked (method x trajectory) rows at
-    once. Identical semantics to :func:`_adapt_and_measure_batched`, but every
-    per-method knob is a per-row tensor over the leading ``M*N`` batch:
-    ``alpha_v / beta0_v / beta2_v`` (loss weights), ``sd_horizon_v`` (ladder
-    depth), ``wd_v`` (weight decay), ``step_decay_v`` (gain exponent),
-    ``polyak_burnin_v`` (tail-average start, ``<0`` disables), and ``adapt_mask``
-    (a ``{F,H,K}`` -> per-row 0/1 mask of which fast-weight is updated).
-
-    This turns the former ``M`` sequential length-``L`` loops (one per method) into
-    a single length-``L`` loop over ``M*N`` rows. Because the loop is entirely
-    launch/dispatch bound (its per-step cost is flat in the batch size), stacking
-    the methods is close to free and cuts wall time by roughly the method count.
-
-    Returns the final reported (Polyak-averaged or raw) and raw fast-weights as
-    ``[M*N x ...]`` batches, plus the ``[M*N x n_sampled]`` reported / raw
-    analytical-error matrices (``nan`` where a row's filter is unstable)."""
-    Ntot, L = observations.shape[0], observations.shape[1]
-    w = window
-    s = state0                                                       # [Ntot x S_D]
-    ent_win = s[:, None].expand(Ntot, w, *s.shape[1:]).clone()       # [Ntot x w x S_D]
-    sampled_set = set(sampled_steps)
-    idx_of = {t: j for j, t in enumerate(sampled_steps)}
-    err_mat = np.full((Ntot, len(sampled_steps)), np.nan)
-    raw_err_mat = np.full((Ntot, len(sampled_steps)), np.nan)
-
-    cell_state = torch.vmap(
-        lambda th, st, ob: torch.func.functional_call(cell, th, (st, {}, ob))["environment", "state"])
-    grad_step = _make_sd_grad_fn(cell, h_max, keep_launch)
-
-    # Polyak tail averaging: which rows average, and their (per-row) start step.
-    avg_active = polyak_burnin_v >= 0.0                              # [Ntot] bool
-    avg_any = bool(avg_active.any().item())
-    n0_v = (polyak_burnin_v * L).long()                             # [Ntot]
-    theta_sum: dict[str, torch.Tensor] | None = None
-    count = torch.zeros(Ntot)
-
-    def _rowwise(vec: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
-        return vec.view(Ntot, *([1] * (ref.dim() - 1)))
-
-    for t in range(L):
-        s_post = cell_state(theta, s, observations[:, t])           # [Ntot x S_D]
-        ent_win = torch.cat([ent_win[:, 1:], s[:, None]], dim=1)
-        s_start = ent_win[:, 0].detach()                            # [Ntot x S_D]
-        w0 = max(0, t - w + 1)
-        win_obs = observations[:, w0:t + 1]                        # [Ntot x w' x O_D]
-        eta = step_size * ((t + 1) ** (-step_decay_v))              # [Ntot]
-        for _ in range(n_steps):
-            grads = grad_step(theta, s_start, win_obs, alpha_v, beta0_v, beta2_v, sd_horizon_v)
-            new_theta: dict[str, torch.Tensor] = {}
-            for k, v in theta.items():
-                cand = v - _rowwise(eta, v) * (grads[k] + _rowwise(wd_v, v) * v)
-                new_theta[k] = torch.where(_rowwise(adapt_mask[k], v) > 0, cand, v)
-            theta = new_theta
-        s = s_post
-
-        # Reported filter: raw iterate, or the per-row Polyak tail average.
-        if avg_any:
-            active = avg_active & (t >= n0_v)                       # [Ntot] bool
-            if theta_sum is None:
-                theta_sum = {k: torch.zeros_like(v) for k, v in theta.items()}
-            am = active.to(count.dtype)
-            count = count + am
-            for k in theta:
-                theta_sum[k] = theta_sum[k] + _rowwise(am, theta[k]) * theta[k]
-            cnt_safe = torch.where(count > 0, count, torch.ones_like(count))
-            theta_bar = {k: torch.where(_rowwise(count > 0, v), theta_sum[k] / _rowwise(cnt_safe, v), v)
-                         for k, v in theta.items()}
-        else:
-            theta_bar = theta
-
-        if t in sampled_set:
-            j = idx_of[t]
-            err_mat[:, j] = batched_filter_analytical_error(
-                theta_bar["F"], theta_bar["H"], theta_bar["K"], lsg_td)
-            raw_err_mat[:, j] = (err_mat[:, j] if not avg_any else
-                                 batched_filter_analytical_error(
-                                     theta["F"], theta["H"], theta["K"], lsg_td))
-    return theta_bar, theta, err_mat, raw_err_mat
 
 
 def finalize_method_result(label: str, args: argparse.Namespace,
@@ -768,71 +358,105 @@ def finalize_method_result(label: str, args: argparse.Namespace,
     )
 
 
+def _method_config(m: Method, args: argparse.Namespace,
+                   problem_shape: ProblemShape) -> "RnnSelfDistillTTTPredictor.Config":
+    """Turn a :class:`Method` preset into a fully-specified
+    ``RnnSelfDistillTTTPredictor.Config``. Global schedule knobs (``step_decay``,
+    ``polyak_burnin``, ``sd_horizon``, ``keep_launch``) are defaults that a preset's
+    ``cfg`` may override, exactly as the former ``_build_method_theta`` did."""
+    cfg_kwargs = dict(step_decay=args.step_decay, polyak_burnin=args.polyak_burnin,
+                      sd_horizon=args.sd_horizon, keep_launch=args.keep_launch)
+    cfg_kwargs.update(m.cfg)
+    return RnnSelfDistillTTTPredictor.Config(
+        problem_shape=problem_shape, S_D=args.s_d, n_steps=args.n_steps,
+        step_size=args.step_size, window=args.window,
+        h_init=m.h_init, frozen_k_random=True,
+        **cfg_kwargs,
+    )
+
+
+def _drive_stage(model_pair, exclusive, lsg_td: TensorDict,
+                 sampled_steps: list[int]) -> tuple[dict, dict, np.ndarray, np.ndarray]:
+    """Run the online :class:`SelfDistillTTTStage` for one method's ``[1 x N]``
+    ensemble (N trajectories) over its persisted observations, snapshotting the
+    exact analytical filter error of the *reported* (model) and *raw* (shadow)
+    filters at every step in ``sampled_steps``.
+
+    Returns ``(theta_bar_b, theta_raw_b, err_mat, raw_err_mat)`` with the reported
+    and raw final filters as ``[N x ...]`` batches and the ``[N x n_sampled]`` error
+    matrices -- the same tuple shape the deleted batched loop produced, so
+    :func:`finalize_method_result` is reused unchanged."""
+    reference_module, stacked_modules = model_pair
+    stage = SelfDistillTTTStage()
+    ctx = TrainingContext(TrainConfig(), exclusive, model_pair)
+    sampled_set = set(sampled_steps)
+    idx_of = {t: j for j, t in enumerate(sampled_steps)}
+    err_mat = np.full((stacked_modules["F"].shape[1], len(sampled_steps)), np.nan)
+    raw_err_mat = np.full_like(err_mat, np.nan)
+    averaging = reference_module.polyak_burnin >= 0.0
+
+    while not stage.is_done(ctx):
+        t = stage.t
+        stage.step(ctx)             # advances one online timestep; writes reported params in place
+        if t in sampled_set:
+            j = idx_of[t]
+            Fb, Hb, Kb = (stacked_modules[k][0].detach() for k in ("F", "H", "K"))
+            err_mat[:, j] = batched_filter_analytical_error(Fb, Hb, Kb, lsg_td)
+            if averaging:
+                raw = stage.state.theta_raw
+                rF, rH, rK = (raw[k][0].detach() for k in ("F", "H", "K"))
+                raw_err_mat[:, j] = batched_filter_analytical_error(rF, rH, rK, lsg_td)
+            else:
+                raw_err_mat[:, j] = err_mat[:, j]
+        stage.t += 1
+
+    theta_bar_b = {k: stacked_modules[k][0].detach() for k in ("F", "H", "K")}
+    theta_raw_b = {k: stage.state.theta_raw[k][0].detach() for k in ("F", "H", "K")}
+    return theta_bar_b, theta_raw_b, err_mat, raw_err_mat
+
+
 def run_methods(methods: list[Method], args: argparse.Namespace, problem_shape: ProblemShape,
                 observations: torch.Tensor, state0: torch.Tensor, truth_ir: torch.Tensor,
                 lsg_td: TensorDict, floor: float, sampled_steps: list[int],
                 true_eig: torch.Tensor) -> list[MethodResult]:
-    """Run every method in ONE batched online loop and return their results.
+    """Adapt each method with the online :class:`SelfDistillTTTStage` and read out
+    its spectral / IR / analytical-error diagnostics.
 
-    All methods share the same system, observations and (re-seeded) initial
-    fast-weights, so they are stacked along the batch dim -- ``M`` methods x ``N``
-    trajectories -> ``M*N`` rows -- and adapted together in a single length-``L``
-    replay. Since that loop is dispatch bound (flat in batch size), this is ~M
-    times faster than the former one-loop-per-method approach while producing the
-    same per-method results. Rows for method ``i`` occupy ``[i*N : (i+1)*N]``."""
-    N = observations.shape[0]
-    O_D = observations.shape[-1]
-    M = len(methods)
+    Each method is one ``[N_experiments=1 x ensemble=N]`` model ensemble: the ``N``
+    trajectories are the ensemble members, all sharing the same system, observations
+    and (re-seeded) initial filter, and adapted together in the stage's single
+    length-``L`` online loop. The former hand-rolled ``functional_call`` + ``vmap`` +
+    ``torch.where``-gated batched replay is gone: the stage does the window-loss,
+    gradient step, Polyak averaging and state carry, and ``forward`` is the static
+    Kalman/IIR filter."""
+    N, L, O_D = observations.shape
 
-    # Build each method's initial theta (identical seed => identical base init;
-    # only the M1 H=0 / frozen-K tweaks differ) and its per-method scalar knobs.
-    thetas: list[dict[str, torch.Tensor]] = []
-    scal: dict[str, list[float]] = {k: [] for k in
-                                    ("alpha", "beta0", "beta2", "wd", "sd_horizon", "step_decay", "polyak_burnin")}
-    mask_cols: dict[str, list[float]] = {k: [] for k in ("F", "H", "K")}
-    template = None
-    for m in methods:
-        theta0, model, adapt_keys = _build_method_theta(m, args, problem_shape, O_D)
-        template = model
-        thetas.append(theta0)
-        cfg = m.cfg
-        scal["alpha"].append(float(cfg.get("alpha", 0.0)))
-        scal["beta0"].append(float(cfg.get("beta0", 1.0)))
-        scal["beta2"].append(float(cfg.get("beta2", 0.0)))
-        scal["wd"].append(float(cfg.get("weight_decay", 0.0)))
-        scal["sd_horizon"].append(float(cfg.get("sd_horizon", args.sd_horizon)))
-        scal["step_decay"].append(float(cfg.get("step_decay", args.step_decay)))
-        scal["polyak_burnin"].append(float(cfg.get("polyak_burnin", args.polyak_burnin)))
-        for key in ("F", "H", "K"):
-            mask_cols[key].append(1.0 if key in adapt_keys else 0.0)
-
-    # Stack: each method's theta broadcast over its N trajectories, then concat.
-    theta_stacked = {k: torch.cat([th[k][None].expand(N, *th[k].shape).clone() for th in thetas], dim=0)
-                     for k in thetas[0]}
-    observations_stacked = observations.repeat(M, 1, 1)             # [M*N x L x O_D]
-    state0_stacked = state0.repeat(M, 1)                            # [M*N x S_D]
-
-    def _vec(vals: list[float]) -> torch.Tensor:
-        return torch.tensor(vals, dtype=torch.get_default_dtype()).repeat_interleave(N)
-
-    alpha_v, beta0_v, beta2_v = _vec(scal["alpha"]), _vec(scal["beta0"]), _vec(scal["beta2"])
-    wd_v, sd_horizon_v = _vec(scal["wd"]), _vec(scal["sd_horizon"])
-    step_decay_v, polyak_burnin_v = _vec(scal["step_decay"]), _vec(scal["polyak_burnin"])
-    adapt_mask = {k: _vec(mask_cols[k]) for k in ("F", "H", "K")}
-    h_max = int(max(scal["sd_horizon"])) if scal["sd_horizon"] else 1
-
-    theta_bar_b, theta_raw_b, err_mat, raw_err_mat = _adapt_and_measure_batched_multi(
-        template.cell, template.window, template.n_steps, template.step_size,
-        theta_stacked, state0_stacked, observations_stacked, lsg_td, sampled_steps,
-        alpha_v, beta0_v, beta2_v, wd_v, sd_horizon_v, step_decay_v, polyak_burnin_v,
-        adapt_mask, h_max, args.keep_launch)
+    # One shared online dataset in the engine layout [N_exp x E x n_sys x n_traces x L]:
+    # a single experiment, the N trajectories on the ensemble dim, one system/trace.
+    train_ds = TensorDict.from_dict(
+        {"environment": {"observation": observations.reshape(1, N, 1, 1, L, O_D)}, "controller": {}},
+        batch_size=(1, N, 1, 1, L),
+    )
+    exclusive = SimpleNamespace(train_info=SimpleNamespace(dataset=train_ds))
 
     results: list[MethodResult] = []
-    for i, m in enumerate(methods):
-        sl = slice(i * N, (i + 1) * N)
-        tb = {k: v[sl] for k, v in theta_bar_b.items()}
-        tr = {k: v[sl] for k, v in theta_raw_b.items()}
-        r = finalize_method_result(m.label, args, tb, tr, err_mat[sl], raw_err_mat[sl],
+    for m in methods:
+        cfg = _method_config(m, args, problem_shape)
+        # Re-seed so every method draws the SAME base init (kaiming H etc.); the
+        # per-method M1 (H=0) / frozen-K tweaks are applied in the model __init__.
+        # Broadcasting the single init across the N trajectories reproduces the old
+        # identical-init semantics.
+        torch.manual_seed(args.seed)
+        init_td = eu.parameter_td(cfg.cls(cfg)).detach()
+        ref, stacked = _build_model_ensemble(cfg, (1, N), init_td)
+        # ``stack_module_arr`` can land the stacked params on the settings device
+        # (cuda); re-anchor onto the observations' device so the online loop is
+        # single-device.
+        dev = observations.device
+        model_pair = (ref.to(dev), stacked.to(dev))
+
+        tb, tr, err_mat, raw_err_mat = _drive_stage(model_pair, exclusive, lsg_td, sampled_steps)
+        r = finalize_method_result(m.label, args, tb, tr, err_mat, raw_err_mat,
                                    truth_ir, floor, sampled_steps)
         # Fill the eigen-phase metric now that we have true_eig.
         if not _eig_unsafe(r.F_hat_mean):

@@ -196,6 +196,36 @@ def _get_analytical_error_with_dataset_type_and_key(ds_type: str, key: tuple[str
             return eu.multi_map(analytical_error, eu.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
     return Metric(eval_func)
 
+def _get_guarded_analytical_error_with_dataset_type(ds_type: str, stable_indicator: bool = False) -> Metric:
+    """Guarded per-trajectory closed-form observation error (self-distillation TTT).
+
+    Like :func:`_get_analytical_error_with_dataset_type_and_key` but wraps the
+    analytical error in the divergence/contractivity guard
+    (:func:`kf_rnn.analysis.guarded_analytical_error`): a diverged / non-finite /
+    non-contractive reported filter yields ``nan`` for that ensemble member instead
+    of a garbage error or an eigensolver crash. Values are returned per ensemble
+    member (= per trajectory), so a median over the ensemble dim is the study's
+    ``err_curve`` and the finite fraction is ``frac_stable``. With
+    ``stable_indicator=True`` the metric returns a 1.0/0.0 finite-mask instead of
+    the error itself (the raw material for ``frac_stable``).
+    """
+    def eval_func(
+            mv: MetricVars,
+            cache: dict[str, np.ndarray[TensorDict]],
+            with_batch_dim: bool
+    ) -> np.ndarray[torch.Tensor]:
+        from kf_rnn.analysis import guarded_analytical_error
+        exclusive, (reference_module, stacked_modules) = mv
+
+        def guarded_error(sg: SystemGroup) -> torch.Tensor:
+            err = guarded_analytical_error(stacked_modules[:, :, None], sg.td()[:, None, :])
+            value = torch.isfinite(err).to(err.dtype) if stable_indicator else err
+            return _unsqueeze_if(value, with_batch_dim)
+
+        with torch.set_grad_enabled(False):
+            return eu.multi_map(guarded_error, eu.rgetattr(exclusive, f"info.{ds_type}.systems"), dtype=torch.Tensor)
+    return Metric(eval_func)
+
 def _get_gradient_norm_with_dataset_type(ds_type: str) -> Metric:
     def eval_func(
             mv: MetricVars,
@@ -290,6 +320,9 @@ add_to_metrics(_get_noiseless_error_with_dataset_type_and_target(
 add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("environment", "observation")), names=("validation_analytical",))
 add_to_metrics(_get_analytical_error_with_dataset_type_and_key("valid", ("controller", "input")), names=("validation_controller_analytical",))
 add_to_metrics(_get_analytical_error_with_dataset_type_and_key("test", ("environment", "observation")), names=("testing_analytical", "al",))
+
+add_to_metrics(_get_guarded_analytical_error_with_dataset_type("valid"), names=("sd_analytical",))
+add_to_metrics(_get_guarded_analytical_error_with_dataset_type("valid", stable_indicator=True), names=("sd_frac_stable",))
 
 add_to_metrics(_get_gradient_norm_with_dataset_type("train"), names=("overfit_gradient_norm",))
 

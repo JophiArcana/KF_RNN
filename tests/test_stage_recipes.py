@@ -19,6 +19,7 @@ from kf_rnn.model.convolutional.cnn_predictor import (
     CnnLeastSquaresNegationPredictor,
 )
 from kf_rnn.model.sequential.rnn_predictor import RnnKalmanPredictor, RnnKalmanInitializedPredictor
+from kf_rnn.model.sequential.rnn_ttt import RnnSelfDistillTTTPredictor
 from kf_rnn.model.sequential.rnn_ho_kalman import (
     RnnHoKalmanAnalyticalPredictor,
     RnnHoKalmanAnalyticalLeastSquaresPredictor,
@@ -53,6 +54,7 @@ EXPECTED = {
     CnnLeastSquaresNegationPredictor: ["online_least_squares", "sgd", "negation"],
     RnnKalmanPredictor: ["analytical_init"],
     RnnKalmanInitializedPredictor: ["analytical_init", "sgd"],
+    RnnSelfDistillTTTPredictor: ["self_distill_ttt"],
     RnnHoKalmanAnalyticalPredictor: ["fir.analytical_init", "ho_kalman"],
     RnnHoKalmanAnalyticalLeastSquaresPredictor: ["fir.newton_init", "ho_kalman"],
     ZeroPredictor: [],

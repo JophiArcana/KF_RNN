@@ -27,22 +27,13 @@ except Exception:
 
 import ecliseutils as eu
 from tensordict import TensorDict
+# Impulse response + exact analytical filter error now live in src (shared with
+# the loss-comparison driver and the sd_analytical training metric).
+from kf_rnn.analysis import kalman_ir, filter_analytical_error
 from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.settings import OUTPUT_PATH
 from kf_rnn.model.sequential import RnnSelfDistillPredictor
 from kf_rnn.system.linear_time_invariant import ContinuousDistribution
-
-# Exact analytical filter error (shared with the loss-comparison driver). The
-# scripts dir is on sys.path[0], and the import is side-effect-light (its work is
-# under ``if __name__ == "__main__"``; it does force CPU, which is what we want).
-from self_distillation_losses import filter_analytical_error
-
-
-def kalman_ir(F: torch.Tensor, H: torch.Tensor, K: torch.Tensor, R: int) -> torch.Tensor:
-    """Observation->observation impulse response, ``[R x O_D x O_D]`` (lag, out, in)."""
-    S_D = F.shape[-1]
-    powers = eu.pow_series(F @ (torch.eye(S_D, device=F.device) - K @ H), R)     # [R x S_D x S_D]
-    return H @ powers @ (F @ K)                                                  # [R x O_D x O_D]
 
 
 @torch.no_grad()

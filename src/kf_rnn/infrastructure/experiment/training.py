@@ -282,6 +282,133 @@ class SGDStage(TrainingStage):
 register_stage("sgd", SGDStage, requires=lambda model: True, description="universal")
 
 
+class SelfDistillTTTStage(TrainingStage):
+    """Online self-distillation test-time-training stage.
+
+    Inverts the control flow of :class:`RnnSelfDistillPredictor`: rather than the
+    online adaptation living inside ``forward``, the engine's stage loop *is* the
+    online timestep loop. Each ``step`` advances one online timestep on a persisted
+    filtered state, takes ``n_steps`` gradient steps of the model's
+    :meth:`~kf_rnn.model.sequential.rnn_ttt.RnnSelfDistillTTTPredictor.window_loss`
+    on a **raw shadow iterate** ``(F, H, K)`` held in ``self._state``, and folds
+    that iterate into the model's ``nn.Parameter``s by Polyak (tail) averaging --
+    so the model parameters are always the *reported* filter that ``forward`` and
+    the metrics see. Trajectories are the ensemble members (leading ``[N x E]``
+    dims), and the per-step analytical error curve falls out of the engine's
+    metric cadence.
+
+    Because each member's window loss depends only on its own stacked params, one
+    ``torch.autograd.grad(loss.sum(), raw_iterate)`` yields correct per-member
+    gradients (the same batched-sum trick as :class:`SGDStage`), so no
+    ``functional_call`` / ``vmap`` / ``torch.where`` gating apparatus is needed.
+
+    Checkpointable ``self._state``: ``t`` (online step), ``s`` (filtered posterior
+    ``x_t^+``), ``ent_win`` (entering-state window), ``theta_raw`` (the raw ``F/H/K``
+    iterate), and the Polyak accumulators ``theta_sum`` / ``count``.
+    """
+
+    name = "self_distill_ttt"
+
+    _KEYS = ("F", "H", "K")
+
+    def _init_state(self, ctx: TrainingContext) -> None:
+        st = self._state
+        reference_module, stacked_modules = ctx.model_pair
+        obs = ctx.train_info.dataset["environment", "observation"]      # [N x E x S x B x L x O_D]
+        n_exp, ens, n_sys, n_tr, L, O_D = obs.shape
+        M = n_sys * n_tr
+        st.obs = obs.reshape(n_exp, ens, M, L, O_D)                     # flatten trace dims into one batch M
+        st.L = int(L)
+        S_D = reference_module.S_D
+        st.s = torch.zeros((n_exp, ens, M, S_D))                       # x_0^+ (eval init = zeros)
+        w = reference_module.window
+        st.ent_win = st.s[..., None, :].expand(n_exp, ens, M, w, S_D).clone()
+        # The initialization may have left the stacked params as broadcast (stride-0)
+        # views (``_build_model_ensemble`` expands a shared init across the ensemble);
+        # re-clone to contiguous leaves so the per-step in-place ``copy_`` is valid.
+        for k in self._KEYS:
+            stacked_modules[k] = stacked_modules[k].detach().clone()
+        st.theta_raw = {k: stacked_modules[k].detach().clone() for k in self._KEYS}
+        st.theta_sum = {k: torch.zeros_like(st.theta_raw[k]) for k in self._KEYS}
+        st.count = 0
+
+    def _reported(self, reference_module, t: int) -> dict[str, torch.Tensor]:
+        """The reported filter: raw iterate before Polyak burn-in, else the tail
+        average of the raw iterate (mirrors the script's per-row Polyak logic)."""
+        st = self._state
+        theta = st.theta_raw
+        if reference_module.polyak_burnin < 0:
+            return theta
+        n0 = int(reference_module.polyak_burnin * st.L)
+        if t >= n0:
+            st.count += 1
+            for k in self._KEYS:
+                st.theta_sum[k] = st.theta_sum[k] + theta[k]
+        if st.count > 0:
+            return {k: st.theta_sum[k] / st.count for k in self._KEYS}
+        return theta
+
+    def step(self, ctx: TrainingContext) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        reference_module, stacked_modules = ctx.model_pair
+        st = self._state
+        if not hasattr(st, "obs"):
+            self._init_state(ctx)
+
+        t = st.t
+        theta = st.theta_raw
+        obs_t = st.obs[..., t, :]                                       # [N x E x M x O_D]
+
+        # One static Kalman step with the *current* (pre-update) iterate advances the
+        # persisted filtered state; the window loss rolls forward from the window's
+        # entering state (both exactly as in the original online loop).
+        s_post = reference_module.kalman_posterior(theta, st.s, obs_t)  # [N x E x M x S_D]
+        st.ent_win = torch.cat([st.ent_win[..., 1:, :], st.s[..., None, :]], dim=-2)
+        s_start = st.ent_win[..., 0, :].detach()
+        w = reference_module.window
+        w0 = max(0, t - w + 1)
+        win_obs = st.obs[..., w0:t + 1, :]                             # [N x E x M x w' x O_D]
+
+        eta = reference_module.step_size_at(t)
+        wd = reference_module.weight_decay
+        adapt_keys = tuple(k for k in self._KEYS if k in reference_module.adapt_keys)
+
+        loss = None
+        for _ in range(reference_module.n_steps):
+            leaves = [theta[k].detach().requires_grad_(True) for k in adapt_keys]
+            theta = {**theta, **dict(zip(adapt_keys, leaves))}
+            loss = reference_module.window_loss(theta, s_start, win_obs)   # [N x E x M]
+            grads = torch.autograd.grad(loss.sum(), leaves, allow_unused=True)
+            with torch.no_grad():
+                updated = dict(theta)
+                for k, g, v in zip(adapt_keys, grads, leaves):
+                    if g is None:
+                        g = torch.zeros_like(v)
+                    updated[k] = (v - eta * (g + wd * v)).detach()
+            theta = updated
+        st.theta_raw = {k: v.detach() for k, v in theta.items()}
+        st.s = s_post.detach()
+
+        # Fold the raw iterate into the model params (the reported filter).
+        reported = self._reported(reference_module, t)
+        with torch.no_grad():
+            for k in self._KEYS:
+                stacked_modules[k].copy_(reported[k])
+
+        train_result = loss.detach().mean(dim=-1)[None]                # [1 x N x E]
+        return train_result, {"learning_rate": torch.tensor(float(eta))}
+
+    def is_done(self, ctx: TrainingContext) -> bool:
+        st = self._state
+        return hasattr(st, "L") and st.t >= st.L
+
+
+register_stage(
+    "self_distill_ttt", SelfDistillTTTStage,
+    requires=lambda m: hasattr(m, "window_loss") and hasattr(m, "kalman_posterior"),
+    description="model must define window_loss() and kalman_posterior() (RnnSelfDistillTTTPredictor)",
+)
+
+
 @dataclass
 class Checkpoint:
     stage_idx: int
@@ -380,23 +507,34 @@ def _run_training(
         is_sgd_stage = isinstance(stage, SGDStage)
 
         while not stage.is_done(ctx):
-            r = evaluate_metrics()
+            # A configurable metric cadence lets long online stages (e.g. the
+            # self-distillation TTT stage, one step per online timestep) record the
+            # analytical-error-vs-step curve at a coarse resolution rather than
+            # paying full metric cost every step. ``None`` = evaluate every step, as
+            # before (preserves SGD semantics). Evaluation stays *before* ``step`` so
+            # the recorded metrics reflect the model entering the step.
+            do_metrics = (EHP.metric_frequency is None) or (stage.t % EHP.metric_frequency == 0)
+            r = evaluate_metrics() if do_metrics else None
 
             reference_module.train()
             train_result, log = stage.step(ctx)
 
-            r["training"] = train_result.detach()[0]
+            if do_metrics:
+                r["training"] = train_result.detach()[0]
 
-            # Log scheduler-reported values (e.g. learning rate) alongside the metrics.
-            for k, v in log.items():
-                r[k] = v.expand(r.shape)
+                # Log scheduler-reported values (e.g. learning rate) alongside the metrics.
+                for k, v in log.items():
+                    r[k] = v.expand(r.shape)
 
-            results.append(r)
+                # Record the online-step index so the analysis has an exact step axis.
+                r["step"] = torch.full(EHP.model_shape, float(stage.t))
 
-            # Print every epoch for non-SGD stages, else at the configured frequency.
-            # A ``None`` frequency disables periodic printing for SGD stages.
-            if (not is_sgd_stage) or (EHP.print_frequency is not None and stage.t % EHP.print_frequency == 0):
-                print_losses(r, f"Epoch {stage.t}", ("training", *metrics, *log.keys(),))
+                results.append(r)
+
+                # Print every epoch for non-SGD stages, else at the configured frequency.
+                # A ``None`` frequency disables periodic printing for SGD stages.
+                if (not is_sgd_stage) or (EHP.print_frequency is not None and stage.t % EHP.print_frequency == 0):
+                    print_losses(r, f"Epoch {stage.t}", ("training", *metrics, *log.keys(),))
             stage.t += 1
 
             # Save checkpoint before stepping so reloading and saving align on the same stage.
@@ -414,6 +552,7 @@ def _run_training(
             eu.empty_cache()
     
     r = evaluate_metrics()
+    r["step"] = torch.full(EHP.model_shape, float(stages[-1].t if stages else 0))
     # Models with an empty training recipe (e.g. ``ZeroPredictor``) run no stages,
     # so ``results`` can be empty; only backfill train-only keys when present.
     if results:
