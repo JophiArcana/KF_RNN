@@ -227,7 +227,8 @@ def mech_methods(step_decay: float = 0.51, polyak_burnin: float = 0.5) -> list[M
     ]
 
 
-def nstep_methods(max_depth: int = 4, anchor: float = 0.05) -> list[Method]:
+def nstep_methods(max_depth: int = 4, anchor: float = 0.05,
+                  f_init: str = "default", k_init: str = "zero") -> list[Method]:
     """Depth sweep of the n-step latent self-distillation ladder on constant gain.
 
     Isolates the *only* new knob -- the SD horizon -- against a common pure
@@ -245,18 +246,25 @@ def nstep_methods(max_depth: int = 4, anchor: float = 0.05) -> list[Method]:
     All arms are pinned constant-gain (``step_decay=0``, ``polyak_burnin=-1``) so
     the horizon is the only independent variable; sweep ``--step-size`` and read
     each at its own best step, as in the ``mech`` study.
+
+    ``(f_init, k_init)`` sets the init pair for **every** arm (control and all
+    depths), so the whole depth x launch grid can be re-run on the A-init pathway's
+    ``f0_kpinv`` (``f_init="zero", k_init="pinv"``) instead of the current default
+    init; the defaults reproduce the original default-init depth sweep exactly.
     """
     akeys = ("F", "H", "K")
     methods = [
         Method("M4 constant\n(a-priori)",
                dict(alpha=0.0, beta0=1.0, beta2=0.0, adapt_keys=akeys,
-                    step_decay=0.0, polyak_burnin=-1.0, sd_horizon=1), "random"),
+                    step_decay=0.0, polyak_burnin=-1.0, sd_horizon=1), "random",
+               f_init=f_init, k_init=k_init),
     ]
     for k in range(1, max(1, max_depth) + 1):
         methods.append(
             Method(f"SD+anchor n={k}\n(alpha=1, beta0={anchor:g})",
                    dict(alpha=1.0, beta0=anchor, beta2=0.0, adapt_keys=akeys,
-                        step_decay=0.0, polyak_burnin=-1.0, sd_horizon=k), "random"))
+                        step_decay=0.0, polyak_burnin=-1.0, sd_horizon=k), "random",
+                   f_init=f_init, k_init=k_init))
     return methods
 
 
@@ -1052,6 +1060,14 @@ def parse_args() -> argparse.Namespace:
                         help="whether the (non-root) launch state x_{t-k}^+ carries gradient "
                              "(--keep-launch, today's behavior) or is detached (--no-keep-launch); "
                              "the root launch s_start is always detached either way")
+    g_filt.add_argument("--f-init", type=str, default="default", choices=("default", "zero"),
+                        help="transition init for the 'nstep' depth sweep: 'default' ((1-eps)I, "
+                             "the current low-gain init) or 'zero' (F := 0, the A-init pathway's "
+                             "f0 end); applies to every nstep arm incl. the M4 control")
+    g_filt.add_argument("--k-init", type=str, default="zero", choices=("zero", "pinv"),
+                        help="gain init for the 'nstep' depth sweep: 'zero' (K := 0, the current "
+                             "init growing up) or 'pinv' (K := H^+, the A-init pathway's K=A "
+                             "replace/high-gain end); applies to every nstep arm incl. the control")
 
     g_loss = p.add_argument_group("loss weights")
     g_loss.add_argument("--anchor", type=float, default=0.05,
@@ -1193,7 +1209,10 @@ def main() -> None:
             # than the window clamps to the root, so window is the natural
             # ceiling), plus the pure a-priori control. Depth 1 is the previous
             # single-step SD behavior, so no silent change to the default.
-            methods = nstep_methods(args.window, args.anchor)
+            # --f-init/--k-init switch the whole grid (control + all depths) onto
+            # the A-init pathway's f0_kpinv (F=0, K=H^+); defaults keep the
+            # original default-init depth sweep.
+            methods = nstep_methods(args.window, args.anchor, args.f_init, args.k_init)
         elif args.methods == "post":
             # The a-posteriori (beta2) sweep on the fixed detached-launch,
             # n=window SD+anchor base: one arm per --post-grid value (0.0 is the
