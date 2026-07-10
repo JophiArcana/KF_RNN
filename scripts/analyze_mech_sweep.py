@@ -36,7 +36,10 @@ def _tail(arr, frac):
 
 
 def _step_from_name(name: str) -> float:
-    m = re.search(r"ss([0-9p]+)$", name)
+    # Parse the ``ssXXX`` step token anywhere in the path, so both the flat
+    # ``<prefix>/ss<step>/`` layout and the sharded ``<prefix>/ss<step>/b<beta>/``
+    # layout (one arm per job) resolve to the same step.
+    m = re.search(r"ss([0-9p]+)", name)
     if not m:
         return float("nan")
     return float(m.group(1).replace("p", "."))
@@ -50,17 +53,21 @@ def main():
                     help="fraction of the tail sampled-steps used for the stability average")
     args = ap.parse_args()
 
-    paths = sorted(glob.glob(os.path.join(OUTPUT, args.prefix, "ss*", f"{args.tag}_save.pt")))
+    # Recursive glob matches both the flat ``ss*/save.pt`` layout (mech/depth) and
+    # the sharded ``ss*/b*/save.pt`` layout (the post sweep, one arm per job); the
+    # step is parsed from the ``ssXXX`` token in the path either way, and each
+    # checkpoint's arms are merged into the per-(step, method) grid.
+    paths = sorted(glob.glob(os.path.join(OUTPUT, args.prefix, "**", f"{args.tag}_save.pt"),
+                             recursive=True))
     if not paths:
-        print(f"no checkpoints matching {args.prefix}/ss*/{args.tag}_save.pt yet")
+        print(f"no checkpoints matching {args.prefix}/**/{args.tag}_save.pt yet")
         return
 
     # rows[(method_label)] -> list of dicts across steps
     rows = []
     floors = {}
     for p in paths:
-        run = os.path.basename(os.path.dirname(p))
-        step = _step_from_name(run)
+        step = _step_from_name(p)
         pl = torch.load(p, map_location="cpu", weights_only=False)
         floors[step] = float(pl["floor"])
         for d in pl["results"]:

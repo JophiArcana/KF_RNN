@@ -371,6 +371,8 @@ class RnnSelfDistillTTTPredictor(RnnPredictor):
         # Per-method initialization tweaks.
         h_init: str = "random"           # "zero" -> H := 0 (M1 raw-injection)
         frozen_k_random: bool = True     # when "K" not adapted, init K to a random gain
+        f_init: str = "default"          # "zero" -> F := 0 (spectral radius 0 / no autonomous carry)
+        k_init: str = "zero"             # "pinv" -> K := H^+ (the K=A replace/high-gain limit)
 
     def __init__(self, modelArgs: "RnnSelfDistillTTTPredictor.Config", **kwargs: Any):
         RnnPredictor.__init__(self, modelArgs, **kwargs)
@@ -392,6 +394,14 @@ class RnnSelfDistillTTTPredictor(RnnPredictor):
                 self.K.copy_(torch.randn((self.S_D, self.O_D)) / (self.O_D ** 0.5))
             if modelArgs.h_init == "zero":
                 self.H.zero_()
+            # F init tweak (spectral-radius-0 start for the A-init pathway study).
+            if modelArgs.f_init == "zero":
+                self.F.zero_()
+            # K init tweak: the K = H^+ replace / high-gain limit ("K = A" toy).
+            # Computed *after* the H tweaks above so H^+ tracks the actual decoder
+            # (pinv of a zero H is zero, so "pinv" is a no-op under h_init="zero").
+            if modelArgs.k_init == "pinv":
+                self.K.copy_(torch.linalg.pinv(self.H))
 
     def step_size_at(self, t: int) -> float:
         """Online learning rate at global step ``t``: ``step_size * (t+1)^(-step_decay)``."""

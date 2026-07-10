@@ -62,7 +62,7 @@ from tensordict import TensorDict
 
 from kf_rnn.infrastructure.config import EnvironmentShape, ProblemShape, SystemConfig
 from kf_rnn.infrastructure.config.schema import TrainConfig
-from kf_rnn.infrastructure.settings import OUTPUT_PATH
+from kf_rnn.infrastructure.settings import OUTPUT_PATH, DTYPE, PRECISION
 from kf_rnn.model.sequential import RnnSelfDistillTTTPredictor
 from kf_rnn.model.convolutional import CnnAnalyticalLeastSquaresPredictor, CnnLeastSquaresPredictor
 from kf_rnn.model.convolutional.base import ConvolutionalPredictor
@@ -70,20 +70,28 @@ from kf_rnn.system.linear_time_invariant import ContinuousDistribution
 
 # The online self-distillation TTT loop is now a first-class training stage in src
 # (``SelfDistillTTTStage`` drives ``RnnSelfDistillTTTPredictor``, whose ``forward`` is
-# the static Kalman/IIR filter). This driver just wires each method's Config into
-# that stage and reads out the spectral / IR / analytical-error diagnostics. The
-# shared numeric helpers (impulse response, guarded filter error, phase match,
-# complex-plane plot) now live in ``kf_rnn.analysis``.
+# the static Kalman/IIR filter). This driver just expresses each method as a sweep
+# cell (a ``RnnSelfDistillTTTPredictor.Config``) and lets ``run_training_experiments``
+# be the online driver: it owns dataset generation, the stage loop, the metric
+# cadence (``metric_frequency``) and the per-step ``sd_analytical`` / ``sd_frac_stable``
+# curve. This driver then reads the spectral / IR / analytical-error diagnostics off
+# the returned results. The shared numeric helpers (impulse response, guarded filter
+# error, phase match, complex-plane plot) live in ``kf_rnn.analysis``.
+import collections
+
+from ecliseutils.labeled_array import LabeledArray
 from kf_rnn.analysis import (
     kalman_ir,
-    batched_filter_analytical_error,
     spectral_radius as _spectral_radius,
     eig_unsafe as _eig_unsafe,
     active_phase_match_error,
     draw_complex_plane as _draw_complex_plane,
 )
-from kf_rnn.infrastructure.experiment.stages import TrainingContext
-from kf_rnn.infrastructure.experiment.training import SelfDistillTTTStage, _build_model_ensemble
+from kf_rnn.infrastructure.config.schema import (
+    ExperimentConfig, MetricsConfig, RuntimeConfig, SamplingConfig,
+)
+from kf_rnn.infrastructure.experiment import run_training_experiments
+from kf_rnn.infrastructure.static import PARAM_GROUP_FORMATTER
 
 
 # SECTION: Method catalogue (weights + which fast-weights adapt + decoder init)
@@ -92,6 +100,8 @@ class Method(NamedTuple):
     label: str
     cfg: dict        # extra RnnSelfDistillPredictor.Config kwargs (alpha/beta0/beta2/adapt_keys/weight_decay)
     h_init: str      # "random" (kaiming default) or "zero" (M1: innovation == y -> raw K y injection)
+    f_init: str = "default"   # "default" ((1-eps)I) or "zero" (F := 0; A-init pathway study)
+    k_init: str = "zero"      # "zero" (K := 0) or "pinv" (K := H^+; the K=A replace/high-gain limit)
 
 
 def default_methods(anchor: float, post: float, wd: float) -> list[Method]:
@@ -250,6 +260,89 @@ def nstep_methods(max_depth: int = 4, anchor: float = 0.05) -> list[Method]:
     return methods
 
 
+def post_methods(post_grid: list[float], anchor: float = 0.05,
+                 sd_horizon: int = 4) -> list[Method]:
+    """Sweep the a-posteriori weight ``beta2`` on the fixed detached-launch base.
+
+    The earlier depth/launch studies settled the SD base config; the one term left
+    to characterize is the a-posteriori observation loss, which improves convergence
+    but biases the asymptote (the ``sd_m3m4`` finding that ``beta2=1`` plateaus ~3%
+    above the floor). This preset isolates that term: every arm shares the same
+    base -- latent SD + light a-priori anchor ``(alpha=1, beta0=anchor)``, the
+    **detached** launch (``keep_launch=False``), the ``n = sd_horizon`` ladder (set
+    to the TBPTT ``window``), constant gain -- and the *only* independent variable
+    is ``beta2``. The ``beta2=0.0`` arm is the control (the base config itself); the
+    rest add the a-posteriori term at increasing weight.
+
+    All arms adapt every fast-weight ``(F, H, K)`` and are pinned constant-gain
+    (``step_decay=0``, ``polyak_burnin=-1``); sweep ``--step-size`` and read each at
+    its own best step, as in the ``mech`` / ``nstep`` studies.
+    """
+    akeys = ("F", "H", "K")
+    methods = []
+    for b in post_grid:
+        tag = "control" if b == 0.0 else f"post={b:g}"
+        methods.append(Method(
+            f"SD+anchor {tag}\n(a=1, b0={anchor:g}, b2={b:g})",
+            dict(alpha=1.0, beta0=anchor, beta2=b, adapt_keys=akeys,
+                 step_decay=0.0, polyak_burnin=-1.0,
+                 sd_horizon=sd_horizon, keep_launch=False), "random"))
+    return methods
+
+
+def init_methods(init_grid: list[str], anchor: float = 0.05) -> list[Method]:
+    """The A-init pathway 2x2 (+ beta2-substitution arms) on the settled SD base.
+
+    `K = H^+` is the exact toy realization of "K = A": at `F = 0` the innovation is
+    the raw observation, so the corrector replaces the observable subspace with
+    `H^+ y` (the high-gain / REPLACE limit of the single gain update). This preset
+    initializes at (or near) that high-gain end and lets training anneal down,
+    versus the current low-gain (`K = 0`) init growing up. Every arm shares the
+    settled base -- latent SD + light a-priori anchor `(alpha=1, beta0=anchor)`,
+    the **detached** launch (`keep_launch=False`), the single-step ladder
+    (`sd_horizon=1`, `n=1`), constant gain, adapting every fast-weight
+    `(F, H, K)` -- and the only independent variables are the init pair
+    `(f_init, k_init)` and (for two arms) the a-posteriori weight `beta2`.
+
+    The named arms (the `--init-grid` tokens) map to `(f_init, k_init, beta2)`:
+
+    - `fI_k0`          -- `F=(1-eps)I, K=0`   : the current init (control)
+    - `fI_kpinv`       -- `F=(1-eps)I, K=H^+` : hybrid observation-ZOH predictor
+    - `f0_kpinv`       -- `F=0, K=H^+`         : the literal `K=A` proposal
+    - `f0_k0`          -- `F=0, K=0`           : axis-attribution control (worst)
+    - `fI_k0_b0p05`    -- control init + `beta2=0.05` (beta2 substitution)
+    - `f0_kpinv_b0p05` -- `K=A` init + `beta2=0.05` (beta2 substitution / stacking)
+
+    Identical seeding per method keeps `H` (hence `H^+`) matched across arms, so
+    the arms differ only in the init pair and beta2.
+    """
+    akeys = ("F", "H", "K")
+    # arm token -> (f_init, k_init, beta2)
+    spec = {
+        "fI_k0":          ("default", "zero", 0.0),
+        "fI_kpinv":       ("default", "pinv", 0.0),
+        "f0_kpinv":       ("zero",    "pinv", 0.0),
+        "f0_k0":          ("zero",    "zero", 0.0),
+        "fI_k0_b0p05":    ("default", "zero", 0.05),
+        "f0_kpinv_b0p05": ("zero",    "pinv", 0.05),
+    }
+    fdesc = {"default": "(1-e)I", "zero": "0"}
+    kdesc = {"zero": "0", "pinv": "H+"}
+    methods = []
+    for arm in init_grid:
+        if arm not in spec:
+            raise SystemExit(f"unknown init arm '{arm}'; choose from {sorted(spec)}")
+        f_init, k_init, b2 = spec[arm]
+        label = (f"{arm}\n(F={fdesc[f_init]}, K={kdesc[k_init]}, b2={b2:g})")
+        methods.append(Method(
+            label,
+            dict(alpha=1.0, beta0=anchor, beta2=b2, adapt_keys=akeys,
+                 step_decay=0.0, polyak_burnin=-1.0,
+                 sd_horizon=1, keep_launch=False),
+            "random", f_init=f_init, k_init=k_init))
+    return methods
+
+
 # SECTION: Metrics helpers moved to kf_rnn.analysis (kalman_ir, spectral_radius,
 # eig_unsafe, filter_analytical_error, batched_filter_analytical_error). The
 # hand-rolled online TTT loop (_adapt_and_measure*, _make_sd_grad_fn) is replaced
@@ -279,6 +372,12 @@ class MethodResult(NamedTuple):
     raw_rel_ir_err: float = float("inf")
     raw_steady_err: float = float("inf")
     raw_final_excess: float = float("inf")
+    # Final decoder / gain, trajectory-averaged over finite trajectories -- the
+    # gain-migration diagnostic (A-init study) reads these to measure how far the
+    # learned gain has walked from the K = H^+ replace limit toward the Kalman
+    # gain (||K||, ||KH - H^+H||). Defaulted so older checkpoints still reload.
+    H_hat_mean: Optional[torch.Tensor] = None    # [O_D x S_D]
+    K_hat_mean: Optional[torch.Tensor] = None    # [S_D x O_D]
 
 
 def finalize_method_result(label: str, args: argparse.Namespace,
@@ -296,7 +395,7 @@ def finalize_method_result(label: str, args: argparse.Namespace,
     diverged trajectory is recorded as radius == inf."""
     N = err_mat.shape[0]
     R = truth_ir.shape[0]
-    F_hats, irs, radii = [], [], []
+    F_hats, H_hats, K_hats, irs, radii = [], [], [], [], []
     raw_irs = []   # raw-iterate IRs (no averaging), for the diagnostic relIR
     for n in range(N):
         F_hat, H_hat, K_hat = theta_bar_b["F"][n], theta_bar_b["H"][n], theta_bar_b["K"][n]
@@ -304,6 +403,8 @@ def finalize_method_result(label: str, args: argparse.Namespace,
         radii.append(rad)
         if np.isfinite(rad):
             F_hats.append(F_hat)
+            H_hats.append(H_hat)
+            K_hats.append(K_hat)
             irs.append(kalman_ir(F_hat, H_hat, K_hat, R))
         rF, rH, rK = theta_raw_b["F"][n], theta_raw_b["H"][n], theta_raw_b["K"][n]
         if np.isfinite(_spectral_radius(rF)):
@@ -311,10 +412,14 @@ def finalize_method_result(label: str, args: argparse.Namespace,
 
     if F_hats:
         F_hat_mean = torch.stack(F_hats, dim=0).mean(dim=0).detach()
+        H_hat_mean = torch.stack(H_hats, dim=0).mean(dim=0).detach()
+        K_hat_mean = torch.stack(K_hats, dim=0).mean(dim=0).detach()
         mean_ir = torch.stack(irs, dim=0).mean(dim=0).detach()
         rel_ir_err = ((mean_ir - truth_ir).norm() / truth_ir.norm()).item()
     else:
         F_hat_mean = torch.full((args.s_d, args.s_d), float("nan"))
+        H_hat_mean = torch.full((truth_ir.shape[-1], args.s_d), float("nan"))
+        K_hat_mean = torch.full((args.s_d, truth_ir.shape[-1]), float("nan"))
         mean_ir = torch.full_like(truth_ir, float("nan"))
         rel_ir_err = float("inf")
     finite_radii = [r for r in radii if np.isfinite(r)]
@@ -355,6 +460,8 @@ def finalize_method_result(label: str, args: argparse.Namespace,
         raw_rel_ir_err=raw_rel_ir_err,
         raw_steady_err=raw_steady_err,
         raw_final_excess=raw_final_excess,
+        H_hat_mean=H_hat_mean,
+        K_hat_mean=K_hat_mean,
     )
 
 
@@ -371,93 +478,110 @@ def _method_config(m: Method, args: argparse.Namespace,
         problem_shape=problem_shape, S_D=args.s_d, n_steps=args.n_steps,
         step_size=args.step_size, window=args.window,
         h_init=m.h_init, frozen_k_random=True,
+        f_init=m.f_init, k_init=m.k_init,
         **cfg_kwargs,
     )
 
 
-def _drive_stage(model_pair, exclusive, lsg_td: TensorDict,
-                 sampled_steps: list[int]) -> tuple[dict, dict, np.ndarray, np.ndarray]:
-    """Run the online :class:`SelfDistillTTTStage` for one method's ``[1 x N]``
-    ensemble (N trajectories) over its persisted observations, snapshotting the
-    exact analytical filter error of the *reported* (model) and *raw* (shadow)
-    filters at every step in ``sampled_steps``.
+def _build_experiment_config(args: argparse.Namespace, problem_shape: ProblemShape,
+                             system_cfg: SystemConfig) -> ExperimentConfig:
+    """The base :class:`ExperimentConfig` the method sweep shares.
 
-    Returns ``(theta_bar_b, theta_raw_b, err_mat, raw_err_mat)`` with the reported
-    and raw final filters as ``[N x ...]`` batches and the ``[N x n_sampled]`` error
-    matrices -- the same tuple shape the deleted batched loop produced, so
-    :func:`finalize_method_result` is reused unchanged."""
-    reference_module, stacked_modules = model_pair
-    stage = SelfDistillTTTStage()
-    ctx = TrainingContext(TrainConfig(), exclusive, model_pair)
-    sampled_set = set(sampled_steps)
-    idx_of = {t: j for j, t in enumerate(sampled_steps)}
-    err_mat = np.full((stacked_modules["F"].shape[1], len(sampled_steps)), np.nan)
-    raw_err_mat = np.full_like(err_mat, np.nan)
-    averaging = reference_module.polyak_burnin >= 0.0
-
-    while not stage.is_done(ctx):
-        t = stage.t
-        stage.step(ctx)             # advances one online timestep; writes reported params in place
-        if t in sampled_set:
-            j = idx_of[t]
-            Fb, Hb, Kb = (stacked_modules[k][0].detach() for k in ("F", "H", "K"))
-            err_mat[:, j] = batched_filter_analytical_error(Fb, Hb, Kb, lsg_td)
-            if averaging:
-                raw = stage.state.theta_raw
-                rF, rH, rK = (raw[k][0].detach() for k in ("F", "H", "K"))
-                raw_err_mat[:, j] = batched_filter_analytical_error(rF, rH, rK, lsg_td)
-            else:
-                raw_err_mat[:, j] = err_mat[:, j]
-        stage.t += 1
-
-    theta_bar_b = {k: stacked_modules[k][0].detach() for k in ("F", "H", "K")}
-    theta_raw_b = {k: stage.state.theta_raw[k][0].detach() for k in ("F", "H", "K")}
-    return theta_bar_b, theta_raw_b, err_mat, raw_err_mat
+    Trajectories are the ensemble members (``ensemble_size = N``, one experiment,
+    one system, one trace of length ``L``); the ``SelfDistillTTTStage`` reads the
+    whole trace at once (``sampling.method = "full"``), evaluates the guarded
+    per-trajectory ``sd_analytical`` / ``sd_frac_stable`` metrics every
+    ``metric_frequency`` online steps (the engine analog of ``--analytic-stride``),
+    and takes its schedule knobs from each method's model Config, so the training /
+    optimizer branches here are inert."""
+    HP = ExperimentConfig(problem=problem_shape, system=system_cfg, model=None,
+                          training=TrainConfig())
+    HP.dataset.n_systems.reset(train=1)
+    HP.dataset.n_traces.reset(train=1)
+    HP.dataset.total_sequence_length.reset(train=args.length)
+    HP.training.sampling = SamplingConfig(method="full", batch_size=None, subsequence_length=None)
+    HP.experiment = RuntimeConfig(
+        exp_name=f"SelfDistillLosses_{args.methods}",
+        n_experiments=1, ensemble_size=args.traces,
+        metric_frequency=args.analytic_stride,
+        print_frequency=None, checkpoint_frequency=None,
+        metrics=MetricsConfig(training={"sd_analytical", "sd_frac_stable"}),
+    )
+    return HP
 
 
 def run_methods(methods: list[Method], args: argparse.Namespace, problem_shape: ProblemShape,
-                observations: torch.Tensor, state0: torch.Tensor, truth_ir: torch.Tensor,
-                lsg_td: TensorDict, floor: float, sampled_steps: list[int],
-                true_eig: torch.Tensor) -> list[MethodResult]:
-    """Adapt each method with the online :class:`SelfDistillTTTStage` and read out
-    its spectral / IR / analytical-error diagnostics.
+                system_cfg: SystemConfig, lsg_group, truth_ir: torch.Tensor,
+                floor: float, true_eig: torch.Tensor,
+                ) -> tuple[list[MethodResult], torch.Tensor, np.ndarray]:
+    """Adapt every method through ``run_training_experiments`` and read out each
+    one's spectral / IR / analytical-error diagnostics.
 
-    Each method is one ``[N_experiments=1 x ensemble=N]`` model ensemble: the ``N``
-    trajectories are the ensemble members, all sharing the same system, observations
-    and (re-seeded) initial filter, and adapted together in the stage's single
-    length-``L`` online loop. The former hand-rolled ``functional_call`` + ``vmap`` +
-    ``torch.where``-gated batched replay is gone: the stage does the window-loss,
-    gradient step, Polyak averaging and state carry, and ``forward`` is the static
-    Kalman/IIR filter."""
-    N, L, O_D = observations.shape
+    Each method is one sweep cell -- a ``("method", {"model": [Config, ...]})``
+    sweep -- so the engine owns dataset generation, the ``SelfDistillTTTStage``
+    online loop, the metric cadence and the per-step ``sd_analytical`` curve. Every
+    cell is a ``[N_experiments=1 x ensemble=N]`` model ensemble sharing one system
+    (``lsg_group``) and the single observation trace the engine generates from it;
+    the ``N`` trajectories are the ensemble members. All cells share the same
+    (re-seeded, per-method-tweaked) initial filter, broadcast across the ensemble
+    via the ``initialization`` argument.
 
-    # One shared online dataset in the engine layout [N_exp x E x n_sys x n_traces x L]:
-    # a single experiment, the N trajectories on the ensemble dim, one system/trace.
-    train_ds = TensorDict.from_dict(
-        {"environment": {"observation": observations.reshape(1, N, 1, 1, L, O_D)}, "controller": {}},
-        batch_size=(1, N, 1, 1, L),
+    Returns ``(results, observations, steps_axis)``: the per-method readouts, the
+    shared ``[N x L x O_D]`` observation trace (reused by the FIR benchmarks) and
+    the recorded online-step axis.
+    """
+    N, L = args.traces, args.length
+    O_D = problem_shape.environment.observation
+
+    method_cfgs = [_method_config(m, args, problem_shape) for m in methods]
+    method_dim = PARAM_GROUP_FORMATTER.format("method", -1)
+
+    # Identical re-seeded base init per method (kaiming H etc.), already carrying the
+    # per-method M1 (H=0) / frozen-K tweaks (applied in the model ``__init__``);
+    # ``_build_model_ensemble`` broadcasts it across the N ensemble members, so every
+    # trajectory of a method starts from the same filter (old identical-init semantics).
+    init_values = np.empty(len(method_cfgs), dtype=object)
+    for i, cfg_i in enumerate(method_cfgs):
+        torch.manual_seed(args.seed)
+        init_values[i] = eu.parameter_td(cfg_i.cls(cfg_i)).detach()
+    initialization = LabeledArray(init_values, [method_dim])
+
+    # One system shared by every cell; the engine generates the shared observation
+    # trace once from it (before the sweep), so all methods see identical data.
+    systems = {"train": LabeledArray(eu.array_of(lsg_group), ())}
+
+    HP = _build_experiment_config(args, problem_shape, system_cfg)
+    configurations = [("method", {"model": method_cfgs})]
+
+    torch.manual_seed(args.seed)      # deterministic engine dataset generation
+    result, info_dict = run_training_experiments(
+        HP, configurations, {"dir": args.out_name, "fname": "result"},
+        systems=systems, initialization=initialization, save_experiment=False,
     )
-    exclusive = SimpleNamespace(train_info=SimpleNamespace(dataset=train_ds))
+
+    # The shared observation trace the engine generated (layout [1 x N x 1 x 1 x L x O_D]).
+    train_ds = info_dict["train"]["dataset"].values[()]
+    observations = train_ds["environment", "observation"].reshape(N, L, O_D).detach()
 
     results: list[MethodResult] = []
-    for m in methods:
-        cfg = _method_config(m, args, problem_shape)
-        # Re-seed so every method draws the SAME base init (kaiming H etc.); the
-        # per-method M1 (H=0) / frozen-K tweaks are applied in the model __init__.
-        # Broadcasting the single init across the N trajectories reproduces the old
-        # identical-init semantics.
-        torch.manual_seed(args.seed)
-        init_td = eu.parameter_td(cfg.cls(cfg)).detach()
-        ref, stacked = _build_model_ensemble(cfg, (1, N), init_td)
-        # ``stack_module_arr`` can land the stacked params on the settings device
-        # (cuda); re-anchor onto the observations' device so the online loop is
-        # single-device.
-        dev = observations.device
-        model_pair = (ref.to(dev), stacked.to(dev))
+    steps_axis: np.ndarray = np.empty(0)
+    for i, m in enumerate(methods):
+        idx = collections.OrderedDict([(method_dim, i)])
+        output = result.get(idx, "output")                     # [1 x N x n_rec x ...]
+        _, stacked = result.get(idx, "learned_kfs")            # reported filter [1 x N x ...]
 
-        tb, tr, err_mat, raw_err_mat = _drive_stage(model_pair, exclusive, lsg_td, sampled_steps)
-        r = finalize_method_result(m.label, args, tb, tr, err_mat, raw_err_mat,
-                                   truth_ir, floor, sampled_steps)
+        # ``sd_analytical`` is per-trajectory (nan where the reported filter diverged),
+        # so its ensemble slice is exactly the study's err matrix [N x n_rec]; ``step``
+        # is the online-step axis. The reported model params are the final filter.
+        err_mat = output["sd_analytical"][0, :, :, 0].numpy(force=True)
+        steps_axis = output["step"][0, 0].numpy(force=True)
+        theta_b = {k: stacked[k][0].detach() for k in ("F", "H", "K")}
+
+        # The engine reports only the (Polyak-averaged) filter the metrics see, not
+        # the raw shadow iterate, so the raw-iterate diagnostic curve is folded onto
+        # the reported one (identical when Polyak averaging is off).
+        r = finalize_method_result(m.label, args, theta_b, theta_b, err_mat, err_mat,
+                                   truth_ir, floor, steps_axis.tolist())
         # Fill the eigen-phase metric now that we have true_eig.
         if not _eig_unsafe(r.F_hat_mean):
             est_eig = torch.linalg.eigvals(r.F_hat_mean)
@@ -475,15 +599,11 @@ def run_methods(methods: list[Method], args: argparse.Namespace, problem_shape: 
               f"{r.n_diverged}/{args.traces} diverged, max={r.radius_max:.3g})")
         print(f"  active-mode phase err  : {r.mean_phase_err:.3f} rad  ({r.n_active} active modes)")
         print(f"  relative IR error      : {r.rel_ir_err:.3f}   (0 == matches irreducible filter)")
-        tail_n = max(1, len(sampled_steps) // 5)
+        tail_n = max(1, len(steps_axis) // 5)
         steady_stable = r.frac_stable[-tail_n:].mean()
         print(f"  analytical error       : {r.steady_err:.4f}   (floor={floor:.4f}, "
               f"excess={r.final_excess * 100:.1f}%, {steady_stable * 100:.0f}% stable at tail)")
-        if r.raw_frac_stable.size:
-            raw_stable = r.raw_frac_stable[-tail_n:].mean()
-            print(f"  raw iterate (no avg)   : relIR={r.raw_rel_ir_err:.3f}, "
-                  f"excess={r.raw_final_excess * 100:.1f}%, {raw_stable * 100:.0f}% stable at tail")
-    return results
+    return results, observations, steps_axis
 
 
 # SECTION: FIR benchmarks (online least-squares + optimal analytical FIR)
@@ -506,6 +626,10 @@ class FirBenchmarks(NamedTuple):
 
 def _parse_int_list(spec: str) -> list[int]:
     return [int(x) for x in spec.replace(" ", "").split(",") if x] if spec else []
+
+
+def _parse_float_list(spec: str) -> list[float]:
+    return [float(x) for x in spec.replace(" ", "").split(",") if x] if spec else []
 
 
 def _fir_pair(model_cls, problem_shape: ProblemShape, R: int, device, **cfg_kwargs):
@@ -934,20 +1058,34 @@ def parse_args() -> argparse.Namespace:
                         help="M3 a-priori grounding weight beta0 (the minimal observation anchor)")
     g_loss.add_argument("--post", type=float, default=0.05,
                         help="a-posteriori weight beta2 for the M3+post probe")
+    g_loss.add_argument("--post-grid", type=str, default="0.0,0.01,0.02,0.05,0.1,0.2,0.5,1.0",
+                        help="comma-separated a-posteriori weight beta2 grid for the "
+                             "'post' sweep (one arm per value; 0.0 is the control)")
+    g_loss.add_argument("--init-grid", type=str,
+                        default="fI_k0,fI_kpinv,f0_kpinv,f0_k0,fI_k0_b0p05,f0_kpinv_b0p05",
+                        help="comma-separated named init arms for the 'init' (A-init "
+                             "pathway) sweep; each maps to (f_init, k_init, beta2). "
+                             "Arms: fI_k0 (control), fI_kpinv (hybrid), f0_kpinv "
+                             "(literal K=A), f0_k0, fI_k0_b0p05, f0_kpinv_b0p05")
     g_loss.add_argument("--weight-decay", type=float, default=1e-3,
                         help="decoupled radial shrink paired with the a-posteriori term (rate analog)")
 
     g_run = p.add_argument_group("run")
     g_run.add_argument("--seed", type=int, default=0, help="random seed")
     g_run.add_argument("--methods", type=str, default="ladder",
-                       choices=("ladder", "m3m4", "minimal", "mech", "nstep"),
+                       choices=("ladder", "m3m4", "minimal", "mech", "nstep", "post", "init"),
                        help="'ladder' = the M1-M4 + M3+post catalogue; 'm3m4' = the clean "
                             "4-way (alpha,beta0,beta2) comparison (no wd, adapt F,H,K); "
                             "'minimal' = the vanishing-gain M4 (decay+avg) vs its constant-step control; "
                             "'mech' = the constant-gain-centric three-way (constant a-priori vs "
                             "constant SD+anchor vs decay+avg oracle), swept over --step-size; "
                             "'nstep' = constant a-priori vs SD+anchor at every ladder depth "
-                            "n=1..window (the SD depth sweep), swept over --step-size")
+                            "n=1..window (the SD depth sweep), swept over --step-size; "
+                            "'post' = the a-posteriori (beta2) sweep on the fixed detached-launch, "
+                            "n=window SD+anchor base (--post-grid arms), swept over --step-size; "
+                            "'init' = the A-init pathway 2x2 (+beta2 arms) on the settled "
+                            "SD+anchor base (--init-grid arms: f_init x k_init x beta2), "
+                            "swept over --step-size")
     g_run.add_argument("--device", type=str, default=None, choices=("cpu", "cuda"),
                        help="compute device (default: cuda if available, else cpu)")
     g_run.add_argument("--out-name", type=str, default="sd_losses",
@@ -975,7 +1113,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = args.device if args.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-    torch.set_default_device(device)
+    # Configure through ecliseutils so the device the engine's ``stack_module_arr``
+    # targets (``ecliseutils.settings.DEVICE``) matches the torch default; a bare
+    # ``torch.set_default_device`` would leave the engine building modules on the
+    # original settings device and crash the analytical-error metric on a mismatch.
+    eu.configure(device=device, dtype=DTYPE, precision=PRECISION)
     torch.manual_seed(args.seed)
     out_dir = os.path.join(OUTPUT_PATH, args.out_name)
     os.makedirs(out_dir, exist_ok=True)
@@ -987,12 +1129,16 @@ def main() -> None:
     problem_shape = ProblemShape(environment=EnvironmentShape(observation=O_D), controller={})
     system_cfg = SystemConfig(S_D=S_D, problem_shape=problem_shape)
     distribution = ContinuousDistribution(args.f_mode, args.h_mode, eps, args.w_std, args.v_std)
-    lsg = distribution.sample(system_cfg, ())
+    # One system, shared by every method. Sample a single draw at the engine's
+    # group shape ``(n_experiments=1, n_systems=1)`` and take the same draw's
+    # unbatched view ``[0, 0]``: ``lsg_group`` drives ``run_training_experiments``
+    # (which generates the shared observation trace from it), while ``lsg`` backs
+    # the closed-form truth / floor / FIR baselines below.
+    system_params = distribution.sample_parameters(system_cfg, (1, 1))
+    lsg_group = distribution.system_type(system_cfg, system_params)
+    lsg = distribution.system_type(system_cfg, system_params[0, 0])
 
     N, L, R = args.traces, args.length, args.lags
-    ds = lsg.generate_dataset(N, L)
-    observations = ds["environment", "observation"]                       # [N x L x O_D]
-    state0 = torch.zeros((N, S_D))
 
     F_t, H_t, K_t = lsg.environment.F, lsg.environment.H, lsg.environment.K
     true_eig = torch.linalg.eigvals(F_t).detach()
@@ -1003,11 +1149,6 @@ def main() -> None:
     lsg_td = lsg.td()
     floor = lsg.irreducible_loss.environment.observation.item()
     ceiling = lsg.zero_predictor_loss.environment.observation.item()
-    # Online steps at which we snapshot the exact analytical filter error.
-    sampled_steps = list(range(args.analytic_stride - 1, L, args.analytic_stride))
-    if not sampled_steps or sampled_steps[-1] != L - 1:
-        sampled_steps.append(L - 1)
-    steps_axis = np.array(sampled_steps) + 1                              # 1-based step index for plotting
 
     print(f"System S_D={S_D}, O_D={O_D}, eps={eps}, step_size={step_size:.4g}, "
           f"N={N}, L={L}, window={args.window}, device={device}, methods={args.methods}")
@@ -1018,16 +1159,17 @@ def main() -> None:
     save_path = os.path.join(out_dir, f"{tag}_save.pt")
 
     if args.reload:
-        # Re-render from the recorded sweep. The system / data above are rebuilt
-        # deterministically (same seed) only so the FIR benchmarks and the system
-        # baselines stay consistent; the expensive per-method results are loaded.
+        # Re-render from the recorded sweep. The system is rebuilt deterministically
+        # (same seed) so the FIR benchmarks and system baselines stay consistent; the
+        # expensive per-method results are loaded. The FIR benchmarks need *some*
+        # matching observation trace, regenerated here from the same system.
         if not os.path.exists(save_path):
             raise SystemExit(f"--reload set but no recorded sweep at {save_path}")
         results, payload = load_results(save_path)
         floor, ceiling = payload["floor"], payload["ceiling"]
         true_eig, truth_ir = payload["true_eig"], payload["truth_ir"]
         steps_axis = payload["steps_axis"]
-        sampled_steps = (steps_axis - 1).tolist()
+        observations = lsg.generate_dataset(N, L)["environment", "observation"]   # [N x L x O_D]
         print(f"reloaded {len(results)} recorded method results from {save_path}")
     else:
         if args.methods == "m3m4":
@@ -1052,17 +1194,33 @@ def main() -> None:
             # ceiling), plus the pure a-priori control. Depth 1 is the previous
             # single-step SD behavior, so no silent change to the default.
             methods = nstep_methods(args.window, args.anchor)
+        elif args.methods == "post":
+            # The a-posteriori (beta2) sweep on the fixed detached-launch,
+            # n=window SD+anchor base: one arm per --post-grid value (0.0 is the
+            # control), with keep_launch=False and sd_horizon=window baked in.
+            methods = post_methods(_parse_float_list(args.post_grid), args.anchor, args.window)
+        elif args.methods == "init":
+            # The A-init pathway sweep: one arm per --init-grid token, each a
+            # named (f_init, k_init, beta2) triple on the settled SD+anchor base
+            # (detached launch, single-step ladder, constant gain).
+            methods = init_methods([t for t in args.init_grid.replace(" ", "").split(",") if t],
+                                   args.anchor)
         else:
             methods = default_methods(args.anchor, args.post, args.weight_decay)
-        # All methods share the system / observations / (re-seeded) init, so they
-        # are adapted together in ONE batched online loop (M methods x N traces),
-        # instead of one length-L loop per method. The per-step cost is flat in
-        # the batch size (the loop is dispatch bound), so this is ~M times faster
-        # while producing identical per-method results. Fills phase-err + prints.
-        results = run_methods(methods, args, problem_shape, observations, state0, truth_ir,
-                              lsg_td, floor, sampled_steps, true_eig)
+        # Every method is a sweep cell driven by ``run_training_experiments``: the
+        # engine generates the shared observation trace, runs the SelfDistillTTTStage
+        # per cell (N trajectories on the ensemble dim), and records the per-step
+        # ``sd_analytical`` curve at the ``metric_frequency`` cadence. Fills phase-err
+        # + prints, and returns the shared observations + online-step axis.
+        results, observations, steps_axis = run_methods(
+            methods, args, problem_shape, system_cfg, lsg_group, truth_ir, floor, true_eig)
         save_results(save_path, results, true_eig, truth_ir, floor, ceiling, steps_axis, args)
         print(f"\nrecorded sweep -> {save_path}")
+
+    # Align the FIR error-vs-step curves to the recorded online-step axis (the engine
+    # records at online steps ``0, k, 2k, ...`` plus the final ``L``; clamp the final
+    # index into the valid ``[0, L-1]`` observation range for the online-LS fit).
+    sampled_steps = [min(int(s), L - 1) for s in steps_axis]
 
     # Cheap, deterministic FIR baselines (recomputed every run, incl. --reload).
     fir = None if args.no_fir else compute_fir_benchmarks(

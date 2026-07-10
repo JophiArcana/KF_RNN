@@ -549,7 +549,15 @@ def _run_training(
                 for checkpoint_path in checkpoint_paths:
                     torch.save(checkpoint, checkpoint_path)
 
-            eu.empty_cache()
+            # ``eu.empty_cache`` is a full ``gc.collect`` + ``torch.cuda.empty_cache``
+            # (a GC pass and a CUDA cache release/sync). Doing it every step is
+            # catastrophic for long online stages (the self-distillation TTT stage
+            # runs one step per online timestep -- 1e5-1e6 steps -- and each transient
+            # autograd graph is already freed by refcount), so gate it on the metric
+            # cadence. For SGD stages ``metric_frequency is None`` -> ``do_metrics`` is
+            # always True -> unchanged (every-epoch) behaviour.
+            if do_metrics:
+                eu.empty_cache()
     
     r = evaluate_metrics()
     r["step"] = torch.full(EHP.model_shape, float(stages[-1].t if stages else 0))
