@@ -188,6 +188,9 @@ def test_parity() -> None:
     # M3+post: latent SD + anchor + a-posteriori + weight decay + ladder depth 2.
     _run_case("M3+post ladder2 wd", dict(alpha=1.0, beta0=0.05, beta2=0.05,
                                          adapt_keys=("F", "H", "K"), weight_decay=1e-3, sd_horizon=2))
+    # Mean-reduced ladder (depth 3): exercises the sd_mean=True path in both impls.
+    _run_case("M3 mean ladder3", dict(alpha=1.0, beta0=0.05, beta2=0.0,
+                                      adapt_keys=("F", "H", "K"), sd_horizon=3, sd_mean=True))
     # Polyak tail averaging + decaying step.
     _run_case("M4 decay+polyak", dict(alpha=0.0, beta0=1.0, beta2=0.0, adapt_keys=("F", "H", "K"),
                                       step_decay=0.5, polyak_burnin=0.3))

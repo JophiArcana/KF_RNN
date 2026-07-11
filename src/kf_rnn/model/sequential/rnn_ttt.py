@@ -202,7 +202,14 @@ class RnnSelfDistillPredictor(RnnInContextPredictor):
 
         L =  beta0 * 0.5||y_hat  - y||^2    # a-priori observation prediction (grounding; M4)
           +  beta2 * 0.5||y_post - y||^2    # a-posteriori observation prediction (direct-K; section 6.1)
-          +  alpha * sum_{k=1}^{n} 0.5||sg(x_t^+) - F^k x_{t-k}^+||^2   # n-step latent self-distillation (section 4.2/6; stop-grad target)
+          +  alpha * R_{k=1}^{n} 0.5||sg(x_t^+) - F^k x_{t-k}^+||^2   # n-step latent self-distillation (section 4.2/6; stop-grad target)
+
+    where the ladder reduction ``R`` is a **sum** by default (``sd_mean=False``)
+    or a **mean** over the active horizons when ``sd_mean=True`` (dividing each
+    target's ladder contribution by the number of distinct horizons that reach a
+    buffered launch, ``n_eff = min(n, j+1)``). The sum grows the effective SD
+    weight ~linearly with depth; the mean normalizes per step, so ``n=1`` is
+    identical under either reduction.
 
     The stop-gradient on the latent target mirrors
     ``scripts/self_distillation_eigenphase.py``: the gradient flows only through
@@ -238,6 +245,7 @@ class RnnSelfDistillPredictor(RnnInContextPredictor):
         weight_decay: float = 0.0                           # decoupled radial shrink (linear rate-penalty analog)
         sd_horizon: int = 1                                 # number of autonomous self-prediction steps n (1 == today's single-step SD)
         keep_launch: bool = True                            # whether non-root launch states carry gradient (root launch is always detached)
+        sd_mean: bool = False                               # mean (True) vs sum (False, default) the n-step SD ladder over its active horizons
 
     def __init__(self, modelArgs: "RnnSelfDistillPredictor.Config", **kwargs: Any):
         RnnInContextPredictor.__init__(self, modelArgs, **kwargs)
@@ -248,6 +256,7 @@ class RnnSelfDistillPredictor(RnnInContextPredictor):
         self.weight_decay = modelArgs.weight_decay
         self.sd_horizon = modelArgs.sd_horizon
         self.keep_launch = modelArgs.keep_launch
+        self.sd_mean = modelArgs.sd_mean
 
     def _window_loss(self,
                      theta: dict[str, torch.Tensor],
@@ -291,7 +300,9 @@ class RnnSelfDistillPredictor(RnnInContextPredictor):
                 # the buffered root all collapse to the identical root term, so we
                 # iterate only the distinct horizons k = 1..min(sd_horizon, j + 1).
                 target = s_post.detach()
-                for k in range(1, min(self.sd_horizon, j + 1) + 1):
+                n_eff = min(self.sd_horizon, j + 1)
+                sd_sum = win_obs.new_zeros(())
+                for k in range(1, n_eff + 1):
                     li = j - k                                      # -1 selects the detached root
                     launch = posts[li + 1]
                     if li < 0 or not self.keep_launch:
@@ -301,7 +312,9 @@ class RnnSelfDistillPredictor(RnnInContextPredictor):
                     pred = launch
                     for _ in range(k):
                         pred = pred @ F_t.mT
-                    term = term + self.alpha * 0.5 * (target - pred).pow(2).sum(-1)
+                    sd_sum = sd_sum + 0.5 * (target - pred).pow(2).sum(-1)
+                # Sum (default) or mean over the n_eff active horizons.
+                term = term + self.alpha * (sd_sum / n_eff if self.sd_mean else sd_sum)
             total = total + term
             posts.append(s_post)
             s = s_post
@@ -368,6 +381,7 @@ class RnnSelfDistillTTTPredictor(RnnPredictor):
         weight_decay: float = 0.0
         sd_horizon: int = 1
         keep_launch: bool = True
+        sd_mean: bool = False            # mean (True) vs sum (False, default) the n-step SD ladder over its active horizons
         # Per-method initialization tweaks.
         h_init: str = "random"           # "zero" -> H := 0 (M1 raw-injection)
         frozen_k_random: bool = True     # when "K" not adapted, init K to a random gain
@@ -388,6 +402,7 @@ class RnnSelfDistillTTTPredictor(RnnPredictor):
         self.weight_decay = modelArgs.weight_decay
         self.sd_horizon = modelArgs.sd_horizon
         self.keep_launch = modelArgs.keep_launch
+        self.sd_mean = modelArgs.sd_mean
 
         with torch.no_grad():
             if modelArgs.frozen_k_random and "K" not in self.adapt_keys:
@@ -450,7 +465,9 @@ class RnnSelfDistillTTTPredictor(RnnPredictor):
                 term = term + self.beta2 * 0.5 * (y_post - obs_j).pow(2).sum(-1)
             if self.alpha != 0.0:
                 target = s_post.detach()
-                for k in range(1, min(self.sd_horizon, j + 1) + 1):
+                n_eff = min(self.sd_horizon, j + 1)
+                sd_sum = win_obs.new_zeros(s_start.shape[:-1])
+                for k in range(1, n_eff + 1):
                     li = j - k                                      # -1 selects the detached root
                     launch = posts[li + 1]
                     if li < 0 or not self.keep_launch:
@@ -458,7 +475,9 @@ class RnnSelfDistillTTTPredictor(RnnPredictor):
                     pred = launch
                     for _ in range(k):
                         pred = pred @ F.mT
-                    term = term + self.alpha * 0.5 * (target - pred).pow(2).sum(-1)
+                    sd_sum = sd_sum + 0.5 * (target - pred).pow(2).sum(-1)
+                # Sum (default) or mean over the n_eff active horizons.
+                term = term + self.alpha * (sd_sum / n_eff if self.sd_mean else sd_sum)
             total = total + term
             posts.append(s_post)
             s = s_post

@@ -480,7 +480,8 @@ def _method_config(m: Method, args: argparse.Namespace,
     ``polyak_burnin``, ``sd_horizon``, ``keep_launch``) are defaults that a preset's
     ``cfg`` may override, exactly as the former ``_build_method_theta`` did."""
     cfg_kwargs = dict(step_decay=args.step_decay, polyak_burnin=args.polyak_burnin,
-                      sd_horizon=args.sd_horizon, keep_launch=args.keep_launch)
+                      sd_horizon=args.sd_horizon, keep_launch=args.keep_launch,
+                      sd_mean=args.sd_mean)
     cfg_kwargs.update(m.cfg)
     return RnnSelfDistillTTTPredictor.Config(
         problem_shape=problem_shape, S_D=args.s_d, n_steps=args.n_steps,
@@ -1060,6 +1061,11 @@ def parse_args() -> argparse.Namespace:
                         help="whether the (non-root) launch state x_{t-k}^+ carries gradient "
                              "(--keep-launch, today's behavior) or is detached (--no-keep-launch); "
                              "the root launch s_start is always detached either way")
+    g_filt.add_argument("--sd-mean", action=argparse.BooleanOptionalAction, default=False,
+                        help="reduce the n-step SD ladder by a MEAN over its active horizons "
+                             "(--sd-mean) rather than the default SUM (--no-sd-mean); the mean "
+                             "divides each target's ladder by n_eff=min(sd_horizon, j+1), so n=1 "
+                             "is identical under either reduction and only n>=2 changes")
     g_filt.add_argument("--f-init", type=str, default="default", choices=("default", "zero"),
                         help="transition init for the 'nstep' depth sweep: 'default' ((1-eps)I, "
                              "the current low-gain init) or 'zero' (F := 0, the A-init pathway's "
