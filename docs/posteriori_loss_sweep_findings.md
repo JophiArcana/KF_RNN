@@ -126,14 +126,14 @@ Two readings of this grid:
 
 Left: steady excess vs step size, one line per `beta2`; right: per-arm best.
 
-![beta2 steady sweep](../output/sd_post_L300k_post_sweep.png)
+![beta2 steady sweep](figures/sd_post_L300k_post_sweep.png)
 
 ## Convergence: `beta2` is faster early, the control bottoms out lower
 
 One panel per step size, each overlaying every `beta2` arm's excess vs online
 step:
 
-![beta2 convergence per step](../output/sd_post_L300k_convergence.png)
+![beta2 convergence per step](figures/sd_post_L300k_convergence.png)
 
 - **`beta2` is a strong early accelerator.** At `eta=0.01` / `0.03` the high-`beta2`
   arms (yellow) leave the initial ~50-100% region ~1-2 orders of magnitude sooner

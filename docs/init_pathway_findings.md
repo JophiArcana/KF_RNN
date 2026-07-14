@@ -190,14 +190,14 @@ the marginal basin, from the same data and the same realized filter.
 
 | `f0_kpinv` (K=A): converged inside the spectrum | `fI_k0` (control): drifted onto the unit circle |
 |---|---|
-| ![f0_kpinv adapted F spectrum, converged inside the true spectrum at |lambda|=0.82](../output/sd_init_1M/ss0p01/f0_kpinv/sd6_od2_eig_complex_plane.png) | ![fI_k0 control adapted F spectrum, drifted onto the unit circle at |lambda|=1.00](../output/sd_init_1M/ss0p01/fI_k0/sd6_od2_eig_complex_plane.png) |
+| ![f0_kpinv adapted F spectrum, converged inside the true spectrum at |lambda|=0.82](figures/sd_init_1M_ss0p01_f0_kpinv_sd6_od2_eig_complex_plane.png) | ![fI_k0 control adapted F spectrum, drifted onto the unit circle at |lambda|=1.00](figures/sd_init_1M_ss0p01_fI_k0_sd6_od2_eig_complex_plane.png) |
 
 ## Convergence: A-init leaves the transient early, at no floor cost
 
 One panel per step size, each overlaying every init arm's excess vs online step
 (the control `fI_k0` drawn dashed/gray):
 
-![A-init convergence per step](../output/sd_init_1M_convergence.png)
+![A-init convergence per step](figures/sd_init_1M_convergence.png)
 
 Excess (%) vs online step at the converged best step `eta=0.01`:
 
@@ -239,7 +239,7 @@ the point of finding 3.)
 gain walks toward the Kalman gain; `‖K‖` is the gain magnitude (the `K=0` arms
 grow from 0, the `K=H⁺` arms adapt from `‖H⁺‖`):
 
-![A-init gain migration](../output/sd_init_1M_gain_migration.png)
+![A-init gain migration](figures/sd_init_1M_gain_migration.png)
 
 - **Endpoint invariance of the gain (β2=0):** all three live arms converge to the
   same ball -- `‖K‖ ≈ 0.51-0.57`, `‖KH − H⁺H‖ ≈ 0.49-0.58` -- whether the gain

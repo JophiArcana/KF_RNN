@@ -370,9 +370,9 @@ Matched-step head-to-head for the best arm (n=1): **detach is lower at every
 step** -- `eta=0.01` 0.014% vs 0.024%; 0.03 0.038% vs 0.071%; 0.1 0.132% vs
 0.240%; 0.3 0.417% vs 0.620%; 1.0 1.636% vs 2.654%.
 
-![keep_launch=True depth sweep](../output/sd_depth_L1M_depth_sweep.png)
+![keep_launch=True depth sweep](figures/sd_depth_L1M_depth_sweep.png)
 
-![keep_launch=False depth sweep](../output/sd_depth_detach_L1M_depth_sweep.png)
+![keep_launch=False depth sweep](figures/sd_depth_detach_L1M_depth_sweep.png)
 
 ### 4.2 Convergence: keep is faster, detach reaches a lower floor
 
@@ -398,7 +398,7 @@ in 4.1 are the robust readout):
 vs keep 0.024%**. So the two effects are cleanly separated: **keep converges
 faster, detach bottoms out lower.**
 
-![keep vs detach convergence at L=1M](../output/sd_launch_convergence_L1M.png)
+![keep vs detach convergence at L=1M](figures/sd_launch_convergence_L1M.png)
 
 Solid = keep, dashed = detach, same color per depth. The earlier `L=100000`
 sweep mis-ranked detach precisely because it stopped before this crossover: at
@@ -420,7 +420,7 @@ converged run resolves it to 0.014% vs 0.024%.
 Early (ctx <= 10k) the deeper ladders lead by 2-3x; the curves cross around
 ctx ~10-30k, and by the tail the ordering fully inverts to `n=1` lowest.
 
-![SD ladder depth convergence at 1M, eta=0.03](../output/sd_depth_convergence_L1M_eta0p03.png)
+![SD ladder depth convergence at 1M, eta=0.03](figures/sd_depth_convergence_L1M_eta0p03.png)
 
 Left = `keep_launch=True`, right = detach; color = depth. The effect is
 pronounced with the launch gradient on (clear early fan-out then inversion) and
@@ -551,9 +551,9 @@ grid** -- from 0.014% vs 0.027% at the accuracy end (`n=1, eta=0.01`) to
 study 1, but now *both* variants are fully stable rather than detach being
 stable and keep blowing up.
 
-![keep_launch=True depth sweep](../output/sd_depth_ainit_L1M_depth_sweep.png)
+![keep_launch=True depth sweep](figures/sd_depth_ainit_L1M_depth_sweep.png)
 
-![keep_launch=False depth sweep](../output/sd_depth_ainit_detach_L1M_depth_sweep.png)
+![keep_launch=False depth sweep](figures/sd_depth_ainit_detach_L1M_depth_sweep.png)
 
 ### 5.2 Convergence: keep is faster, detach crosses below past 300k
 
@@ -578,7 +578,7 @@ At `n=1`, excess vs context length (%):
   0.079% tail-averaged) -- the same ordering, visible one gain up much
   earlier.
 
-![keep vs detach convergence, A-init](../output/sd_depth_ainit_L1M_launch_convergence.png)
+![keep vs detach convergence, A-init](figures/sd_depth_ainit_L1M_launch_convergence.png)
 
 Solid = keep, dashed = detach, color = depth. Left `eta=0.01`, right
 `eta=0.03`. Keep descends faster throughout; the depths fan out early (deeper
@@ -601,7 +601,7 @@ Early (ctx <= 10k) the deeper ladders lead by ~2x, the curves cross around
 ctx ~30-100k, and by the tail the ordering fully inverts to `n=1` lowest --
 identical in shape to study 1.
 
-![A-init depth convergence, eta=0.03](../output/sd_depth_ainit_L1M_depth_convergence_eta0p03.png)
+![A-init depth convergence, eta=0.03](figures/sd_depth_ainit_L1M_depth_convergence_eta0p03.png)
 
 Left = keep, right = detach; color = depth.
 
@@ -708,9 +708,9 @@ within ~1.05-1.3x of `n=1` everywhere. Median `|lambda(F_hat)|` reads **0.82 at
 `eta <= 0.1`** across all depths and drifts to 0.71-0.80 at `eta=1.0` -- the
 same contractive basin as study 2, unchanged by the reduction or the horizon.
 
-![mean keep_launch=True depth sweep](../output/sd_depth_ainit_mean_L1M_depth_sweep.png)
+![mean keep_launch=True depth sweep](figures/sd_depth_ainit_mean_L1M_depth_sweep.png)
 
-![mean keep_launch=False depth sweep](../output/sd_depth_ainit_mean_detach_L1M_depth_sweep.png)
+![mean keep_launch=False depth sweep](figures/sd_depth_ainit_mean_detach_L1M_depth_sweep.png)
 
 ### 6.3 Convergence: depth loses its early-speed edge under the mean
 
@@ -726,7 +726,7 @@ same contractive basin as study 2, unchanged by the reduction or the horizon.
 | 300,000 | 0.019 | 0.178 | 0.101 | 0.054 |
 | 1,000,000 | 0.022 | **0.013** | 0.093 | **0.038** |
 
-![mean keep vs detach convergence, A-init](../output/sd_depth_ainit_mean_L1M_launch_convergence.png)
+![mean keep vs detach convergence, A-init](figures/sd_depth_ainit_mean_L1M_launch_convergence.png)
 
 The depth story is where the mean diverges from the sum. Excess vs context (%)
 at `eta=0.03`, `keep_launch=True`, per depth:
@@ -748,7 +748,7 @@ top of each other from 10k onward, and `n=1` is (barely) lowest at the tail.
 The multi-horizon gradient's early acceleration was its summed magnitude;
 average it away and the extra horizons add nothing on this stationary problem.
 
-![mean A-init depth convergence, eta=0.03](../output/sd_depth_ainit_mean_L1M_depth_convergence_eta0p03.png)
+![mean A-init depth convergence, eta=0.03](figures/sd_depth_ainit_mean_L1M_depth_convergence_eta0p03.png)
 
 Left = keep, right = detach; color = depth. (Detach @`eta=0.03` shows the
 deeper arms reaching the mid-context floor a bit sooner -- 30k: n=4 1.28 vs

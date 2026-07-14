@@ -94,7 +94,7 @@ gain-schedule axis as the load-bearing component.
 `a=0.51`, `n0=0.5`, `eta_0=1.0` (both curves finite, maximal contrast): the
 decay+avg filter sits on the irreducible floor (`0.1%` excess) with no projection,
 beating the constant-gain plateau on both excess (0.1% vs 0.5%) and tail stability
-(33% vs 17%). Output: `output/sd_minimal_solved/sd6_od2_analytical_error_curve.png`.
+(33% vs 17%). Output: `figures/sd_minimal_solved_sd6_od2_analytical_error_curve.png`.
 
 ## Implication for the next step (piecewise / nonstationary)
 

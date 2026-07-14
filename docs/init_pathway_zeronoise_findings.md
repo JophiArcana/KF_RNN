@@ -188,14 +188,14 @@ drifts *outward* onto the unit circle (`|λ| = 1.00`), past the true dynamics.
 
 | `f0_kpinv` (K=A): converged inside the spectrum | `fI_k0` (control): drifted onto the unit circle |
 |---|---|
-| ![f0_kpinv adapted F spectrum, converged inside the true spectrum at |lambda|=0.82](../output/sd_init_1M_v0/ss0p01/f0_kpinv/sd6_od2_eig_complex_plane.png) | ![fI_k0 control adapted F spectrum, drifted onto the unit circle at |lambda|=1.00](../output/sd_init_1M_v0/ss0p01/fI_k0/sd6_od2_eig_complex_plane.png) |
+| ![f0_kpinv adapted F spectrum, converged inside the true spectrum at |lambda|=0.82](figures/sd_init_1M_v0_ss0p01_f0_kpinv_sd6_od2_eig_complex_plane.png) | ![fI_k0 control adapted F spectrum, drifted onto the unit circle at |lambda|=1.00](figures/sd_init_1M_v0_ss0p01_fI_k0_sd6_od2_eig_complex_plane.png) |
 
 ## Convergence: A-init leaves the transient early, at no floor cost
 
 One panel per step size, each overlaying every init arm's excess vs online step
 (the control `fI_k0` drawn dashed/gray):
 
-![A-init convergence per step](../output/sd_init_1M_v0_convergence.png)
+![A-init convergence per step](figures/sd_init_1M_v0_convergence.png)
 
 Excess (%) vs online step at the best step `eta=0.01`:
 
@@ -231,7 +231,7 @@ finding 3.)
 gain walks toward a Kalman gain that trades off measurement noise; `‖K‖` is the
 gain magnitude:
 
-![A-init gain migration](../output/sd_init_1M_v0_gain_migration.png)
+![A-init gain migration](figures/sd_init_1M_v0_gain_migration.png)
 
 - **No migration at zero noise (the inversion of the `v=1` result).** All five
   live arms sit *at* the replace limit across `eta ≤ 0.1`: `‖KH − H⁺H‖ ≈

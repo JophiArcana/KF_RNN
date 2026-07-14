@@ -93,7 +93,7 @@ an outlier at 0.555%; that was under-convergence -- a tiny step with only a weak
 
 ### Curve: three methods, each at its own best step
 
-![Three-method envelope curve over context length](../output/sd_mech_L100000_envelope_curve.png)
+![Three-method envelope curve over context length](figures/sd_mech_L100000_envelope_curve.png)
 
 Standard two-panel readout (left: trajectory-median analytical error vs online
 step, with the irreducible floor and zero-predictor ceiling; right: excess over

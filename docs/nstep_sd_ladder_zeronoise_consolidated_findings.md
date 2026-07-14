@@ -254,9 +254,9 @@ Matched-step head-to-head for `n=1`: **detach is lower at every step** --
 `eta ≥ 0.3` in *both* variants (it has no launch gradient; this is the pure
 a-priori v=0 instability of section 3.4).
 
-![keep_launch=True depth sweep](../output/sd_depth_L1M_v0_depth_sweep.png)
+![keep_launch=True depth sweep](figures/sd_depth_L1M_v0_depth_sweep.png)
 
-![keep_launch=False depth sweep](../output/sd_depth_detach_L1M_v0_depth_sweep.png)
+![keep_launch=False depth sweep](figures/sd_depth_detach_L1M_v0_depth_sweep.png)
 
 ### 4.2 Convergence: keep is faster, detach reaches a lower floor
 
@@ -277,7 +277,7 @@ lower. Same clean "keep converges faster, detach bottoms out lower" separation a
 `v=1`. (`--` = every trajectory read unstable at that single sample -- the
 marginal default-init population.)
 
-![keep vs detach convergence at L=1M, v=0](../output/sd_launch_convergence_L1M_v0.png)
+![keep vs detach convergence at L=1M, v=0](figures/sd_launch_convergence_L1M_v0.png)
 
 **Depth is the same speed/floor tradeoff.** Excess (%) vs context at `eta=0.03`,
 `keep_launch=True`:
@@ -293,7 +293,7 @@ marginal default-init population.)
 Early (ctx ≤ 10k) the deeper ladders lead by ~2x; the curves cross ~10-30k and
 by the tail `n=1` is lowest.
 
-![SD ladder depth convergence at 1M, v=0, eta=0.03](../output/sd_depth_convergence_L1M_v0_eta0p03.png)
+![SD ladder depth convergence at 1M, v=0, eta=0.03](figures/sd_depth_convergence_L1M_v0_eta0p03.png)
 
 ---
 
@@ -341,9 +341,9 @@ accuracy end), and -- unlike the default init -- both variants are fully stable
 for the SD arms (the only casualties are the extreme detached `n=3/n=4, eta=1.0`
 corners). The M4 control still diverges at `eta ≥ 0.3` even from the A-init.
 
-![keep_launch=True depth sweep](../output/sd_depth_ainit_L1M_v0_depth_sweep.png)
+![keep_launch=True depth sweep](figures/sd_depth_ainit_L1M_v0_depth_sweep.png)
 
-![keep_launch=False depth sweep](../output/sd_depth_ainit_detach_L1M_v0_depth_sweep.png)
+![keep_launch=False depth sweep](figures/sd_depth_ainit_detach_L1M_v0_depth_sweep.png)
 
 ### 5.2 Convergence
 
@@ -363,9 +363,9 @@ tail. (At `eta=0.03` both are long converged and near-tied.) Depth shows the sam
 early fan-out (deeper faster) re-ordering to `n=1`-lowest at the tail, identical
 in shape to study 1.
 
-![keep vs detach convergence, A-init v=0](../output/sd_depth_ainit_L1M_v0_launch_convergence.png)
+![keep vs detach convergence, A-init v=0](figures/sd_depth_ainit_L1M_v0_launch_convergence.png)
 
-![A-init depth convergence, v=0, eta=0.03](../output/sd_depth_ainit_L1M_v0_depth_convergence_eta0p03.png)
+![A-init depth convergence, v=0, eta=0.03](figures/sd_depth_ainit_L1M_v0_depth_convergence_eta0p03.png)
 
 ### 5.3 Stability: the launch-gradient instability is gone (for the SD arms)
 
@@ -435,9 +435,9 @@ Compare the sum keep grid, where `n=4` ran roughly `n`x the `n=1` row; the mean
 rows sit within ~1.1-1.5x of `n=1` everywhere. `rad` stays contractive
 (0.76-0.82) -- the same basin as study 2.
 
-![mean keep_launch=True depth sweep](../output/sd_depth_ainit_mean_L1M_v0_depth_sweep.png)
+![mean keep_launch=True depth sweep](figures/sd_depth_ainit_mean_L1M_v0_depth_sweep.png)
 
-![mean keep_launch=False depth sweep](../output/sd_depth_ainit_mean_detach_L1M_v0_depth_sweep.png)
+![mean keep_launch=False depth sweep](figures/sd_depth_ainit_mean_detach_L1M_v0_depth_sweep.png)
 
 ### 6.3 Convergence: depth loses its early-speed edge under the mean
 
@@ -456,9 +456,9 @@ under the **mean** the early lead is **gone** (deeper is now slower at 3k), the
 depths collapse together from 10k on, and `n=1` is lowest at the tail. The
 multi-horizon gradient's early acceleration was its summed magnitude.
 
-![mean keep vs detach convergence, A-init v=0](../output/sd_depth_ainit_mean_L1M_v0_launch_convergence.png)
+![mean keep vs detach convergence, A-init v=0](figures/sd_depth_ainit_mean_L1M_v0_launch_convergence.png)
 
-![mean A-init depth convergence, v=0, eta=0.03](../output/sd_depth_ainit_mean_L1M_v0_depth_convergence_eta0p03.png)
+![mean A-init depth convergence, v=0, eta=0.03](figures/sd_depth_ainit_mean_L1M_v0_depth_convergence_eta0p03.png)
 
 ### 6.4 Study-3 reading
 
