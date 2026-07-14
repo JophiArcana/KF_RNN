@@ -182,6 +182,16 @@ every step -- their mid-step cells escaped the ~2.9% plateau between 300k and 1M
 arms, and the small-step cells never escape -- β2 buys nothing anywhere on the
 A-init base.
 
+The `eta=0.01` adapted-`F` spectra make finding 3 visual: blue `×` are the true
+`|eig(F)| ∈ [0.778, 0.900]`, the red `○` the converged mean `F_hat`. `f0_kpinv`
+lands its spectrum *inside* the true one (`|λ| = 0.82`), while the control's
+drifts *outward* onto the unit circle (`|λ| = 1.00`), past the true dynamics --
+the marginal basin, from the same data and the same realized filter.
+
+| `f0_kpinv` (K=A): converged inside the spectrum | `fI_k0` (control): drifted onto the unit circle |
+|---|---|
+| ![f0_kpinv adapted F spectrum, converged inside the true spectrum at |lambda|=0.82](../output/sd_init_1M/ss0p01/f0_kpinv/sd6_od2_eig_complex_plane.png) | ![fI_k0 control adapted F spectrum, drifted onto the unit circle at |lambda|=1.00](../output/sd_init_1M/ss0p01/fI_k0/sd6_od2_eig_complex_plane.png) |
+
 ## Convergence: A-init leaves the transient early, at no floor cost
 
 One panel per step size, each overlaying every init arm's excess vs online step
